@@ -92,7 +92,11 @@ jobs:
 
           keystore="$RUNNER_TEMP/sentinel-ci-debug.keystore"
 
+          # Strip whitespace before decoding: a secret pasted from a terminal
+          # or an editor easily picks up wrapped newlines or a trailing CR,
+          # and base64 --decode rejects a carriage return as invalid input.
           printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
+            | tr -d '[:space:]' \
             | base64 --decode > "$keystore"
 
           chmod 600 "$keystore"
