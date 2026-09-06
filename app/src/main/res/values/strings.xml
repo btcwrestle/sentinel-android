@@ -211,16 +211,6 @@
     <string name="community_dojo_status_dot_description" translatable="false">Dojo online status</string>
     <string name="copy_dojo_pairing_json" translatable="false">Copy Dojo pairing JSON</string>
 
-    <!--
-      Balance/rescan-xpub help, shown right after a first-time Dojo connection
-      during initial setup and again on demand from Settings > Troubleshooting
-      &amp; Debug. Marked translatable="false" to match the project's existing
-      pattern of English fallbacks for newer strings (see dojo_pairing_details
-      above).
-    -->
-    <string name="balance_query_help_title" translatable="false">Help querying correct balance</string>
-    <string name="balance_query_help_message" translatable="false">If your balance is not showing up, you may need to rescan your xpub in the Dojo that you are connected to. If it is your own Dojo, you can do this within the Dojo Maintenance Tool. If it is someone else\'s Dojo, visit %1$s and find the Dojo you\'re connected to, then follow the steps there under &quot;Rescan XPUB&quot;.</string>
-    <string name="copy_dojo_bay_link" translatable="false">Copy Dojo Bay link</string>
     <string name="loading">loading…</string>
     <string name="tor_initializing">Tor initializing</string>
     <string name="enable">Enable</string>
@@ -348,6 +338,25 @@
     <string name="choose_collection">Choose collection</string>
     <string name="choose_pubkey">Choose Pubkey</string>
 
+
+    <!--
+      "Rescan Xpub" - asks the connected Dojo to re-run its restore import for
+      one or more public keys. Marked translatable="false" to match the
+      project's existing pattern of English fallbacks for newer strings (see
+      dojo_pairing_details above).
+    -->
+    <string name="rescan_xpub_title" translatable="false">Rescan Xpub</string>
+    <string name="rescan_xpub_settings_summary" translatable="false">Help querying correct balance</string>
+    <string name="rescan_xpub_warning_message" translatable="false">This will rescan your xpub on the current connected dojo. Giving a dojo your xpub shows them all of your wallet addresses in order to query a correct balance. Run your own dojo for maximum privacy.</string>
+    <string name="rescan_xpub_continue" translatable="false">Continue</string>
+    <string name="rescan_xpub_progress" translatable="false">Rescanning on the Dojo… this can take several minutes.</string>
+    <string name="rescan_xpub_progress_multi" translatable="false">Rescanning %1$d of %2$d… this can take several minutes.</string>
+    <string name="rescan_xpub_done" translatable="false">Rescan complete. Balances will refresh shortly.</string>
+    <string name="rescan_xpub_done_partial" translatable="false">Rescanned %1$d of %2$d public keys.</string>
+    <string name="rescan_xpub_still_running" translatable="false">The Dojo is still scanning. It carries on in the background - check the balance again in a few minutes.</string>
+    <string name="rescan_xpub_failed" translatable="false">The Dojo could not rescan:\n%1$s</string>
+    <string name="rescan_xpub_no_dojo" translatable="false">No Dojo is connected. Connect one first, then rescan.</string>
+    <string name="rescan_xpub_no_keys" translatable="false">There are no public keys to rescan yet.</string>
 
     <string name="utxo_details_label_title" translatable="false">Label</string>
     <string name="utxo_label_empty_hint" translatable="false">Tap to add label</string>

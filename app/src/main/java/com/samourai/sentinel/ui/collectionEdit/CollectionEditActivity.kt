@@ -30,6 +30,7 @@ import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.SentinelActivity
 import com.samourai.sentinel.ui.fragments.AddNewPubKeyBottomSheet
+import com.samourai.sentinel.ui.dojo.PubKeyRescanner
 import com.samourai.sentinel.ui.fragments.QRBottomSheetDialog
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.AndroidUtil
@@ -318,38 +319,22 @@ class CollectionEditActivity : SentinelActivity() {
             )
         }
 
-        val items =
-            if (viewModel.getCollection().value!!.isImportFromWallet)
-                arrayListOf("View Master Fingerprint","Delete")
-            else
-                arrayListOf("Edit","View Master Fingerprint","Delete")
         pubKeyAdapter.setOnEditClickListener { i, pubKeyModel ->
+            // Label -> action, so adding an entry can't shift the index mapping.
+            val options = buildList<Pair<String, () -> Unit>> {
+                if (!viewModel.getCollection().value!!.isImportFromWallet)
+                    add("Edit" to { edit(pubKeyModel, i) })
+                add("View Master Fingerprint" to { editFingerprint(pubKeyModel, i) })
+                add(getString(R.string.rescan_xpub_title) to { confirmRescan(pubKeyModel) })
+                add("Delete" to { delete(i, pubKeyModel) })
+            }
             MaterialAlertDialogBuilder(this)
                 .setItems(
-                    items.toTypedArray()
+                    options.map { it.first }.toTypedArray()
                 ) { _, which ->
-                    when (which) {
-                        0 -> {
-                            if (!viewModel.getCollection().value!!.isImportFromWallet)
-                                edit(pubKeyModel, i)
-                            else
-                                editFingerprint(pubKeyModel, i)
-                        }
-                        1 -> {
-                            if (!viewModel.getCollection().value!!.isImportFromWallet)
-                                editFingerprint(pubKeyModel, i)
-                            else
-                                delete(i, pubKeyModel)
-                        }
-                        2 -> {
-                            if (!viewModel.getCollection().value!!.isImportFromWallet)
-                                delete(i, pubKeyModel)
-                        }
-                    }
+                    options[which].second()
                 }
                 .setTitle(getString(R.string.options))
-                .setOnDismissListener {
-                }
                 .show()
         }
 
@@ -390,6 +375,20 @@ class CollectionEditActivity : SentinelActivity() {
             value = if (pubKeyModel.fingerPrint == null) "" else pubKeyModel.fingerPrint!!,
             buttonLabel = "Save",
             isEditable = !viewModel.getCollection().value?.isImportFromWallet!!
+        )
+    }
+
+    /**
+     * "Rescan Xpub" for a single public key. The heavy lifting - privacy
+     * warning, progress, and the refresh afterwards - lives in
+     * [PubKeyRescanner] so every entry point behaves identically.
+     */
+    private fun confirmRescan(pubKeyModel: PubKeyModel) {
+        val collectionId = viewModel.getCollection().value?.id
+        PubKeyRescanner.confirmAndRescan(
+            this,
+            listOf(pubKeyModel),
+            listOfNotNull(collectionId)
         )
     }
 

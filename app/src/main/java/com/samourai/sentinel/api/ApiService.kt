@@ -5,6 +5,7 @@ package com.samourai.sentinel.api
 import com.samourai.sentinel.BuildConfig
 import com.samourai.sentinel.api.okHttp.await
 import com.samourai.sentinel.core.SentinelState
+import com.samourai.sentinel.data.AddressTypes
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
@@ -47,6 +48,9 @@ open class ApiService {
     lateinit var client: OkHttpClient
     private val  JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     private val HARDENED = 2147483648
+
+    /** See [rescanPubKey] - a cold import on a busy Dojo can run for minutes. */
+    private val RESCAN_TIMEOUT_MINUTES = 10L
 
 
     init {
@@ -209,6 +213,78 @@ open class ApiService {
             .build()
 
         return client.newCall(request).await()
+    }
+
+    /**
+     * Asks the connected Dojo to (re)import [pubKey] and scan the chain for it.
+     *
+     * Dojo's `POST /xpub` with `type=restore` runs restoreHdAccount(), which
+     * calls importHDAccount() whether or not the node already tracks the key -
+     * so this both registers a public key the Dojo has never seen and rescans
+     * one it already knows. That is the fix for a third-party Dojo returning an
+     * empty balance because it was never tracking the key in the first place.
+     *
+     * The route is behind the ordinary pairing API key (not Dojo's admin
+     * profile, which gates /support/xpub/:xpub/rescan), so this works when
+     * paired to someone else's node.
+     *
+     * The response only comes back once the Dojo has finished scanning, hence
+     * the dedicated timeout - the shared client allows 60s, which a cold import
+     * on a busy node routinely exceeds.
+     */
+    suspend fun rescanPubKey(pubKey: String, addressType: AddressTypes?): Response =
+        withContext(Dispatchers.IO) {
+            buildClient(excludeAuthenticator = true)
+            val rescanClient = client.newBuilder()
+                .connectTimeout(120, TimeUnit.SECONDS)
+                .readTimeout(RESCAN_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+                .callTimeout(RESCAN_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+                .build()
+
+            val formBody = FormBody.Builder()
+                .add("xpub", pubKey)
+                .add("type", "restore")
+                .apply {
+                    // A loose address is tracked without a derivation scheme;
+                    // sending one would have Dojo treat it as an HD account.
+                    if (addressType != null && addressType != AddressTypes.ADDRESS) {
+                        add("segwit", dojoSegwitParam(pubKey, addressType))
+                    }
+                }
+                .build()
+
+            val request = Request.Builder()
+                .url("${getAPIUrl()}/xpub")
+                .post(formBody)
+                .build()
+
+            rescanClient.newCall(request).await()
+        }
+
+    /**
+     * The `segwit` form value Dojo expects for [addressType].
+     *
+     * This has to agree with what [importXpub] sent when the key was first
+     * added: Dojo's derivationOverrideCheck() deletes and re-imports the
+     * account when the scheme differs from the one it already tracks, and
+     * rejects a locked account outright, so a mismatch here quietly turns a
+     * rescan into a re-derivation under a different scheme.
+     *
+     * Dojo lowercases the value and treats anything that is not "bip49" or
+     * "bip84" as BIP44, which is why BIP44 is sent as an empty string.
+     */
+    private fun dojoSegwitParam(pubKey: String, addressType: AddressTypes): String {
+        val xpub = XPUB(pubKey)
+        xpub.decode()
+        // Post-mix accounts are BIP84 whatever the locally recorded type says -
+        // the same special case importXpub() applies when adding the key.
+        if ((xpub.child + HARDENED).toString() == "2147483646")
+            return "bip84"
+        return when (addressType) {
+            AddressTypes.BIP84 -> "bip84"
+            AddressTypes.BIP49 -> "bip49"
+            else -> ""
+        }
     }
 
     suspend fun fetchAddressForSweep(address: String): MutableList<UnspentOutput> {
