@@ -219,7 +219,7 @@
       above).
     -->
     <string name="balance_query_help_title" translatable="false">Help querying correct balance</string>
-    <string name="balance_query_help_message" translatable="false">If your balance is not showing up, you may need to rescan your xpub in the Dojo that you are connected to. If it is your own Dojo, you can do this within the Dojo Maintenance Tool. If it is someone else\'s Dojo, visit %1$s and find the Dojo you\'re connected to, then follow the steps there under &quot;Rescan XPUB&quot;.</string>
+    <string name="balance_query_help_message" translatable="false">If your balance is not showing up, the Dojo you are connected to may not be tracking your public key yet.\n\nIn Sentinel: edit the collection, tap the public key, and choose &quot;Rescan on Dojo&quot;. That asks the connected Dojo to import the key and scan the chain for it, and it works on someone else\'s Dojo too.\n\nIf that does not help and it is your own Dojo, you can also rescan from the Dojo Maintenance Tool. For a community Dojo, visit %1$s and find the Dojo you\'re connected to, then follow the steps there under &quot;Rescan XPUB&quot;.</string>
     <string name="copy_dojo_bay_link" translatable="false">Copy Dojo Bay link</string>
     <string name="loading">loading…</string>
     <string name="tor_initializing">Tor initializing</string>
@@ -348,6 +348,18 @@
     <string name="choose_collection">Choose collection</string>
     <string name="choose_pubkey">Choose Pubkey</string>
 
+
+    <!--
+      "Rescan on Dojo" for a single public key. Marked translatable="false" to
+      match the project's existing pattern of English fallbacks for newer
+      strings (see dojo_pairing_details above).
+    -->
+    <string name="rescan_pubkey_option" translatable="false">Rescan on Dojo</string>
+    <string name="rescan_pubkey_confirm_message" translatable="false">Ask the connected Dojo to import this public key and scan the chain for its history.\n\nUse this when a balance is missing or out of date - a Dojo that has never tracked this key will start tracking it now.\n\nThis can take several minutes on a busy node. You can leave this screen; the Dojo keeps scanning either way.</string>
+    <string name="rescan_pubkey_in_progress" translatable="false">Asking the Dojo to rescan… this can take several minutes.</string>
+    <string name="rescan_pubkey_done" translatable="false">The Dojo finished scanning this public key. Balances refresh when you leave this screen.</string>
+    <string name="rescan_pubkey_still_running" translatable="false">Still scanning on the Dojo. It carries on in the background - check the balance again in a few minutes.</string>
+    <string name="rescan_pubkey_failed" translatable="false">The Dojo could not rescan this public key: %1$s</string>
 
     <string name="utxo_details_label_title" translatable="false">Label</string>
     <string name="utxo_label_empty_hint" translatable="false">Tap to add label</string>

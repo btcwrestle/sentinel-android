@@ -44,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
 
 
@@ -318,38 +319,22 @@ class CollectionEditActivity : SentinelActivity() {
             )
         }
 
-        val items =
-            if (viewModel.getCollection().value!!.isImportFromWallet)
-                arrayListOf("View Master Fingerprint","Delete")
-            else
-                arrayListOf("Edit","View Master Fingerprint","Delete")
         pubKeyAdapter.setOnEditClickListener { i, pubKeyModel ->
+            // Label -> action, so adding an entry can't shift the index mapping.
+            val options = buildList<Pair<String, () -> Unit>> {
+                if (!viewModel.getCollection().value!!.isImportFromWallet)
+                    add("Edit" to { edit(pubKeyModel, i) })
+                add("View Master Fingerprint" to { editFingerprint(pubKeyModel, i) })
+                add(getString(R.string.rescan_pubkey_option) to { confirmRescan(pubKeyModel) })
+                add("Delete" to { delete(i, pubKeyModel) })
+            }
             MaterialAlertDialogBuilder(this)
                 .setItems(
-                    items.toTypedArray()
+                    options.map { it.first }.toTypedArray()
                 ) { _, which ->
-                    when (which) {
-                        0 -> {
-                            if (!viewModel.getCollection().value!!.isImportFromWallet)
-                                edit(pubKeyModel, i)
-                            else
-                                editFingerprint(pubKeyModel, i)
-                        }
-                        1 -> {
-                            if (!viewModel.getCollection().value!!.isImportFromWallet)
-                                editFingerprint(pubKeyModel, i)
-                            else
-                                delete(i, pubKeyModel)
-                        }
-                        2 -> {
-                            if (!viewModel.getCollection().value!!.isImportFromWallet)
-                                delete(i, pubKeyModel)
-                        }
-                    }
+                    options[which].second()
                 }
                 .setTitle(getString(R.string.options))
-                .setOnDismissListener {
-                }
                 .show()
         }
 
@@ -391,6 +376,85 @@ class CollectionEditActivity : SentinelActivity() {
             buttonLabel = "Save",
             isEditable = !viewModel.getCollection().value?.isImportFromWallet!!
         )
+    }
+
+    /**
+     * "Rescan on Dojo" for a single public key.
+     *
+     * Dojo's restore import is the only rescan a paired wallet can trigger on
+     * someone else's node - /support/xpub/:xpub/rescan needs that node's admin
+     * profile - and it doubles as the way to get an untracked key registered.
+     */
+    private fun confirmRescan(pubKeyModel: PubKeyModel) {
+        if (!prefs.isAPIEndpointEnabled()) {
+            this.showFloatingSnackBar(
+                binding.collectionDetailsRootLayout,
+                text = "Connect a Dojo before rescanning",
+                duration = Snackbar.LENGTH_SHORT
+            )
+            return
+        }
+        this.confirm(
+            label = getString(R.string.rescan_pubkey_option),
+            message = getString(R.string.rescan_pubkey_confirm_message),
+            positiveText = "Rescan",
+            negativeText = "Cancel",
+            onConfirm = { confirmed -> if (confirmed) startRescan(pubKeyModel) }
+        )
+    }
+
+    private fun startRescan(pubKeyModel: PubKeyModel) {
+        val apiService: ApiService by inject(ApiService::class.java)
+
+        val progress = MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.rescan_pubkey_option))
+            .setMessage(getString(R.string.rescan_pubkey_in_progress))
+            .setCancelable(false)
+            .show()
+
+        // apiScope, not lifecycleScope: the Dojo keeps scanning regardless, and
+        // cancelling the call on rotation would only lose the result.
+        apiScope.launch {
+            val message = try {
+                val response = apiService.rescanPubKey(pubKeyModel.pubKey, pubKeyModel.type)
+                val body = response.body?.string()
+                if (response.isSuccessful && body != null &&
+                    JSONObject(body).optString("status") == "ok"
+                ) {
+                    needCollectionRefresh = true
+                    getString(R.string.rescan_pubkey_done)
+                } else {
+                    getString(R.string.rescan_pubkey_failed, dojoErrorOf(response.code, body))
+                }
+            } catch (e: java.io.InterruptedIOException) {
+                // Covers OkHttp's callTimeout ("timeout") and socket timeouts
+                // alike. The Dojo carries on scanning after we stop waiting, so
+                // this is "check back later", not a failure.
+                getString(R.string.rescan_pubkey_still_running)
+            } catch (e: Exception) {
+                getString(R.string.rescan_pubkey_failed, e.message ?: e.toString())
+            }
+
+            withContext(Dispatchers.Main) {
+                if (isFinishing || isDestroyed) return@withContext
+                progress.dismiss()
+                MaterialAlertDialogBuilder(this@CollectionEditActivity)
+                    .setTitle(getString(R.string.rescan_pubkey_option))
+                    .setMessage(message)
+                    .setPositiveButton(getString(R.string.ok)) { d, _ -> d.dismiss() }
+                    .show()
+            }
+        }
+    }
+
+    /** Dojo reports failures as `{"status":"error","error":"..."}`. */
+    private fun dojoErrorOf(code: Int, body: String?): String {
+        if (body.isNullOrBlank()) return "HTTP $code"
+        return try {
+            JSONObject(body).optString("error").ifBlank { "HTTP $code" }
+        } catch (e: Exception) {
+            "HTTP $code"
+        }
     }
 
     override fun onDestroy() {
