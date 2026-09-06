@@ -30,7 +30,7 @@ import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
-import com.samourai.sentinel.ui.views.BalanceHelpDialog
+import com.samourai.sentinel.ui.dojo.PubKeyRescanner
 import com.samourai.sentinel.ui.views.LockScreenDialog
 import com.samourai.sentinel.ui.views.alertWithInput
 import com.samourai.sentinel.ui.views.confirm
@@ -185,9 +185,17 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
-        findPreference<Preference>("helpBalanceQuery")
+        findPreference<Preference>("rescanXpub")
                 ?.setOnPreferenceClickListener {
-                    BalanceHelpDialog.show(requireContext())
+                    // No collection context here, so rescan every public key
+                    // the app knows about - this entry point exists for the
+                    // "my balance is wrong and I don't know which key" case.
+                    val collections = collectionRepository.pubKeyCollections
+                    PubKeyRescanner.confirmAndRescan(
+                        requireActivity() as SentinelActivity,
+                        collections.flatMap { it.pubs },
+                        collections.map { it.id }
+                    )
                     true
                 }
 
