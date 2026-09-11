@@ -38,3 +38,6 @@ app/staging/
 app/output.json
 
 .vscode/
+*.keystore
+*.b64
+*.out
