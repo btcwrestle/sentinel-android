@@ -13,6 +13,7 @@ import com.samourai.sentinel.core.access.AccessFactory
 import com.samourai.sentinel.data.db.SentinelCollectionStore
 import com.samourai.sentinel.data.db.SentinelRoomDb
 import com.samourai.sentinel.data.repository.CollectionRepository
+import com.samourai.sentinel.data.repository.Bip329Exporter
 import com.samourai.sentinel.data.repository.Bip329Importer
 import com.samourai.sentinel.data.repository.LabelRepository
 import com.samourai.sentinel.data.repository.ExchangeRateRepository
@@ -78,6 +79,7 @@ class SentinelApplication : Application() {
             single { CollectionRepository() }
             single { LabelRepository() }
             single { Bip329Importer() }
+            single { Bip329Exporter() }
             single { ExchangeRateRepository() }
             single { ExplorerRepository() }
             single { FeeRepository() }
