@@ -22,6 +22,9 @@ import com.samourai.sentinel.R
 import com.samourai.sentinel.core.access.AccessFactory
 import com.samourai.sentinel.data.db.dao.TxDao
 import com.samourai.sentinel.data.db.dao.UtxoDao
+import com.samourai.sentinel.data.repository.Bip329Exporter
+import com.samourai.sentinel.data.repository.Bip329Importer
+import com.samourai.sentinel.data.repository.ImportResult
 import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.data.repository.ExchangeRateRepository
 import com.samourai.sentinel.tor.SentinelTorManager
@@ -47,11 +50,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
+import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
 import java.io.IOException
+import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.OutputStreamWriter
+import java.io.PrintWriter
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -66,6 +72,8 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private val collectionRepository: CollectionRepository by inject(CollectionRepository::class.java);
     private val exchangeRateRepository: ExchangeRateRepository by inject(ExchangeRateRepository::class.java);
     private val explorerRepository: ExplorerRepository by inject(ExplorerRepository::class.java);
+    private val bip329Importer: Bip329Importer by inject(Bip329Importer::class.java);
+    private val bip329Exporter: Bip329Exporter by inject(Bip329Exporter::class.java);
     private val dojoUtility: DojoUtility by inject(DojoUtility::class.java);
     private val settingsScope = CoroutineScope(context = Dispatchers.Main)
     private var exportedBackUp: String? = null
@@ -201,13 +209,23 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     export()
                     true
                 }
+        findPreference<Preference>("importLabels")
+                ?.setOnPreferenceClickListener {
+                    importLabels()
+                    true
+                }
+        findPreference<Preference>("exportLabels")
+                ?.setOnPreferenceClickListener {
+                    exportLabels()
+                    true
+                }
     }
 
     private fun sendBackupToSupport() {
         val payload: JSONObject = ExportImportUtil().makeSupportBackup()
 
         val email = Intent(Intent.ACTION_SEND)
-        email.putExtra(Intent.EXTRA_EMAIL, arrayOf("help@samourai.support"))
+        email.putExtra(Intent.EXTRA_EMAIL, arrayOf("support@samourai.io"))
         email.putExtra(Intent.EXTRA_SUBJECT, "Sentinel support backup")
         email.putExtra(Intent.EXTRA_TEXT, payload.toString())
         email.type = "message/rfc822"
@@ -437,6 +455,78 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
     }
 
+    /**
+     * BIP-329 label import: pick a .jsonl file via SAF, merge into the
+     * label tables (network-scoped), then report the counts.
+     */
+    private fun importLabels() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        // .jsonl has no reliably-registered MIME type across providers,
+        // so accept anything and filter with EXTRA_MIME_TYPES.
+        intent.type = "*/*"
+        intent.putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/json", "text/plain", "application/octet-stream")
+        )
+        startActivityForResult(intent, REQ_CODE_IMPORT_LABELS)
+    }
+
+    private fun exportLabels() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        intent.type = "application/json"
+        intent.putExtra(Intent.EXTRA_TITLE, "labels.jsonl")
+        startActivityForResult(intent, REQ_CODE_EXPORT_LABELS)
+    }
+
+    private fun importLabelsFrom(uri: Uri) {
+        settingsScope.launch {
+            try {
+                val result: ImportResult = withContext(Dispatchers.IO) {
+                    requireContext().contentResolver.openInputStream(uri)!!.use { input ->
+                        bip329Importer.import(BufferedReader(InputStreamReader(input)))
+                    }
+                }
+                MaterialAlertDialogBuilder(requireContext())
+                        .setTitle("Labels imported")
+                        .setMessage(
+                                "Imported: ${result.imported}\n" +
+                                        "Updated: ${result.updated}\n" +
+                                        "Skipped: ${result.skipped}"
+                        )
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show()
+            } catch (ex: Exception) {
+                (activity as AppCompatActivity).showFloatingSnackBar(
+                        parent_view = requireView(),
+                        text = "Label import failed : $ex"
+                )
+            }
+        }
+    }
+
+    private fun exportLabelsTo(uri: Uri) {
+        settingsScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    requireContext().contentResolver.openOutputStream(uri)!!.use { output ->
+                        bip329Exporter.export(PrintWriter(output))
+                    }
+                }
+                (activity as AppCompatActivity).showFloatingSnackBar(
+                        parent_view = requireView(),
+                        text = "Labels exported"
+                )
+            } catch (ex: Exception) {
+                (activity as AppCompatActivity).showFloatingSnackBar(
+                        parent_view = requireView(),
+                        text = "Label export failed : $ex"
+                )
+            }
+        }
+    }
+
     override fun onDestroy() {
         settingsScope.cancel()
         super.onDestroy()
@@ -445,6 +535,18 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_CODE_IMPORT_LABELS) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.data != null) {
+                importLabelsFrom(data.data!!)
+            }
+            return
+        }
+        if (requestCode == REQ_CODE_EXPORT_LABELS) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.data != null) {
+                exportLabelsTo(data.data!!)
+            }
+            return
+        }
         if (requestCode == REQ_CODE_WRITE_BACKUP) {
             when (resultCode) {
                 Activity.RESULT_OK -> if (data != null
@@ -476,5 +578,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
     companion object {
         const val REQ_CODE_WRITE_BACKUP = 12
+        const val REQ_CODE_IMPORT_LABELS = 13
+        const val REQ_CODE_EXPORT_LABELS = 14
     }
 }
