@@ -1,0 +1,14 @@
+{"type":"output","ref":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6:0","label":"postmix","origin":"[f79a0d3d/84'/0'/0']"}
+{"type":"output","ref":"A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D7:1","label":"change"}
+{"type":"tx","ref":"C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0","label":"withdrawal"}
+{"type":"addr","ref":"bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjtx0v3q","label":"cold storage"}
+{"type":"addr","ref":"tb1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjtx0v3q","label":"testnet address"}
+{"type":"xpub","ref":"xpub6BgBge6esM6jW6g5G6J5G6K5G6J5G6K5G6J5G6K5G6J5G6K5G6J5G6K5G6J5G6K5G6","label":"main wallet","origin":"[f79a0d3d/84'/0'/0']"}
+{"type":"xpub","ref":"tpubD6NzVbkrYhZ4Wa5aQmT2TfWd5Wv5VvF3mNfA1B2C3D4E5F6A7B8C9D0E1F2","label":"test wallet"}
+{"type":"pubkey","ref":"02A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6","label":"counterparty"}
+{"type":"input","ref":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6:0","label":"spent from mix"}
+{"type":"banana","ref":"whatever","label":"not a real type"}
+{"type":"output","ref":"deadbeef:0","label":"short txid"}
+{"type":"output","ref":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6:zz","label":"bad vout"}
+{"type":"tx","ref":"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}
+{"type":"tx","ref":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","label":""}
