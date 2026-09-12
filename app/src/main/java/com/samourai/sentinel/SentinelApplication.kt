@@ -84,6 +84,7 @@ class SentinelApplication : Application() {
             factory { SentinelRoomDb.getDatabase(applicationContext).txDao() }
             factory { SentinelRoomDb.getDatabase(applicationContext).utxoDao() }
             factory { SentinelRoomDb.getDatabase(applicationContext).utxoLabelDao() }
+            factory { SentinelRoomDb.getDatabase(applicationContext).labelEntryDao() }
         }
 
         startKoin {
