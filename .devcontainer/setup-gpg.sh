@@ -11,5 +11,6 @@ default-cache-ttl 3600
 max-cache-ttl 7200
 EOF
   gpg-connect-agent reloadagent /bye
+  grep -q "GPG_TTY" ~/.bashrc 2>/dev/null || echo "export GPG_TTY=$(tty)" >> ~/.bashrc
   echo "GPG: signing enabled with $KEYID"
 fi

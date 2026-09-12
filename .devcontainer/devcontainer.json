@@ -1,5 +1,6 @@
 {
   "name": "sentinel-android",
   "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "postCreateCommand": "bash .devcontainer/setup-toolchain.sh",
   "postStartCommand": "bash .devcontainer/setup-gpg.sh"
 }
