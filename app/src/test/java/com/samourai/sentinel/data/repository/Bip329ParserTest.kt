@@ -9,7 +9,8 @@ import org.junit.Test
 /**
  * Regression suite over the synthetic fixture in
  * src/test/resources/bip329/sample.jsonl. Fixture line order is
- * load-bearing: tests index into it. 8 lines parse, 6 are rejected.
+ * load-bearing: tests index into it. 8 lines carry usable labels,
+ * 5 are rejected, 1 has no label field (ignored per BIP-329).
  */
 class Bip329ParserTest {
 
@@ -22,10 +23,11 @@ class Bip329ParserTest {
             .filter { it.isNotBlank() }
 
     @Test
-    fun fixtureParsesEightRecordsAndRejectsSix() {
-        val parsed = lines().mapNotNull { Bip329Parser.parse(it, network, 0L) }
-        assertEquals(8, parsed.size)
-        assertEquals(6, lines().size - parsed.size)
+    fun fixtureCountsAreEightUsableFiveRejectedOneIgnored() {
+        val results = lines().map { Bip329Parser.parse(it, network, 0L) }
+        assertEquals(8, results.count { it != null && it !is Bip329Parser.Parsed.Ignored })
+        assertEquals(5, results.count { it == null })
+        assertEquals(1, results.count { it is Bip329Parser.Parsed.Ignored })
     }
 
     @Test
@@ -76,11 +78,18 @@ class Bip329ParserTest {
     }
 
     @Test
+    fun absentLabelIsIgnoredPerBip329() {
+        // BIP-329: an omitted label means "do not alter" — a valid
+        // metadata-only line, not an error.
+        val p = Bip329Parser.parse(lines()[12], network, 0L)
+        assertTrue(p is Bip329Parser.Parsed.Ignored)
+    }
+
+    @Test
     fun malformedRecordsAreRejected() {
         assertNull(Bip329Parser.parse(lines()[9], network, 0L))   // unknown type
-        assertNull(Bip329Parser.parse(lines()[10], network, 0L)) // txid too short
-        assertNull(Bip329Parser.parse(lines()[11], network, 0L)) // non-numeric vout
-        assertNull(Bip329Parser.parse(lines()[12], network, 0L))  // missing label field
+        assertNull(Bip329Parser.parse(lines()[10], network, 0L))  // txid too short
+        assertNull(Bip329Parser.parse(lines()[11], network, 0L))  // non-numeric vout
     }
 
     @Test

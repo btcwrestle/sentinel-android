@@ -3,18 +3,25 @@ package com.samourai.sentinel.data.repository
 import com.samourai.sentinel.data.db.entity.LabelEntry
 import com.samourai.sentinel.data.db.entity.LabelType
 import com.samourai.sentinel.data.db.entity.UtxoLabel
+import org.json.JSONException
 import org.json.JSONObject
 
 /**
  * Pure BIP-329 JSONL line parsing. No Android, Koin or database
  * dependencies, so it is unit-testable on the JVM.
  *
+ * Semantics:
  *  - "output" records become Parsed.Output (utxo_labels row); all other
  *    types become Parsed.Other (label_entries row).
- *  - Records whose ref resolves to a different network than the active
- *    one return null (caller counts them as skipped).
- *  - A blank label still parses: the importer turns it into a delete
- *    (the "empty label = remove" convention from LabelRepository).
+ *  - ABSENT "label" field: Parsed.Ignored. Per BIP-329, an omitted label
+ *    means "do not alter" — Sparrow exports metadata-only lines
+ *    (value/height/time/rate/keypath) that are valid but carry no label
+ *    statement. The importer counts these as noLabel; nothing is written.
+ *  - EMPTY label (""): parses normally; the importer deletes any
+ *    existing record for the ref (explicit clear).
+ *  - Returns null for genuinely unusable lines: malformed JSON, missing
+ *    type/ref, unknown type, bad outpoint, or cross-network addr/xpub
+ *    ref. The importer counts null as skipped and logs the line number.
  *  - "origin" is opaque pass-through, emitted unchanged on export.
  */
 object Bip329Parser {
@@ -22,19 +29,29 @@ object Bip329Parser {
     sealed interface Parsed {
         data class Output(val label: UtxoLabel) : Parsed
         data class Other(val entry: LabelEntry) : Parsed
+        object Ignored : Parsed
     }
 
     fun parse(rawLine: String, network: String, now: Long): Parsed? {
         val line = rawLine.trim()
         if (line.isEmpty()) {
+            return Parsed.Ignored
+        }
+        val obj = try {
+            JSONObject(line)
+        } catch (ex: JSONException) {
             return null
         }
-        val obj = JSONObject(line)
-        if (!obj.has("type") || !obj.has("ref") || !obj.has("label")) {
+        if (!obj.has("type") || !obj.has("ref")) {
             return null
         }
         val type = LabelType.fromWire(obj.getString("type")) ?: return null
         val ref = obj.getString("ref").trim()
+        if (!obj.has("label")) {
+            // BIP-329: omitted label = "do not alter". Valid line, no
+            // label statement — not an error, not data.
+            return Parsed.Ignored
+        }
         val label = obj.getString("label")
         val origin = obj.optString("origin").takeIf { it.isNotBlank() }
 
@@ -52,9 +69,12 @@ object Bip329Parser {
                 )
             )
         } else {
+            // tx/pubkey/input refs are network-agnostic: keep the target
+            // network. addr/xpub refs resolving to the OTHER network are
+            // rejected; unclassifiable refs pass through unmodified.
             val net = deriveNetwork(type, ref) ?: network
             if (net != network) {
-                return null   // cross-network record
+                return null
             }
             Parsed.Other(
                 LabelEntry(
@@ -98,7 +118,7 @@ object Bip329Parser {
             "tpub", "upub", "vpub" -> "testnet"
             else -> null
         }
-        else -> null   // tx, pubkey, input: refs are network-agnostic
+        else -> null   // tx, pubkey, input: network-agnostic
     }
 
     private fun normalizeRef(type: LabelType, ref: String): String = when (type) {

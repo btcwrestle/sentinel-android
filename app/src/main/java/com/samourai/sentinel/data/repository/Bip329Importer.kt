@@ -10,18 +10,27 @@ import com.samourai.sentinel.data.db.entity.UtxoLabel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.koin.java.KoinJavaComponent.inject
+import timber.log.Timber
 import java.io.BufferedReader
 
-data class ImportResult(val imported: Int, val updated: Int, val skipped: Int)
+data class ImportResult(
+    val imported: Int,
+    val updated: Int,
+    val skipped: Int,
+    val noLabel: Int
+)
 
 /**
  * Imports BIP-329 JSONL label data. Line parsing lives in [Bip329Parser];
  * this class owns database merge semantics.
  *
- *  - "output" records land in utxo_labels; every other type in label_entries.
- *  - Merge-only: insert or update by primary key; never creates gaps.
- *  - A blank label deletes an existing record (empty label = remove,
- *    the same rule LabelRepository.setLabel uses).
+ *  - Lines the parser rejects (malformed JSON, missing/unknown type,
+ *    bad outpoint, cross-network ref): counted as skipped, with the
+ *    offending line number logged (visible via adb logcat on staging).
+ *  - ABSENT label field (Sparrow metadata lines) and blank lines:
+ *    counted as noLabel, never written, never deletes anything.
+ *    Per BIP-329, an omitted label means "do not alter".
+ *  - EMPTY label field: deletes an existing record for the ref, if any.
  *  - createdAt is preserved when a record already exists.
  *  - The whole batch applies inside one transaction: all-or-nothing.
  */
@@ -40,15 +49,21 @@ class Bip329Importer {
             var imported = 0
             var updated = 0
             var skipped = 0
+            var noLabel = 0
 
             val outputs = mutableListOf<UtxoLabel>()
             val others = mutableListOf<LabelEntry>()
 
-            reader.lineSequence().forEach { raw ->
-                when (val p = Bip329Parser.parse(raw, currentNetwork(), now)) {
-                    null -> skipped++
-                    is Bip329Parser.Parsed.Output -> outputs += p.label
-                    is Bip329Parser.Parsed.Other -> others += p.entry
+            reader.lineSequence().forEachIndexed { index, raw ->
+                val lineNo = index + 1
+                when (val parsed = Bip329Parser.parse(raw, currentNetwork(), now)) {
+                    null -> {
+                        Timber.w("BIP329 line %d rejected", lineNo)
+                        skipped++
+                    }
+                    Bip329Parser.Parsed.Ignored -> noLabel++
+                    is Bip329Parser.Parsed.Output -> outputs += parsed.label
+                    is Bip329Parser.Parsed.Other -> others += parsed.entry
                 }
             }
 
@@ -59,8 +74,6 @@ class Bip329Importer {
                         if (existing != null) {
                             utxoLabelDao.delete(row.network, row.txid, row.vout)
                             updated++
-                        } else {
-                            skipped++
                         }
                     } else {
                         if (existing == null) imported++ else updated++
@@ -75,8 +88,6 @@ class Bip329Importer {
                         if (existing != null) {
                             labelEntryDao.delete(row.network, row.type, row.ref)
                             updated++
-                        } else {
-                            skipped++
                         }
                     } else {
                         if (existing == null) imported++ else updated++
@@ -87,6 +98,6 @@ class Bip329Importer {
                 }
             }
 
-            ImportResult(imported, updated, skipped)
+            ImportResult(imported, updated, skipped, noLabel)
         }
 }
