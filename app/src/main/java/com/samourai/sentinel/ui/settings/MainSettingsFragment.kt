@@ -475,7 +475,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private fun exportLabels() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
         intent.addCategory(Intent.CATEGORY_OPENABLE)
-        intent.type = "application/json"
+        intent.type = "application/octet-stream"
         intent.putExtra(Intent.EXTRA_TITLE, "labels.jsonl")
         startActivityForResult(intent, REQ_CODE_EXPORT_LABELS)
     }
