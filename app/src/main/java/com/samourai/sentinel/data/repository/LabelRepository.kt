@@ -22,8 +22,9 @@ import org.koin.java.KoinJavaComponent.inject
  * survive backend refreshes.
  *
  * Storage invariants (enforced here so UI callers can be naive):
- *  - tx refs are stored lowercased; observeTxLabel lowercases its input.
- *  - addr refs are stored verbatim; observeAddrLabel does not alter input.
+ *  - tx refs are stored lowercased; observeTxLabel/setTxLabel normalize.
+ *  - addr refs are stored verbatim; observeAddrLabel passes input through.
+ *  - a blank label deletes the record (BIP329: empty label = remove).
  */
 class LabelRepository {
 
@@ -109,6 +110,14 @@ class LabelRepository {
         return result
     }
 
+    /**
+     * Sets, updates or removes (blank) a transaction label. Input txid is
+     * lowercased to match storage. Preserves createdAt and origin from an
+     * existing record (e.g. from a BIP329 import).
+     */
+    suspend fun setTxLabel(txid: String, label: String) =
+        setEntryLabel(LabelType.TX, txid.lowercase(), label)
+
     //
     // Address labels (label_entries, type "addr")
     //
@@ -119,4 +128,34 @@ class LabelRepository {
      */
     fun observeAddrLabel(address: String): LiveData<LabelEntry?> =
         entryDao.observe(currentNetwork(), LabelType.ADDR.wire, address)
+
+    /**
+     * Sets, updates or removes (blank) an address label. Ref stored
+     * verbatim, matching importer normalization rules.
+     */
+    suspend fun setAddrLabel(address: String, label: String) =
+        setEntryLabel(LabelType.ADDR, address, label)
+
+    private suspend fun setEntryLabel(type: LabelType, ref: String, label: String) =
+        withContext(Dispatchers.IO) {
+            val network = currentNetwork()
+            val trimmed = label.trim()
+            if (trimmed.isEmpty()) {
+                entryDao.delete(network, type.wire, ref)
+            } else {
+                val now = System.currentTimeMillis()
+                val existing = entryDao.find(network, type.wire, ref)
+                entryDao.upsert(
+                    LabelEntry(
+                        network = network,
+                        type = type.wire,
+                        ref = ref,
+                        label = trimmed,
+                        origin = existing?.origin,
+                        createdAt = existing?.createdAt ?: now,
+                        updatedAt = now
+                    )
+                )
+            }
+        }
 }
