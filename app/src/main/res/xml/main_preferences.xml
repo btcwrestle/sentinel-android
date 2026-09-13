@@ -20,14 +20,14 @@
             app:key="scramblePin" />
 
         <CheckBoxPreference
-            android:title="@string/options_haptic"
+            app:title="@string/options_haptic"
             android:summary="@string/options_haptic_2"
             app:dependency="pinEnabled"
             android:key="haptic"
             android:defaultValue="false" />
 
         <CheckBoxPreference
-            android:title="@string/street_mode"
+            app:title="@string/street_mode"
             android:summary="@string/hide_your_bitcoin_balance_from_prying_eyes"
             android:defaultValue="false"
             android:key="streetMode" />
@@ -92,6 +92,25 @@
             app:key="import"
             app:title="Import Sentinel Backup" />
 
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:allowDividerAbove="true"
+        app:allowDividerBelow="true"
+        app:title="Labels (BIP-329)">
+
+        <Preference
+            app:icon="@drawable/ic_file_import"
+            app:key="importLabels"
+            app:summary="Import wallet labels from a BIP-329 JSONL file (Sparrow-compatible)"
+            app:title="Import labels" />
+
+        <Preference
+            app:icon="@drawable/ic_file_export"
+            app:key="exportLabels"
+            app:summary="Export wallet labels as a BIP-329 JSONL file"
+            app:title="Export labels" />
 
     </PreferenceCategory>
 

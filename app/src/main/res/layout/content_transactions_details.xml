@@ -130,7 +130,49 @@
                     android:layout_marginTop="1dp"
                     android:background="@color/md_grey_800" />
 
-                <LinearLayout
+                                <LinearLayout
+                    android:id="@+id/txDetailsLabelRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:padding="@dimen/spacing_middle">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="start"
+                            android:layout_weight="1"
+                            android:text="Label" />
+
+                        <TextView
+                            android:id="@+id/txDetailsLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="end"
+                            android:layout_weight="1"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="end"
+                            android:paddingTop="6dp"
+                            android:textColor="@color/text_secondary"
+                            tools:text="postmix" />
+
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_margin="@dimen/spacing_middle"
+                        android:layout_marginTop="1dp"
+                        android:background="@color/md_grey_800" />
+
+                </LinearLayout>
+
+<LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"

@@ -19,6 +19,7 @@ import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.PubKeyModel
 import com.samourai.sentinel.data.Tx
 import com.samourai.sentinel.data.db.dao.TxDao
+import com.samourai.sentinel.data.repository.LabelRepository
 import com.samourai.sentinel.data.repository.TransactionsRepository
 import com.samourai.sentinel.ui.fragments.TransactionsDetailsBottomSheet
 import com.samourai.sentinel.ui.utils.PrefsUtil
@@ -40,6 +41,7 @@ class TransactionsListFragment(
 
     private val transactionAdapter: TransactionAdapter = TransactionAdapter()
     private val prefs: PrefsUtil by KoinJavaComponent.inject(PrefsUtil::class.java)
+    private val labelRepository: LabelRepository by KoinJavaComponent.inject(LabelRepository::class.java)
 
     class TransactionsViewModel(val pubKeyCollection: PubKeyCollection, val position: Int) : ViewModel() {
         private fun getPubKeyModelByLabel(label: String): PubKeyModel {
@@ -106,6 +108,10 @@ class TransactionsListFragment(
 
         transactionViewModel.txLiveData.observe(this.viewLifecycleOwner) {
             transactionAdapter.submitList(it)
+        }
+
+        labelRepository.observeTxLabelMap().observe(this.viewLifecycleOwner) { map ->
+            transactionAdapter.txLabels = map
         }
     }
 

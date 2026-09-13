@@ -25,6 +25,7 @@ data class UtxoLabel(
     val txid: String,
     val vout: Int,
     val label: String,
+    val origin: String? = null,
     val createdAt: Long,
     val updatedAt: Long
 )
