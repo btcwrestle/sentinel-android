@@ -16,6 +16,7 @@ import com.samourai.sentinel.api.ApiService.ApiNotConfigured
 import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.data.Tx
 import com.samourai.sentinel.data.repository.ExchangeRateRepository
+import com.samourai.sentinel.data.repository.LabelRepository
 import com.samourai.sentinel.databinding.ContentTransactionsDetailsBinding
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.GenericBottomSheet
@@ -44,6 +45,7 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
     private val apiService: ApiService by inject(ApiService::class.java)
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
     private val exchangeRateRepository: ExchangeRateRepository by inject(ExchangeRateRepository::class.java)
+    private val labelRepository: LabelRepository by inject(LabelRepository::class.java)
     var job: Job? = null
 
     private var _binding: ContentTransactionsDetailsBinding? = null
@@ -72,12 +74,22 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
         setTx(tx)
         fetchFee()
 
+        labelRepository.observeTxLabel(tx.hash.split("-")[0]).observe(viewLifecycleOwner) { entry ->
+            if (entry != null) {
+                binding.txDetailsLabelRow.visibility = View.VISIBLE
+                binding.txDetailsLabel.text = entry.label
+            } else {
+                binding.txDetailsLabelRow.visibility = View.GONE
+            }
+        }
+
         binding.txDetailsBlockId.setOnClickListener { copyToClipBoard(binding.txDetailsBlockId) }
         binding.txDetailsConfirmation.setOnClickListener { copyToClipBoard(binding.txDetailsConfirmation) }
         binding.txDetailsFees.setOnClickListener { copyToClipBoard(binding.txDetailsFees) }
         binding.txDetailsHash.setOnClickListener { copyToClipBoard(binding.txDetailsHash) }
         binding.txDetailsFeeRate.setOnClickListener { copyToClipBoard(binding.txDetailsFeeRate) }
         binding.txDetailsAmount.setOnClickListener { copyToClipBoard(binding.txDetailsAmount) }
+        binding.txDetailsLabel.setOnClickListener { copyToClipBoard(binding.txDetailsLabel) }
     }
 
     private fun setTx(tx: Tx) {
