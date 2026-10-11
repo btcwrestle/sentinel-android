@@ -90,7 +90,13 @@ class WebSocketHandler : WebSocketListener() {
                         // for full bootstrap + SOCKS listener, then connect
                         // once under the same 5 s floor as before.
                         ensureScope().launch {
-                            if (SentinelTorManager.awaitTorReady()) {
+                            // #135 instrumentation: the fresh-launch capture
+                            // showed this await returning ~58 s after readiness
+                            // (expected <=250 ms). Log both ends so the next
+                            // capture names the delay mechanism with data.
+                            val ready = SentinelTorManager.awaitTorReady()
+                            Timber.i("tor-on await completed: ready=$ready")
+                            if (ready) {
                                 val now = System.currentTimeMillis()
                                 if (now - lastTorOnResetMs >= torResetFloorMs) {
                                     lastTorOnResetMs = now

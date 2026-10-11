@@ -203,12 +203,25 @@ class HomeViewModel : ViewModel() {
                     }
                 }
                 EnumTorState.ON -> {
-                    // #135: re-arm rounds deferred during the climb exactly
-                    // once ready (boot=100 AND SOCKS listener published).
-                    // launchSyncRound's coalescing + signature gates make a
-                    // repeat call a no-op.
-                    if (SentinelTorManager.isTorReady()) {
-                        launchSyncRound(ArrayList(repository.collectionsSnapshot()))
+                    // #135: re-arm rounds deferred during the climb. The
+                    // readiness check must be the AWAIT poll, not a
+                    // synchronous isTorReady(): the boot=100 STATE emission
+                    // can reach the main thread before LISTENERS assigns the
+                    // proxy (measured 1 ms apart, capture 1011 fresh-launch),
+                    // and after boot=100 no further ON emissions ever come -
+                    // a lost race would defer sync forever (observed: no
+                    // syncCollections round began; sync only ran via the
+                    // 18:08:57 resume trigger). awaitTorReady polls the
+                    // volatile proxy field directly, so ordering cannot lose.
+                    // Concurrent ON emissions collapse in launchSyncRound's
+                    // coalescing + signature gates.
+                    // viewModelScope: a bare launch here resolved to the
+                    // deprecated scope-less CoroutineContext launch and
+                    // failed the compile gate (HomeViewModel.kt:218).
+                    viewModelScope.launch {
+                        if (SentinelTorManager.awaitTorReady()) {
+                            launchSyncRound(ArrayList(repository.collectionsSnapshot()))
+                        }
                     }
                 }
                 EnumTorState.STOPPING -> Unit
