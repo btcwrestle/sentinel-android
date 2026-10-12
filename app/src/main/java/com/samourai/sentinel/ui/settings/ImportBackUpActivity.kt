@@ -505,7 +505,7 @@ class ImportBackUpActivity : SentinelActivity() {
                         setImportBusy(false)
                         this@ImportBackUpActivity.showFloatingSnackBar(
                             binding.importPayloadTextView.parent as ViewGroup,
-                            text = "Incorrect password, please try again.",
+                            text = "Import failed - check the password, or use the wallet's Pairing tool for watch-only setup.",
                             duration = Snackbar.LENGTH_SHORT
                         )
                         return@launch
