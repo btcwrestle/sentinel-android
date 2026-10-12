@@ -1,5 +1,6 @@
 package com.samourai.sentinel.data.repository
 
+import com.samourai.sentinel.data.db.entity.LabelType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -97,5 +98,31 @@ class Bip329ParserTest {
         val p = Bip329Parser.parse(lines()[13], network, 0L)
         assertNotNull(p)
         assertEquals("", (p as Bip329Parser.Parsed.Other).entry.label)
+    }
+
+    @Test
+    fun xpubWireRoundTripsThroughLabelType() {
+        // The wire token is "xpub" for BOTH key serializations - the
+        // fixture's testnet line is type:"xpub" with a tpub ref: the
+        // JSON type field, not the ref prefix, is what fromWire parses.
+        // Pin the token + roundtrip so the #64 delegation keeps
+        // classifying refs while the type stays stable.
+        assertEquals(LabelType.XPUB, LabelType.fromWire("xpub"))
+        assertEquals("xpub", LabelType.fromWire("xpub")!!.wire)
+        assertNull(LabelType.fromWire("banana"))
+    }
+
+    @Test
+    fun mixedCaseXpubRefClassifiesViaNetworkClassifier() {
+        // #64: classification delegates to the case-insensitive
+        // NetworkClassifier contract - a mixed-case xpub ref resolves to
+        // mainnet by its own verdict, where the old local table fell
+        // through to the target-network fallback by accident.
+        val line = "{\"type\":\"xpub\",\"ref\":\"XPUB661MyMwAeaAR\",\"label\":\"case probe\"}"
+        val p = Bip329Parser.parse(line, network, 0L)
+        assertNotNull(p)
+        val entry = (p as Bip329Parser.Parsed.Other).entry
+        assertEquals("mainnet", entry.network)
+        assertEquals("XPUB661MyMwAeaAR", entry.ref)
     }
 }
