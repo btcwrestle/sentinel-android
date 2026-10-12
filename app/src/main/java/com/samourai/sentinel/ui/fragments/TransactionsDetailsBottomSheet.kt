@@ -268,6 +268,13 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
     }
 
     private fun fetchFee() {
+        // #112: the completion lambda below can fire after the sheet is
+        // dismissed; requireContext() there would throw on the detached
+        // fragment (same class as the #111 advisory crash). Capture the
+        // app context at call time - fetchFee runs from onViewCreated,
+        // attachment proven - and the async path never touches the
+        // fragment lifecycle again.
+        val appContext = requireContext().applicationContext
         job = apiScope.launch(Dispatchers.IO) {
             try {
                 val response = apiService.getTx(tx.hash.split("-")[0])
@@ -302,7 +309,7 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
             if (it != null)
                 CoroutineScope(Dispatchers.Main).launch {
                     if (!(it is CancellationException))
-                        Toast.makeText(requireContext(), "Error: ${it.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(appContext, "Error: ${it.message}", Toast.LENGTH_SHORT).show()
                 }
         }
     }
