@@ -73,11 +73,15 @@ class BroadcastTx : SentinelActivity() {
         fun broadCast(): Job {
             return viewModelScope.launch(Dispatchers.IO + broadcastFailureHandler) {
                 hex.value?.let {
-                    try {
-                        apiService.broadcast(it)
-                    } catch (e: Exception) {
-                        throw CancellationException(e.message)
-                    }
+                    // #129: the old wrap (catch (Exception) { throw
+                    // CancellationException(e.message) }) laundered real failures -
+                    // type and stack destroyed, and a genuine failure became
+                    // indistinguishable from scope teardown. #126's
+                    // broadcastFailureHandler contains any escape, and the
+                    // consumer below reads the real cause from
+                    // invokeOnCompletion; genuine cancellation arrives as CE and
+                    // is guarded there.
+                    apiService.broadcast(it)
                 }
             }
         }
@@ -164,6 +168,10 @@ class BroadcastTx : SentinelActivity() {
                         bottomSheet.show(supportFragmentManager, bottomSheet.tag)
                         binding.hexTextView.text = ""
                         model.setHex("")
+                    } else if (it is CancellationException) {
+                        // #129: genuine scope teardown, not a broadcast failure -
+                        // nothing to report. Pre-de-laundering this arrived as the
+                        // laundered cause and toasted "Unable to broadcast".
                     } else {
                         Toast.makeText(
                                 applicationContext,
