@@ -1,5 +1,7 @@
 package com.samourai.sentinel.data.repository
 
+import com.samourai.sentinel.core.DerivedNetwork
+import com.samourai.sentinel.core.NetworkClassifier
 import com.samourai.sentinel.data.db.entity.LabelEntry
 import com.samourai.sentinel.data.db.entity.LabelType
 import com.samourai.sentinel.data.db.entity.UtxoLabel
@@ -113,10 +115,16 @@ object Bip329Parser {
                 || ref.startsWith("m") || ref.startsWith("n") || ref.startsWith("2") -> "testnet"
             else -> null
         }
-        LabelType.XPUB -> when (ref.take(4)) {
-            "xpub", "ypub", "zpub" -> "mainnet"
-            "tpub", "upub", "vpub" -> "testnet"
-            else -> null
+        // #64: xpub-family classification delegates to core.NetworkClassifier -
+        // one table, one contract (case-insensitive, UNKNOWN-never-mainnet per
+        // #42). The local duplicate here was case-sensitive: a mixed-case xpub
+        // ref only ever passed via the fallback-to-target-network below, never
+        // by its own verdict. Addresses stay local: NetworkClassifier's
+        // contract is xpub-family-only by design.
+        LabelType.XPUB -> when (NetworkClassifier.fromXpub(ref)) {
+            DerivedNetwork.MAINNET -> "mainnet"
+            DerivedNetwork.TESTNET -> "testnet"
+            DerivedNetwork.UNKNOWN -> null
         }
         else -> null   // tx, pubkey, input: network-agnostic
     }

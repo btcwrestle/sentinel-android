@@ -125,4 +125,15 @@ class Bip329ParserTest {
         assertEquals("mainnet", entry.network)
         assertEquals("XPUB661MyMwAeaAR", entry.ref)
     }
+
+    @Test
+    fun mixedCaseXpubRefOnTestnetTargetIsRejectedHonest() {
+        // #64 discrimination leg: the old case-sensitive table returned
+        // null for an "XPUB..." ref and the fallback-to-target-network
+        // passed it through on a testnet import; the delegation
+        // classifies the ref MAINNET and rejects it cross-network.
+        // Fails on master (fallback passes), passes on the delegation.
+        val line = "{\"type\":\"xpub\",\"ref\":\"XPUB661MyMwAeaAR\",\"label\":\"cross probe\"}"
+        assertNull(Bip329Parser.parse(line, "testnet", 0L))
+    }
 }
