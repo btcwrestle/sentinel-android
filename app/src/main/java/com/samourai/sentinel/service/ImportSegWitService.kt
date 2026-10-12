@@ -113,7 +113,9 @@ class ImportSegWitService : Service() {
                 // do not report (ladder precedent: ImportBackUpActivity).
                 throw e
             } catch (e: Exception) {
-                e.message?.let { failure(it) }
+                // #145: a null message must not silently skip the report -
+                // render the type when the message is absent.
+                failure(e.message ?: "${e::class.simpleName} (no message)")
                 e.printStackTrace()
             }
         }

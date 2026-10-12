@@ -97,6 +97,15 @@ class BroadcastTx : SentinelActivity() {
     private var hash = ""
     private lateinit var binding: LayoutBroadcastBottomSheetBinding
 
+    // #145: the file-import launch had no handler - a de-laundered escape
+    // (FileNotFoundException/IOException) would reach the process-killing
+    // default handler, which is exactly what the old CE wraps were
+    // suppressing. Handler first (#126-shape, BroadcastVm precedent above),
+    // then the wraps come off in onActivityResult.
+    private val fileImportHandler = CoroutineExceptionHandler { _, t ->
+        Timber.e(t, "File import failed outside the Exception wall")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = LayoutBroadcastBottomSheetBinding.inflate(layoutInflater)
@@ -271,35 +280,35 @@ class BroadcastTx : SentinelActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (data != null && data.data != null && data.data!!.path != null && requestCode == ImportBackUpActivity.REQUEST_FILE_CODE) {
             val job =
-                model.viewModelScope.launch(Dispatchers.Main) {
-                    try {
-                        val inputStream = contentResolver.openInputStream(data.data!!)
-                        val reader = BufferedReader(InputStreamReader(inputStream))
-                        val size = inputStream?.available()
-                        if (size != null) {
-                            if (size > 5e+6) {
-                                throw  IOException("File size is too large to open")
-                            }
+                // #145: the three CE wraps here laundered real failures into
+                // cancellation, and existed to suppress process death on a
+                // handler-less launch. Sequenced per #145: this launch now
+                // carries fileImportHandler (above), so the wraps come off and
+                // the real types flow - the size-guard IOException included.
+                // The job completes with the real cause; the CEH contains any
+                // escape, and the consumer below guards genuine teardown.
+                model.viewModelScope.launch(Dispatchers.Main + fileImportHandler) {
+                    val inputStream = contentResolver.openInputStream(data.data!!)
+                    val reader = BufferedReader(InputStreamReader(inputStream))
+                    val size = inputStream?.available()
+                    if (size != null) {
+                        if (size > 5e+6) {
+                            throw  IOException("File size is too large to open")
                         }
-                        var string = ""
-                        string = reader.buffered().readText()
-                        withContext(Dispatchers.Main) {
-                            validate(string)
-                        }
-                    } catch (fn: FileNotFoundException) {
-                        fn.printStackTrace()
-                        throw CancellationException((fn.message))
-                    } catch (ioe: IOException) {
-                        ioe.printStackTrace()
-                        throw CancellationException((ioe.message))
-                    } catch (ex: Exception) {
-                        ex.printStackTrace()
-                        throw CancellationException((ex.message))
+                    }
+                    var string = ""
+                    string = reader.buffered().readText()
+                    withContext(Dispatchers.Main) {
+                        validate(string)
                     }
                 }
             job.invokeOnCompletion {
-                if (it != null) {
-                    Toast.makeText(this, "Error ${it.message}", Toast.LENGTH_LONG).show()
+                if (it != null && it !is CancellationException) {
+                    // #145: report the real cause - the type name keeps a
+                    // null-message failure honest (previously rendered
+                    // "Error null"). Genuine scope teardown is not an error.
+                    val reason = it.message ?: it::class.simpleName ?: "unknown error"
+                    Toast.makeText(this, "Error: $reason", Toast.LENGTH_LONG).show()
                 }
             }
         }
