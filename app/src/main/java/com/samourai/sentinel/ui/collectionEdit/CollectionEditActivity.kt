@@ -162,7 +162,9 @@ class CollectionEditActivity : SentinelActivity() {
                         isEditNewPub = true
                         newPubEdit = newPubKey!!
                     }
-                    viewModel.setPubKeys(model.pubs.apply { add(newPubKey!!) })
+                    // #93: copy BEFORE the add - the old handoff mutated the
+                    // findById-live list in place on the way into the VM.
+                    viewModel.setPubKeys(ArrayList(model.pubs).apply { add(newPubKey!!) })
                     importWalletIfSegwit(newPubKey)
                 } else {
                     viewModel.setPubKeys(model.pubs)
@@ -324,16 +326,21 @@ class CollectionEditActivity : SentinelActivity() {
                 onConfirm = { confirmed ->
                     if (confirmed) {
                         val collection = viewModel.getCollection().value ?: return@confirm
+                        // #93: index reads the VM's scratch - the screen's
+                        // current state. The live collection's pubs is a
+                        // frozen copy of the last save; an added-but-unsaved
+                        // key would indexOf() to -1 and OOB here.
+                        val pubs = viewModel.getPubKeys().value!!
                         apiScope.launch(context = Dispatchers.IO) {
                             transactionsRepository.removeTxsRelatedToPubKey(
-                                collection.pubs[collection.pubs.indexOf(pubKeyModel)],
+                                pubs[pubs.indexOf(pubKeyModel)],
                                 collection.id
                             )
                             needCollectionRefresh = true
                             withContext(Dispatchers.Main) {
                                 setResult(Activity.RESULT_OK)
                             }
-                            viewModel.removePubKey(collection.pubs.indexOf(pubKeyModel))
+                            viewModel.removePubKey(pubs.indexOf(pubKeyModel))
                             pubKeyAdapter.update(viewModel.getPubKeys().value!!)
                             //TODO: find a better way to refresh the pubkey list
                             binding.pubKeyRecyclerView.post {
