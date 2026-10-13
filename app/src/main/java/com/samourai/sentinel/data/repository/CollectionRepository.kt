@@ -18,7 +18,12 @@ import kotlin.collections.ArrayList
 
 class CollectionRepository {
 
-    val pubKeyCollections: ArrayList<PubKeyCollection> = arrayListOf()
+    // #93-C: field sealed - census (post-#97, re-verified post-#151,
+    // main+test) has zero external references; access goes through
+    // collectionsSnapshot(), findById(), and the locked mutators below.
+    // Sealing makes the #89 lock-jumping shape structurally impossible
+    // in future code.
+    private val pubKeyCollections: ArrayList<PubKeyCollection> = arrayListOf()
     val collectionsLiveData: MutableLiveData<ArrayList<PubKeyCollection>> = MutableLiveData()
 
     /**
