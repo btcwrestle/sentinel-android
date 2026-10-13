@@ -161,26 +161,77 @@ class NetworkActivity : SentinelActivity() {
                 }
             }
 
-            toImport.forEach { (pubKey, purpose) ->
+            // #98: an empty wallet has nothing to register - skip the
+            // burst UI with no noise; the pairing sheet already showed
+            // its own progress.
+            if (toImport.isEmpty()) {
+                return@launch
+            }
+            // #98: the burst ran fire-and-forget with zero view writes -
+            // the flow-1 device observation ("no progress indication at
+            // any point", #97 leg). Per-item progress on the Dojo row,
+            // completion tally at the end; setDojoStatus() owns the row's
+            // rest state.
+            var registered = 0
+            var failed = 0
+            toImport.forEachIndexed { index, (pubKey, purpose) ->
                 // #85: re-check per iteration - the pairing can be erased
                 // mid-loop, and importXpub -> buildClient -> getAPIUrl
                 // throws ApiNotConfigured once the endpoints are gone.
                 if (!prefsUtil.isAPIEndpointEnabled()) {
-                    return@forEach
+                    return@forEachIndexed
                 }
+                // #98: main-confined, destroy-guarded view write; the
+                // registration work itself is untouched.
+                showKeyRegistrationProgress(index + 1, toImport.size)
                 try {
                     apiService.importXpub(pubKey, purpose)
+                    registered++
                 } catch (e: ApiService.ApiNotConfigured) {
                     // #85: ApiNotConfigured is a Throwable, NOT an
                     // Exception - the generic catch below could never
                     // intercept it, so it escaped the launch and killed
                     // the process.
                     Timber.e(e, "Dojo pairing gone, skipping remaining xpub imports")
-                    return@forEach
+                    return@forEachIndexed
                 } catch (e: Exception) {
                     Log.d("NetworkActivity", "Error: ${e}")
+                    failed++
                 }
             }
+            showKeyRegistrationResult(registered, failed, toImport.size)
+        }
+    }
+
+    // #98: per-item progress on the Dojo status row - the surface the
+    // pairing flow already owns. Main-confined like every view write on
+    // this screen (setTorConnectionState precedent); destroy-guarded
+    // because the burst runs on apiScope and can outlive the screen by
+    // design - #85's containment semantics are untouched, only the view
+    // write skips when the screen is gone.
+    private fun showKeyRegistrationProgress(done: Int, total: Int) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            dojoConnectionStatus?.text = "Registering keys with Dojo\u2026 $done of $total"
+        }
+    }
+
+    // #98: completion report - restore the row, then surface the tally.
+    // Partial registration (per-item failures, or the #85 pairing-erased
+    // mid-loop skip) gets the retry note - the import screen's
+    // partial-tally vocabulary (#48/#125), same shape.
+    private fun showKeyRegistrationResult(registered: Int, failed: Int, total: Int) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            setDojoStatus()
+            val note = if (failed > 0 || registered < total)
+                " ($registered of $total keys registered - retry pairing to re-register)"
+            else
+                " ($registered keys registered)"
+            this@NetworkActivity.showFloatingSnackBar(
+                findViewById(R.id.network_dojo_layout),
+                text = "Dojo connected$note"
+            )
         }
     }
 
