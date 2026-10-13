@@ -28,6 +28,7 @@ import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
 import com.samourai.sentinel.ui.views.confirm
 import com.samourai.sentinel.util.apiScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.launch
 import org.koin.java.KoinJavaComponent.inject
@@ -151,55 +152,93 @@ class NetworkActivity : SentinelActivity() {
         if (!prefsUtil.isAPIEndpointEnabled()) {
             return
         }
+        // #158/#159: single-flight - one live burst at a time. The pairing
+        // sheet can fire its listener more than once per pairing (#159);
+        // a second launch while one is live is skipped, never interleaved
+        // onto the same row.
+        if (!KeyRegistrationBurst.markStarted()) {
+            return
+        }
         apiScope.launch(networkExceptionHandler) {
-            val toImport = mutableListOf<Pair<String, String>>()
-
-            repository.collectionsSnapshot().forEach { collection ->
-                collection.pubs.forEach { pub ->
-                    val purpose = "bip${pub.getPurpose()}"
-                    toImport.add(pub.pubKey to purpose)
-                }
-            }
-
-            // #98: an empty wallet has nothing to register - skip the
-            // burst UI with no noise; the pairing sheet already showed
-            // its own progress.
-            if (toImport.isEmpty()) {
-                return@launch
-            }
-            // #98: the burst ran fire-and-forget with zero view writes -
-            // the flow-1 device observation ("no progress indication at
-            // any point", #97 leg). Per-item progress on the Dojo row,
-            // completion tally at the end; setDojoStatus() owns the row's
-            // rest state.
             var registered = 0
             var failed = 0
-            toImport.forEachIndexed { index, (pubKey, purpose) ->
-                // #85: re-check per iteration - the pairing can be erased
-                // mid-loop, and importXpub -> buildClient -> getAPIUrl
-                // throws ApiNotConfigured once the endpoints are gone.
-                if (!prefsUtil.isAPIEndpointEnabled()) {
-                    return@forEachIndexed
+            var roundRan = false
+            try {
+                val toImport = mutableListOf<Pair<String, String>>()
+
+                repository.collectionsSnapshot().forEach { collection ->
+                    collection.pubs.forEach { pub ->
+                        val purpose = "bip${pub.getPurpose()}"
+                        toImport.add(pub.pubKey to purpose)
+                    }
                 }
-                // #98: main-confined, destroy-guarded view write; the
-                // registration work itself is untouched.
-                showKeyRegistrationProgress(index + 1, toImport.size)
-                try {
-                    apiService.importXpub(pubKey, purpose)
-                    registered++
-                } catch (e: ApiService.ApiNotConfigured) {
-                    // #85: ApiNotConfigured is a Throwable, NOT an
-                    // Exception - the generic catch below could never
-                    // intercept it, so it escaped the launch and killed
-                    // the process.
-                    Timber.e(e, "Dojo pairing gone, skipping remaining xpub imports")
-                    return@forEachIndexed
-                } catch (e: Exception) {
-                    Log.d("NetworkActivity", "Error: ${e}")
-                    failed++
+
+                // #98: an empty wallet has nothing to register - skip the
+                // burst UI with no noise; the pairing sheet already showed
+                // its own progress. The finally below resets the holder
+                // silently - no residue, no report (the silence leg).
+                if (toImport.isEmpty()) {
+                    return@launch
+                }
+
+                // #98: the burst ran fire-and-forget with zero view writes -
+                // the flow-1 device observation ("no progress indication at
+                // any point", #97 leg). Per-item progress on the Dojo row,
+                // completion tally at the end; setDojoStatus() owns the row's
+                // rest state.
+                // #158: the holder mirrors the round so a re-entered screen
+                // renders from state, and the finally guarantees every round
+                // reports - retries included, never zero times.
+                roundRan = true
+                KeyRegistrationBurst.begin(toImport.size)
+                toImport.forEachIndexed { index, (pubKey, purpose) ->
+                    // #85: re-check per iteration - the pairing can be erased
+                    // mid-loop, and importXpub -> buildClient -> getAPIUrl
+                    // throws ApiNotConfigured once the endpoints are gone.
+                    if (!prefsUtil.isAPIEndpointEnabled()) {
+                        return@forEachIndexed
+                    }
+                    // #158: attempt counter in the holder - option B keeps
+                    // the row counting attempts; failures advance it too.
+                    KeyRegistrationBurst.onItemStarted(index + 1)
+                    // #98: main-confined, destroy-guarded view write; the
+                    // registration work itself is untouched.
+                    showKeyRegistrationProgress(index + 1, toImport.size)
+                    try {
+                        apiService.importXpub(pubKey, purpose)
+                        registered++
+                    } catch (e: ApiService.ApiNotConfigured) {
+                        // #85: ApiNotConfigured is a Throwable, NOT an
+                        // Exception - the generic catch below could never
+                        // intercept it, so it escaped the launch and killed
+                        // the process.
+                        Timber.e(e, "Dojo pairing gone, skipping remaining xpub imports")
+                        return@forEachIndexed
+                    } catch (e: Exception) {
+                        Log.d("NetworkActivity", "Error: ${e}")
+                        failed++
+                    }
+                }
+            } catch (e: CancellationException) {
+                // #129 discipline: cancellation is rethrown, never laundered.
+                // apiScope is app-lifetime and never cancels today; the arm
+                // order is the contract anyway.
+                throw e
+            } catch (t: Throwable) {
+                // #158 leg 2: the finally below still reports - this catch
+                // only keeps an escape-class failure off the process (with
+                // the launch CEH) while the report lands anyway.
+                Timber.e(t, "derivation path registration burst escaped mid-flight")
+            } finally {
+                if (roundRan) {
+                    // #158: every round states its own delta; the gate
+                    // re-arms so the next retry round reports too.
+                    KeyRegistrationBurst.complete(registered, failed, KeyRegistrationBurst.total)
+                    showKeyRegistrationResult(registered, failed, KeyRegistrationBurst.total)
+                } else {
+                    KeyRegistrationBurst.markFinished()
                 }
             }
-            showKeyRegistrationResult(registered, failed, toImport.size)
         }
     }
 
@@ -212,7 +251,7 @@ class NetworkActivity : SentinelActivity() {
     private fun showKeyRegistrationProgress(done: Int, total: Int) {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
-            dojoConnectionStatus?.text = "Registering keys with Dojo\u2026 $done of $total"
+            dojoConnectionStatus?.text = KeyRegistrationBurst.progressText(done, total)
         }
     }
 
@@ -224,20 +263,19 @@ class NetworkActivity : SentinelActivity() {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             setDojoStatus()
-            val note = if (failed > 0 || registered < total)
-                " ($registered of $total keys registered - retry pairing to re-register)"
-            else
-                " ($registered keys registered)"
             this@NetworkActivity.showFloatingSnackBar(
                 findViewById(R.id.network_dojo_layout),
-                text = "Dojo connected$note"
+                text = KeyRegistrationBurst.resultText(registered, failed, total)
             )
         }
     }
 
     fun setDojoStatus() {
         if (dojoUtility.isDojoEnabled()) {
-            dojoConnectionStatus?.text = getString(R.string.Enabled)
+            // #158: render from burst state - in-flight shows the re-entry
+            // marker, a partial last round shows its residue, a clean
+            // slate shows the plain rest label.
+            dojoConnectionStatus?.text = KeyRegistrationBurst.statusText(getString(R.string.Enabled))
             dojoButton?.text = getString(R.string.disable_dojo)
             dojoConnectionIcon!!.setColorFilter(activeColor)
             // Only offer pairing details when a payload actually exists.
