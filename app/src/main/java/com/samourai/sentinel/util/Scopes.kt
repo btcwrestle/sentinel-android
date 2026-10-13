@@ -23,6 +23,15 @@ val apiExceptionHandler = CoroutineExceptionHandler { _, t ->
 }
 val apiJob = SupervisorJob()
 val apiScope: CoroutineScope = CoroutineScope(context = Dispatchers.IO) + apiJob + apiExceptionHandler
-// dataBaseScope deliberately unchanged in #130 - same defect class one line
-// down, filed as its own follow-up (see the #130 PR's out-of-scope census).
-val dataBaseScope: CoroutineScope = CoroutineScope(context = Dispatchers.IO)+ SupervisorJob()
+// #149: same containment for dataBaseScope - the #130 out-of-scope follow-up,
+// resolved. Writers (census on #149's thread): SentinelState label rescope,
+// FeeRepository fee writes, CollectionRepository sync write. Same semantics
+// as apiExceptionHandler above - terminal containment, siblings untouched
+// (SupervisorJob), CancellationException passes through teardown. A call-site
+// launch(Dispatchers.IO) folds the dispatcher into the child and keeps this
+// handler.
+val dataBaseExceptionHandler = CoroutineExceptionHandler { _, t ->
+    Timber.e(t, "dataBaseScope: uncaught launch failure contained")
+}
+val dataBaseJob = SupervisorJob()
+val dataBaseScope: CoroutineScope = CoroutineScope(context = Dispatchers.IO) + dataBaseJob + dataBaseExceptionHandler
