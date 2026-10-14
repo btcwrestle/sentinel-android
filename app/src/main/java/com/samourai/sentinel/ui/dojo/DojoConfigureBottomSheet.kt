@@ -37,7 +37,6 @@ import com.samourai.sentinel.util.apiScope
 import com.samourai.wallet.util.FormatsUtilGeneric
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -58,6 +57,14 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var dojoConfigurationListener: DojoConfigurationListener? = null
     private val prefsUtil: PrefsUtil by KoinJavaComponent.inject(PrefsUtil::class.java);
     private var numRetries = 0
+
+    // #159: the dismissal seam. The listener fires at most once per
+    // sheet lifetime, only from the success arm - the contract is
+    // "pairing live, endpoints set". Every dismissal routes through
+    // the main looper: no bare Handler() off a lucky call path, no
+    // sleeps on OkHttp dispatcher threads.
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var listenerFired = false
 
     private var payload: String = ""
 
@@ -117,8 +124,15 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     private val pagerCallBack = object : ViewPager2.OnPageChangeCallback() {
-        override fun onPageScrolled(position: Int, positionOffset: Float, positionOffsetPixels: Int) {
-            super.onPageScrolled(position, positionOffset, positionOffsetPixels)
+        // #159: the connect trigger is a selection event, not a scroll
+        // frame - onPageScrolled fired once per settle frame on page 2,
+        // so one re-pair enqueued M logins, each response arming its own
+        // 500ms dismissal (N onDismiss, N registration bursts at the
+        // holders). onPageSelected fires exactly once per arrival on the
+        // connect page; the pager is input-disabled and only
+        // setCurrentItem moves it.
+        override fun onPageSelected(position: Int) {
+            super.onPageSelected(position)
             if (position == 2) {
                 startTorAndConnect()
             }
@@ -202,36 +216,48 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 }
             })
         } catch (e: Exception) {
-            Handler().postDelayed(Runnable {
-                this@DojoConfigureBottomSheet.dojoConfigurationListener?.onDismiss()
-                this@DojoConfigureBottomSheet.dismiss()
-            }, 500)
-            Toast.makeText(requireContext(), getString(R.string.dojo_connect_error, e.toString()), Toast.LENGTH_LONG).show()
+            // #159: a failed pairing must not fire the listener - the
+            // contract is "pairing live, endpoints set"; firing on a
+            // failure bursts stale state into the holders. Toast +
+            // dismiss only, on the main looper from any caller thread
+            // (the retry arm re-enters setDojo off a timer, the
+            // onFailure path from the OkHttp thread).
+            mainHandler.post {
+                dismiss()
+                if (context != null)
+                    Toast.makeText(context, getString(R.string.dojo_connect_error, e.toString()), Toast.LENGTH_LONG).show()
+            }
         }
     }
 
+    /**
+     * #159: the dismissal seam, rebuilt. Success is the only
+     * listener-firing arm, and it fires at most once per sheet lifetime
+     * - the latch holds against any residual multi-fire. Failure toasts
+     * and dismisses without firing: a failed pairing must not present
+     * itself as a live one to the holders. Retries re-enqueue off a
+     * main-looper timer instead of sleeping on an OkHttp thread.
+     */
     fun dismissAllOrToast(wasResponseSuccessful: Boolean, retry: Boolean = false) {
         if (wasResponseSuccessful) {
             dojoConnectFragment.showDojoProgressSuccess()
-            Handler().postDelayed(Runnable {
-                this@DojoConfigureBottomSheet.dojoConfigurationListener?.onDismiss()
-                this@DojoConfigureBottomSheet.dismiss()
+            mainHandler.postDelayed({
+                if (!listenerFired) {
+                    listenerFired = true
+                    dojoConfigurationListener?.onDismiss()
+                }
+                dismiss()
             }, 500)
         }
         else if (retry && numRetries <= 2) {
             numRetries += 1
-            Thread.sleep(5000)
-            setDojo()
+            mainHandler.postDelayed({ setDojo() }, 5000)
         }
         else {
-            Handler(Looper.getMainLooper()).post {
-                Handler().postDelayed(Runnable {
-                    this@DojoConfigureBottomSheet.dojoConfigurationListener?.onDismiss()
-                    this@DojoConfigureBottomSheet.dismiss()
-                }, 500)
+            mainHandler.post {
+                dismiss()
                 if (context != null)
                     Toast.makeText(context, getString(R.string.dojo_connect_failed), Toast.LENGTH_LONG).show()
-                this.dismiss()
             }
         }
     }
@@ -300,10 +326,13 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
 
-
     override fun onCancel(dialog: DialogInterface) {
         super.onCancel(dialog)
-        this.dojoConfigurationListener?.onDismiss()
+        // #159: a cancel is not a pairing outcome - it fires nothing.
+        // Success owns the only listener fire; every holder body
+        // re-gates on endpoint/dojo state internally (read-verified:
+        // NetworkActivity, HomeActivity, MigrationActivity), so nothing
+        // strands on cancel silence.
     }
 
     fun setPayload(dojoPayload: String?) {
@@ -344,7 +373,6 @@ class DojoNodeInstructions : Fragment() {
 
 
 }
-
 
 class DojoConnectFragment : Fragment() {
 
@@ -402,7 +430,6 @@ class ScanFragment : Fragment() {
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java);
     private var onScan: (scanData: String) -> Unit = {}
     private var manualDetailsListener: View.OnClickListener? = null
-
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.content_scan_layout, container, false);
