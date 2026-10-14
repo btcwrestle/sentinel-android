@@ -27,10 +27,22 @@ import kotlin.math.log2
  * no fee/shape combination makes this engine produce it for a
  * 5x5. We assert engine truth, never marketing numbers. See
  * PR body for the issue-text discrepancy note.
+ *
+ * Oracle services are constructed with a raised engine
+ * duration box (#166): the engine checks duration per surge
+ * cycle, not continuously, so on a JVM where the 7x7 needs
+ * ~1.3-1.4s the default 1s box made red/green a cycle-alignment
+ * coin flip (isolated 1-in-3 red on a quiet box, the red run
+ * faster than both greens - the bailout fired mid-compute and
+ * nbCmbn=0 mapped to TooComplex). Deadline behavior is NOT
+ * tested here: BoltzmannEngineBailoutTest pins the bailout's
+ * sentinel state deterministically (maxDuration=0) and the
+ * two beyond-the-cap tests pin TooComplex before the engine.
  */
 class BoltzmannTxServiceTest {
 
-    private val service = BoltzmannTxService()
+    /** #166: oracle numbers only - the engine deadline is raised out of the race. */
+    private val service = BoltzmannTxService(engineDurationSeconds = 60)
 
     private fun txOf(ins: List<Pair<String, Long>>, outs: List<Pair<String, Long>>): Tx =
         Tx(

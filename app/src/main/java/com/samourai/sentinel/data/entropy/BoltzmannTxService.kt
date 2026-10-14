@@ -85,11 +85,29 @@ sealed interface BoltzmannTxAnalysis {
 open class BoltzmannTxService(
     /** Caller-facing time-box in milliseconds (issue #7: ~500ms). */
     private val timeBoxMs: Long = DEFAULT_TIME_BOX_MS,
+    /**
+     * The engine's internal duration box, in SECONDS (#166).
+     * Default 1s, unchanged in production. The engine checks
+     * duration per surge cycle, not continuously, so a cycle
+     * boundary landing just before the deadline lets the tail
+     * run long - on a JVM where the 7x7 oracle needs ~1.3-1.4s,
+     * red/green was decided by cycle alignment (isolated
+     * 1-in-3 red on a quiet box, the red run FASTER than both
+     * greens). Tests pinning real oracle numbers construct
+     * with a raised box so the engine's deadline never fires
+     * mid-oracle; deadline behavior itself stays pinned by
+     * BoltzmannEngineBailoutTest (maxDuration=0, deterministic)
+     * and the surge-cap refusal tests (TooComplex before the
+     * engine). The bailout comment in the vendored TxosAggregator
+     * documents the per-cycle check; the settings object exposes
+     * this parameter natively.
+     */
+    private val engineDurationSeconds: Int = 1,
 ) {
 
     private val engine = Boltzmann(
         BoltzmannSettings().apply {
-            maxDuration = 1
+            maxDuration = engineDurationSeconds
             maxTxos = MAX_TXOS
             maxCjIntrafeesRatio = 0f
             // PRECHECK deliberately OFF: the vendored checkDtrmLinks()
