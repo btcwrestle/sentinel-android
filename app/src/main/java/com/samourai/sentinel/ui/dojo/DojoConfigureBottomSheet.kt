@@ -19,7 +19,6 @@ import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.viewModelScope
 import androidx.viewpager2.adapter.FragmentStateAdapter
-import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
@@ -86,6 +85,14 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         setUpViewPager()
+        // #165: the connect trigger rides the connect page's own
+        // onViewCreated. The pager's onPageSelected fired in the same
+        // frame as setCurrentItem - one frame BEFORE FragmentStateAdapter
+        // created page 2's view - so the sheet crashed on
+        // DojoConnectFragment's unset lateinit views. Registered here,
+        // ahead of every payload entry path; the fragment's latch holds
+        // the #159 single-fire contract.
+        dojoConnectFragment.setConnectViewReadyListener { startTorAndConnect() }
         dojoConfigureBottomSheet.setConnectListener(View.OnClickListener {
             binding.pager.setCurrentItem(1, true)
         })
@@ -118,23 +125,6 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             } else {
                 scanFragment.resetCamera()
                 Toast.makeText(requireContext(), getString(R.string.invalid_payload), Toast.LENGTH_SHORT).show()
-            }
-        }
-        binding.pager.registerOnPageChangeCallback(pagerCallBack)
-    }
-
-    private val pagerCallBack = object : ViewPager2.OnPageChangeCallback() {
-        // #159: the connect trigger is a selection event, not a scroll
-        // frame - onPageScrolled fired once per settle frame on page 2,
-        // so one re-pair enqueued M logins, each response arming its own
-        // 500ms dismissal (N onDismiss, N registration bursts at the
-        // holders). onPageSelected fires exactly once per arrival on the
-        // connect page; the pager is input-disabled and only
-        // setCurrentItem moves it.
-        override fun onPageSelected(position: Int) {
-            super.onPageSelected(position)
-            if (position == 2) {
-                startTorAndConnect()
             }
         }
     }
@@ -218,8 +208,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         } catch (e: Exception) {
             // #159: a failed pairing must not fire the listener - the
             // contract is "pairing live, endpoints set"; firing on a
-            // failure bursts stale state into the holders. Toast +
-            // dismiss only, on the main looper from any caller thread
+            // failure bursts stale state into the holders. Toast + dismiss
+            // only, on the main looper from any caller thread
             // (the retry arm re-enters setDojo off a timer, the
             // onFailure path from the OkHttp thread).
             mainHandler.post {
@@ -320,12 +310,6 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         binding.pager.visibility = View.VISIBLE
     }
 
-    override fun onDestroyView() {
-        binding.pager.unregisterOnPageChangeCallback(pagerCallBack)
-        super.onDestroyView()
-    }
-
-
     override fun onCancel(dialog: DialogInterface) {
         super.onCancel(dialog)
         // #159: a cancel is not a pairing outcome - it fires nothing.
@@ -382,6 +366,20 @@ class DojoConnectFragment : Fragment() {
     private lateinit var progressTor: ProgressBar
     private lateinit var progressDojo: ProgressBar
 
+    // #165: the connect trigger, registered by the sheet before any
+    // setCurrentItem(2) can run. onViewCreated here is the earliest
+    // moment the lateinit views above are guaranteed initialized;
+    // the latch keeps the fire once per fragment lifetime even if
+    // the view is recreated (FragmentStateAdapter reuses this
+    // instance, and the pager is input-disabled so page 2 is only
+    // ever reached via setCurrentItem).
+    private var connectViewReadyListener: (() -> Unit)? = null
+    private var connectTriggered = false
+
+    fun setConnectViewReadyListener(callback: () -> Unit) {
+        connectViewReadyListener = callback
+    }
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         val view = inflater.inflate(R.layout.bottomsheet_dojo_connection, container, false)
         progressTor = view.findViewById(R.id.progressTor)
@@ -393,6 +391,13 @@ class DojoConnectFragment : Fragment() {
         return view
     }
 
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        if (!connectTriggered) {
+            connectTriggered = true
+            connectViewReadyListener?.invoke()
+        }
+    }
 
     fun showTorProgress() {
         progressTor.visibility = View.VISIBLE
