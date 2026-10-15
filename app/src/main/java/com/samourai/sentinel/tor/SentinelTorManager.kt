@@ -49,6 +49,7 @@ object SentinelTorManager {
     @Volatile private var lastBootstrapProgressAt = 0L
     @Volatile private var recoveries = 0
     @Volatile private var cheapRestartUsed = false  // #172: once per stall episode
+    @Volatile private var stopInFlight = false      // #164: one owning stop launch at a time
     @Volatile private var watchdogJob: Job? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -166,12 +167,42 @@ object SentinelTorManager {
         }
     }
 
+    /**
+     * #164: a stop() that lands posthumously (daemon already dead - the
+     * erase flow's double stop) or on a hung shutdown used to wedge the
+     * LiveData at STOPPING for process lifetime: STOPPING was published
+     * unconditionally and nothing guaranteed a correcting OFF (the STATE
+     * observer emits nothing once the daemon is dead; repro 3 hung 258s).
+     * Now a posthumous/duplicate call no-ops, and the owning launch
+     * publishes OFF once stopDaemonAsync resolves or the deadline passes.
+     */
+    @Synchronized
     fun stop() {
         Log.i(TAG, "stop() called")
         val r = runtime ?: return
+        val st = getTorState().state
+        if (st == EnumTorState.OFF || st == EnumTorState.STOPPING || stopInFlight) {
+            Log.i(TAG, "stop() no-op: state=$st inFlight=$stopInFlight (#164 guard)")
+            return
+        }
+        stopInFlight = true
         publish(EnumTorState.STOPPING, 0)
         watchdogJob?.cancel()
-        scope.launch { r.stopDaemonAsync() }
+        scope.launch {
+            try {
+                try {
+                    withTimeoutOrNull(STOP_DEADLINE_MS) { r.stopDaemonAsync() }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "stopDaemonAsync threw (tolerated)", t)
+                }
+                if (getTorState().state == EnumTorState.STOPPING) {
+                    Log.w(TAG, "stop(): no OFF emission landed - correcting to OFF (#164)")
+                    publish(EnumTorState.OFF, 0)
+                }
+            } finally {
+                stopInFlight = false
+            }
+        }
     }
 
     fun newIdentity() {

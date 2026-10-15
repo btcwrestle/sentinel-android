@@ -317,7 +317,11 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                                     AccessFactory.getInstance(null).setPinProtected(false)
                                     collectionRepository.reset()
                                     UtxoMetaUtil.clearAll()
-                                    SentinelTorManager.stop()
+                                    // #164: no second stop() here - the pre-wipe
+                                    // stop above already owns the shutdown; a
+                                    // posthumous second call re-published STOPPING
+                                    // after the observer's OFF and wedged the
+                                    // state for process lifetime.
                                 }
                                 startActivity(Intent(activity, HomeActivity::class.java).apply {
                                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
