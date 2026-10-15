@@ -39,14 +39,16 @@ object SentinelTorManager {
 
     private const val TAG = "SentinelTorManager"
 
-    // ---- #11 watchdog: silent boot=0 stall after force-stop cycles ----
-    private const val BOOTSTRAP_STALL_MS = 150_000L // 2.5 min with zero boot progress
-    private const val MAX_RECOVERIES = 2
+    // ---- #11/#172 watchdog: tiered zero-progress stall recovery ----
+    private const val CHEAP_RESTART_MS = 15_000L    // tier 1: restart, data dirs KEPT
+    private const val WIPE_STALL_MS = 35_000L       // tier 2: TOTAL stall budget, then wipe
+    private const val MAX_RECOVERIES = 2            // counts wipes only - cheap restarts are free
     private const val STOP_DEADLINE_MS = 15_000L    // wedged daemon must die within this
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var lastBootstrapProgressAt = 0L
     @Volatile private var recoveries = 0
+    @Volatile private var cheapRestartUsed = false  // #172: once per stall episode
     @Volatile private var watchdogJob: Job? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -127,22 +129,30 @@ object SentinelTorManager {
         }
     }
 
-    /** Public entry: user-directed start. Resets the retry budget. */
+    /** Public entry: user-directed start. Resets the retry budget + episode state. */
     fun start() {
         Log.i(TAG, "start() (manual)")
         recoveries = 0
+        cheapRestartUsed = false
         startInternal()
     }
 
-    /** Recovery-safe start: never touches the retry budget. */
-    private fun startInternal() {
+    /**
+     * Recovery-safe start: never touches the retry budget.
+     * [resetStallClock]=false is the #172 cheap-restart path: the episode
+     * clock keeps running so WIPE_STALL_MS stays a TOTAL budget (15s tier 1
+     * -> 35s tier 2 = 20s between), not 15s + 35s.
+     */
+    private fun startInternal(resetStallClock: Boolean = true) {
         val r = runtime
         if (r == null) {
             Log.w(TAG, "start() called but runtime is null (setUp never ran)")
             return
         }
         Log.i(TAG, "start() called")
-        lastBootstrapProgressAt = SystemClock.elapsedRealtime()
+        if (resetStallClock) {
+            lastBootstrapProgressAt = SystemClock.elapsedRealtime()
+        }
         publish(EnumTorState.STARTING, 0)
         armWatchdog()
         scope.launch {
@@ -238,18 +248,48 @@ object SentinelTorManager {
         watchdogJob?.cancel()
         watchdogJob = scope.launch {
             while (true) {
-                delay(10_000L)
+                // #172: 5s tick so the 15s tier lands at 15-20s, not ~20-25s
+                delay(5_000L)
                 val st = getTorState()
                 if (st.state == EnumTorState.ON || st.state == EnumTorState.OFF) return@launch
                 val stalledMs = SystemClock.elapsedRealtime() - lastBootstrapProgressAt
-                if (st.state == EnumTorState.STARTING &&
-                    st.progressIndicator == 0 &&
-                    stalledMs > BOOTSTRAP_STALL_MS
-                ) {
-                    attemptRecovery()
-                    return@launch
+                if (st.state == EnumTorState.STARTING && st.progressIndicator == 0) {
+                    if (stalledMs > WIPE_STALL_MS) {
+                        attemptRecovery() // tier 2: total budget spent - wipe + rebuild
+                        return@launch
+                    }
+                    if (stalledMs > CHEAP_RESTART_MS && !cheapRestartUsed) {
+                        cheapRestart() // tier 1: at most once per stall episode
+                        return@launch
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * #172 tier 1: stop + start on the SAME runtime, both data dirs KEPT
+     * (consensus/descriptors/guard state survive - a false positive costs
+     * ~nothing). Stop-first so startDaemonAsync's dedupe cannot no-op it
+     * (same pattern as attemptRecovery). Episode clock keeps running:
+     * WIPE_STALL_MS is a total budget, not 15s + 35s.
+     */
+    private fun cheapRestart() {
+        cheapRestartUsed = true
+        Log.w(
+            TAG,
+            "watchdog: boot=0 stall > ${CHEAP_RESTART_MS / 1000}s — " +
+                "cheap restart (data dirs kept)",
+        )
+        toast("Tor bootstrap stalled — restarting (data kept)")
+        scope.launch {
+            val wedged = runtime ?: return@launch
+            try {
+                withTimeoutOrNull(STOP_DEADLINE_MS) { wedged.stopDaemonAsync() }
+            } catch (t: Throwable) {
+                Log.w(TAG, "stopDaemonAsync during cheap restart threw (tolerated)", t)
+            }
+            startInternal(resetStallClock = false) // re-arms the watchdog
         }
     }
 
@@ -267,7 +307,7 @@ object SentinelTorManager {
         recoveries++
         Log.w(
             TAG,
-            "watchdog: boot=0 stall > ${BOOTSTRAP_STALL_MS / 1000}s — " +
+            "watchdog: boot=0 stall > ${WIPE_STALL_MS / 1000}s — " +
                 "wiping tor data, recovery $recoveries/$MAX_RECOVERIES",
         )
         toast("Tor bootstrap stalled — auto-recovering ($recoveries/$MAX_RECOVERIES)")
@@ -284,6 +324,7 @@ object SentinelTorManager {
             app.getDir("tor", Application.MODE_PRIVATE).deleteRecursively()
             app.getDir("tor_cache", Application.MODE_PRIVATE).deleteRecursively()
             setUp(app)      // rebuild against fresh dirs (idempotent guard passes on null)
+            cheapRestartUsed = false // fresh episode: tier 1 available again
             startInternal() // re-arms the watchdog; budget preserved
         }
     }
