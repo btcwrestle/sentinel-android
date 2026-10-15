@@ -34,6 +34,8 @@ import java.net.Proxy
  * setUp / start / stop / newIdentity / getTorState / getTorStateLiveData / getProxy.
  * #135 adds isTorReady()/awaitTorReady() - additive only, no existing call
  * site changes shape.
+ * #161 adds getNewNymNoticeLiveData()/ackNewNymNotice() - additive only,
+ * NEWNYM feedback routing; no existing call site changes shape.
  */
 object SentinelTorManager {
 
@@ -60,7 +62,20 @@ object SentinelTorManager {
 
     private val torStateLiveDataPrivate = MutableLiveData(makeState(EnumTorState.OFF, 0))
 
+    // #161: NEWNYM outcome stream - tor's verbatim notice (success or
+    // rate-limit advisory) or the local failure literal. A listening
+    // screen renders it on the themed snackbar; with no active listener
+    // the emitter falls back to the framework toast. Null is the ack.
+    private val newNymNoticePrivate = MutableLiveData<String?>(null)
+
     fun getTorStateLiveData(): LiveData<TorState> = torStateLiveDataPrivate
+
+    /** #161: consuming screen acks so a config-change re-subscribe replays nothing. */
+    fun getNewNymNoticeLiveData(): LiveData<String?> = newNymNoticePrivate
+
+    fun ackNewNymNotice() {
+        newNymNoticePrivate.value = null
+    }
 
     @Synchronized
     fun setUp(app: Application) {
@@ -117,15 +132,15 @@ object SentinelTorManager {
             }
         }
 
-        // Toast tor's NEWNYM reply (parity with 1.x wrapper).
-        // Rate-limit notices are shown verbatim (tor's own text);
-        // the 1.x library's kmp_tor_newnym_* res strings no longer
-        // exist, so success uses a local literal.
+        // Route tor's NEWNYM reply to the #161 single feedback surface.
+        // Rate-limit notices arrive verbatim (tor's own text); the 1.x
+        // library's kmp_tor_newnym_* res strings no longer exist, so
+        // success uses a local literal. emitNewNymNotice renders it on
+        // the themed snackbar when a screen is listening, else the
+        // framework toast - the notice is never lost.
         with(RuntimeEvent.EXECUTE.CMD) {
             runtime?.observeSignalNewNym(TAG, OnEvent.Executor.Main) { notice ->
-                val app = appContext ?: return@observeSignalNewNym
-                val msg = notice ?: "New Tor identity"
-                Toast.makeText(app, msg, Toast.LENGTH_SHORT).show()
+                emitNewNymNotice(notice ?: "New Tor identity")
             }
         }
     }
@@ -206,15 +221,20 @@ object SentinelTorManager {
     }
 
     fun newIdentity() {
-        val r = runtime ?: return
+        val r = runtime
+        if (r == null) {
+            // #161: silence was the last dishonesty on this surface -
+            // the failure reports through the same single channel.
+            Log.w(TAG, "newIdentity() called but runtime is null (setUp never ran)")
+            emitNewNymNotice("Tor identity change failed")
+            return
+        }
         scope.launch {
             try {
                 r.executeAsync(TorCmd.Signal.NewNym)
             } catch (t: Throwable) {
                 Log.e(TAG, "newIdentity failed", t)
-                appContext?.let {
-                    Toast.makeText(it, "Tor identity change failed", Toast.LENGTH_SHORT).show()
-                }
+                emitNewNymNotice("Tor identity change failed")
             }
         }
     }
@@ -357,6 +377,21 @@ object SentinelTorManager {
             setUp(app)      // rebuild against fresh dirs (idempotent guard passes on null)
             cheapRestartUsed = false // fresh episode: tier 1 available again
             startInternal() // re-arms the watchdog; budget preserved
+        }
+    }
+
+    /**
+     * #161: the single NEWNYM feedback surface. A listening screen gets
+     * the notice on the stream (NetworkActivity renders the themed
+     * snackbar with the verbatim text); with no active listener the
+     * framework toast carries it - failure and null-runtime arms
+     * included, which used to be silent.
+     */
+    private fun emitNewNymNotice(msg: String) {
+        if (newNymNoticePrivate.hasActiveObservers()) {
+            newNymNoticePrivate.postValue(msg)
+        } else {
+            toast(msg)
         }
     }
 

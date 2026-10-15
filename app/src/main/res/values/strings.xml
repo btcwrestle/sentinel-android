@@ -359,7 +359,6 @@
     <string name="utxo_label_empty_hint" translatable="false">Tap to add label</string>
     <string name="utxo_label_dialog_title" translatable="false">UTXO label</string>
     <string name="utxo_label_input_hint" translatable="false">Label (leave empty to remove)</string>
-    <string name="tor_identity_renewed">Tor identity has been renewed</string>
     <string name="tor_disable_dojo_blocked">You won\'t be able to disable Tor if Dojo is enabled</string>
     <string name="camera_permission_denied">Camera Permission Denied</string>
     <string name="no_dojo_connected">No Dojo connected</string>

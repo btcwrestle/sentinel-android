@@ -79,12 +79,26 @@ class NetworkActivity : SentinelActivity() {
         dojoConnectionIcon = findViewById(R.id.network_dojo_status_icon)
         dojoConnectionStatus = findViewById(R.id.network_dojo_status)
         torRenewBtn?.setOnClickListener {
+            // #161: no optimistic feedback here - tor's verbatim reply
+            // (success or rate-limit notice) is the single source of
+            // truth and arrives on the notice stream observed below.
             SentinelTorManager.newIdentity()
-            this.showFloatingSnackBar(findViewById(R.id.toolbarCollectionDetails), text = getString(R.string.tor_identity_renewed))
         }
         setTorConnectionState(SentinelTorManager.getTorState())
         SentinelTorManager.getTorStateLiveData().observe(this, {
             setTorConnectionState(it)
+        })
+        // #161: tor's verbatim NEWNYM reply - success or rate-limit
+        // notice - on the themed snackbar. Null is the ack no-op: the
+        // notice is acked on delivery so a config-change re-subscribe
+        // replays nothing.
+        SentinelTorManager.getNewNymNoticeLiveData().observe(this, { notice ->
+            if (notice == null) return@observe
+            this.showFloatingSnackBar(
+                findViewById(R.id.toolbarCollectionDetails),
+                text = notice
+            )
+            SentinelTorManager.ackNewNymNotice()
         })
         dojoDetailsButton?.setOnClickListener {
             showDojoCredentialsBottomSheet()
