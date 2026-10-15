@@ -94,8 +94,10 @@ class HomeActivity : SentinelActivity() {
         UtxoMetaUtil.read()
 
         if (SentinelState.isTorRequired() && SentinelTorManager.getTorState().state == EnumTorState.OFF) {
+            // #170: the boot start stays (a paired Dojo or the user's own
+            // toggle gates it now); the enableTor stomp is gone - the
+            // toggle is the user's alone.
             SentinelTorManager.start()
-            prefsUtil.enableTor = true
         }
 
         val needsNotificationPermissionPrompt =
@@ -335,8 +337,9 @@ class HomeActivity : SentinelActivity() {
             when (SentinelTorManager.getTorState().state) {
                 EnumTorState.ON -> model.fetchBalance(userInitiated = true)
                 EnumTorState.OFF -> {
+                    // #170: refresh-triggered start, no stomp on the toggle -
+                    // isTorRequired() already gates this arm.
                     SentinelTorManager.start()
-                    prefsUtil.enableTor = true
                 }
                 // STARTING / STOPPING: the banner already communicates progress.
                 else -> Unit

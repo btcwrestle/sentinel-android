@@ -174,8 +174,10 @@ class SentinelState {
 
 
         fun isTorRequired(): Boolean {
-            return true
-            //return dojoUtility.isDojoEnabled() || prefsUtil.enableTor!!
+            // #170: the hardcoded true was a debugging holdover. Tor is
+            // required only when a Dojo is paired (its onion endpoint needs
+            // it) or the user's own toggle is on.
+            return dojoUtility.isDojoEnabled() || (prefsUtil.enableTor == true)
         }
 
         fun isDojoEnabled(): Boolean {

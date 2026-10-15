@@ -135,8 +135,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             setDojo()
         } else {
             setUpTor()
+            // #170: pairing start, no stomp on the user's toggle.
             SentinelTorManager.start()
-            prefsUtil.enableTor = true
             dojoConnectFragment.showTorProgress()
             SentinelTorManager.getTorStateLiveData().observe(this) {
                 if (it.state == EnumTorState.ON) {

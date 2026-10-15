@@ -167,8 +167,8 @@ class ImportBackUpActivity : SentinelActivity() {
             // start() stays pre-ON only: an already-running daemon must not
             // be re-started. An ON-but-proxy-less window just waits below.
             if (SentinelTorManager.getTorState().state != EnumTorState.ON) {
+                // #170: pairing-leg start, no stomp on the user's toggle.
                 SentinelTorManager.start()
-                prefsUtil.enableTor = true
             }
             // #10 precedent (pairing sheet): readiness is state==ON AND a
             // live SOCKS proxy - ON alone is not SOCKS-ready (10-02 D3).

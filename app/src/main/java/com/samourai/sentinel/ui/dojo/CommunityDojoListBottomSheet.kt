@@ -124,8 +124,8 @@ class CommunityDojoListBottomSheet(
             return
         }
         SentinelTorManager.setUp(requireContext().applicationContext as Application)
+        // #170: directory-fetch start, no stomp on the user's toggle.
         SentinelTorManager.start()
-        prefsUtil.enableTor = true
         SentinelTorManager.getTorStateLiveData().observe(viewLifecycleOwner) { state ->
             when (state.state) {
                 EnumTorState.ON -> {
