@@ -46,9 +46,6 @@ import java.io.IOException
 
 class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var payloadPassed: String? = null;
-    private val scanFragment = ScanFragment()
-    private val dojoConfigureBottomSheet = DojoNodeInstructions()
-    private val dojoConnectFragment = DojoConnectFragment()
     private var dojoConfigurationListener: DojoConfigurationListener? = null
     private val prefsUtil: PrefsUtil by KoinJavaComponent.inject(PrefsUtil::class.java);
     private var numRetries = 0
@@ -81,62 +78,101 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         setUpViewPager()
-        // #165: the connect trigger rides the connect page's own
-        // onViewCreated. The pager's onPageSelected fired in the same
-        // frame as setCurrentItem - one frame BEFORE FragmentStateAdapter
-        // created page 2's view - so the sheet crashed on
-        // DojoConnectFragment's unset lateinit views. Registered here,
-        // ahead of every payload entry path; the fragment's latch holds
-        // the #159 single-fire contract.
-        dojoConnectFragment.setConnectViewReadyListener { startTorAndConnect() }
-        dojoConfigureBottomSheet.setConnectListener(View.OnClickListener {
-            binding.pager.setCurrentItem(1, true)
-        })
-        dojoConfigureBottomSheet.setBrowseCommunityDojoListener(View.OnClickListener {
-            showCommunityDojoPrivacyWarning()
-        })
-        scanFragment.setManualDetailsListener {
-            val jsonDojo = AndroidUtil.getClipBoardString(requireContext())
-
-            if (jsonDojo != null && dojoUtil.validate(jsonDojo!!)) {
-                payload = jsonDojo
-                binding.pager.setCurrentItem(2, true)
-            } else
-                Toast.makeText(requireContext(), getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
-        }
-        scanFragment.setOnScanListener {
-            if (dojoUtil.validate(it)) {
-                payload = it
-                binding.pager.setCurrentItem(2, true)
-            } else {
-                scanFragment.resetCamera()
-                Toast.makeText(requireContext(), getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
-            }
-        }
+        // #181: no sheet-side page wiring anymore. Every page event
+        // travels fragment -> sheet at event time: each page resolves
+        // (parentFragment as? DojoConfigureBottomSheet) inside its own
+        // click/scan/latch wiring (see the page classes below) and
+        // calls the entry points grouped under
+        // "#181 page-event entry points". The old design registered
+        // listeners on pre-built field instances here; a
+        // FragmentStateAdapter restore re-creates pages by tag from
+        // the childFragmentManager, so after any recreation those
+        // fields held objects the pager never showed - dead wiring,
+        // and no crash to report it.
+        // #165: the connect trigger still rides the connect page's own
+        // onViewCreated - one frame AFTER setCurrentItem(2), never
+        // before - and the page's latch keeps the fire once per
+        // fragment lifetime even if the view is recreated.
         //validate payload that is passed
         payloadPassed?.let {
             if (dojoUtil.validate(it)) {
                 payload = it
                 binding.pager.setCurrentItem(2, true)
             } else {
-                scanFragment.resetCamera()
+                // #181: the old scanFragment.resetCamera() here no-op'd
+                // (the scan page has no view at this moment) - dropped
+                // with the field instances; the toast is the feedback.
                 Toast.makeText(requireContext(), getString(R.string.invalid_payload), Toast.LENGTH_SHORT).show()
             }
         }
     }
 
+    // ---- #181 page-event entry points ----
+    // Called by the page fragments at event time. No listener fields
+    // exist anywhere, so there is nothing to strand across a restore.
+
+    /** Instructions page: CONNECT tapped - advance to the scan page. */
+    fun onInstructionsConnectClicked() {
+        binding.pager.setCurrentItem(1, true)
+    }
+
+    /** Instructions page: BROWSE tapped - the consent dialog gates the list. */
+    fun onBrowseCommunityDojoClicked() {
+        showCommunityDojoPrivacyWarning()
+    }
+
+    /** Scan page: PASTE tapped - clipboard pairing payload. */
+    fun onManualPasteClicked() {
+        val jsonDojo = AndroidUtil.getClipBoardString(requireContext())
+
+        if (jsonDojo != null && dojoUtil.validate(jsonDojo!!)) {
+            payload = jsonDojo
+            binding.pager.setCurrentItem(2, true)
+        } else
+            Toast.makeText(requireContext(), getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Scan page decoded a QR. True = payload accepted and the sheet
+     * advanced to the connect page; false = invalid payload (the toast
+     * lands here, where getString lives) and the caller resets its own
+     * camera.
+     */
+    fun onScanPayload(scanned: String): Boolean {
+        if (dojoUtil.validate(scanned)) {
+            payload = scanned
+            binding.pager.setCurrentItem(2, true)
+            return true
+        }
+        Toast.makeText(requireContext(), getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
+        return false
+    }
+
+    /** Connect page's view is ready (#165 latch) - begin Tor + pairing. */
+    fun onConnectViewReady() {
+        startTorAndConnect()
+    }
+
+    /**
+     * #181: the live connect page, whenever it exists - built fresh by
+     * createFragment, restored by tag by the adapter, never a sheet
+     * field. All sheet -> page progress writes go through this lookup.
+     */
+    private fun connectPage(): DojoConnectFragment? =
+        childFragmentManager.fragments.filterIsInstance<DojoConnectFragment>().firstOrNull()
+
     private fun startTorAndConnect() {
         if (SentinelTorManager.getTorState().state == EnumTorState.ON) {
-            dojoConnectFragment.showTorProgressSuccess()
+            connectPage()?.showTorProgressSuccess()
             setDojo()
         } else {
             setUpTor()
             // #170: pairing start, no stomp on the user's toggle.
             SentinelTorManager.start()
-            dojoConnectFragment.showTorProgress()
+            connectPage()?.showTorProgress()
             SentinelTorManager.getTorStateLiveData().observe(this) {
                 if (it.state == EnumTorState.ON) {
-                    if (dojoConnectFragment.showTorProgressSuccess()) {
+                    if (connectPage()?.showTorProgressSuccess() == true) {
                         setDojo()
                     }
                 }
@@ -145,7 +181,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     private fun setDojo() {
-        dojoConnectFragment.showDojoProgress()
+        connectPage()?.showDojoProgress()
         try {
             val pairing = fromJSON<DojoPairing>(payload)
                 ?: throw  Exception("Invalid payload")
@@ -228,7 +264,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
      */
     fun dismissAllOrToast(wasResponseSuccessful: Boolean, retry: Boolean = false) {
         if (wasResponseSuccessful) {
-            dojoConnectFragment.showDojoProgressSuccess()
+            connectPage()?.showDojoProgressSuccess()
             mainHandler.postDelayed({
                 if (!listenerFired) {
                     listenerFired = true
@@ -285,17 +321,22 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     private fun setUpViewPager() {
-        val item = arrayListOf<Fragment>()
-        item.add(dojoConfigureBottomSheet)
-        item.add(scanFragment)
-        item.add(dojoConnectFragment)
+        // #181: the FragmentStateAdapter contract owns construction -
+        // createFragment must return a NEW instance per position. The
+        // old code returned sheet fields here, desyncing the adapter's
+        // restoration bookkeeping (pages restored by tag) from the
+        // sheet's wiring (set on the fields) after any recreation.
         binding.pager.adapter = object : FragmentStateAdapter(this) {
             override fun getItemCount(): Int {
-                return item.size
+                return 3
             }
 
             override fun createFragment(position: Int): Fragment {
-                return item[position];
+                return when (position) {
+                    0 -> DojoNodeInstructions()
+                    1 -> ScanFragment()
+                    else -> DojoConnectFragment()
+                }
             }
 
         }
@@ -328,28 +369,20 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
 
 class DojoNodeInstructions : Fragment() {
 
-    private var connectOnClickListener: View.OnClickListener? = null
-    private var browseCommunityDojoOnClickListener: View.OnClickListener? = null
-
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.bottomsheet_dojo_configure_instruction, container, false);
     }
 
-    fun setConnectListener(listener: View.OnClickListener) {
-        connectOnClickListener = listener
-    }
-
-    fun setBrowseCommunityDojoListener(listener: View.OnClickListener) {
-        browseCommunityDojoOnClickListener = listener
-    }
-
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        view.findViewById<MaterialButton>(R.id.connect_dojo).setOnClickListener { view ->
-            connectOnClickListener?.onClick(view)
+        // #181: resolve the sheet at click time - a stored listener
+        // would be registered on whatever instance the sheet held,
+        // which post-restore is not the fragment being shown.
+        view.findViewById<MaterialButton>(R.id.connect_dojo).setOnClickListener {
+            (parentFragment as? DojoConfigureBottomSheet)?.onInstructionsConnectClicked()
         }
-        view.findViewById<MaterialButton>(R.id.browse_community_dojos).setOnClickListener { view ->
-            browseCommunityDojoOnClickListener?.onClick(view)
+        view.findViewById<MaterialButton>(R.id.browse_community_dojos).setOnClickListener {
+            (parentFragment as? DojoConfigureBottomSheet)?.onBrowseCommunityDojoClicked()
         }
     }
 
@@ -364,19 +397,14 @@ class DojoConnectFragment : Fragment() {
     private lateinit var progressTor: ProgressBar
     private lateinit var progressDojo: ProgressBar
 
-    // #165: the connect trigger, registered by the sheet before any
-    // setCurrentItem(2) can run. onViewCreated here is the earliest
-    // moment the lateinit views above are guaranteed initialized;
-    // the latch keeps the fire once per fragment lifetime even if
-    // the view is recreated (FragmentStateAdapter reuses this
-    // instance, and the pager is input-disabled so page 2 is only
-    // ever reached via setCurrentItem).
-    private var connectViewReadyListener: (() -> Unit)? = null
+    // #165: the connect trigger fires from this fragment's own
+    // onViewCreated - the earliest moment the lateinit views above are
+    // guaranteed initialized - and the latch keeps the fire once per
+    // fragment lifetime even if the view is recreated. #181: the sheet
+    // is resolved at event time instead of holding a callback field,
+    // so a restored instance fires into the live sheet, not into a
+    // stale wiring target.
     private var connectTriggered = false
-
-    fun setConnectViewReadyListener(callback: () -> Unit) {
-        connectViewReadyListener = callback
-    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         val view = inflater.inflate(R.layout.bottomsheet_dojo_connection, container, false)
@@ -393,7 +421,7 @@ class DojoConnectFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         if (!connectTriggered) {
             connectTriggered = true
-            connectViewReadyListener?.invoke()
+            (parentFragment as? DojoConfigureBottomSheet)?.onConnectViewReady()
         }
     }
 
@@ -431,19 +459,9 @@ class ScanFragment : Fragment() {
 
     private var mCodeScanner: QRScanner? = null
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java);
-    private var onScan: (scanData: String) -> Unit = {}
-    private var manualDetailsListener: View.OnClickListener? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.content_scan_layout, container, false);
-    }
-
-    fun setManualDetailsListener(listener: View.OnClickListener) {
-        manualDetailsListener = listener
-    }
-
-    fun setOnScanListener(callback: (scanData: String) -> Unit) {
-        this.onScan = callback
     }
 
     fun resetCamera() {
@@ -457,15 +475,20 @@ class ScanFragment : Fragment() {
         mCodeScanner?.setLifeCycleOwner(this)
         view.findViewById<TextView>(R.id.scanInstructions).text = getString(R.string.dojo_scan_instruction)
         view.findViewById<TextView>(R.id.scanInstructions).textAlignment = TextView.TEXT_ALIGNMENT_CENTER
+        // #181: decode results and the paste button resolve the sheet
+        // at event time; the old listener fields died with the
+        // pre-built instances they were registered on.
         mCodeScanner?.setQRDecodeListener {
             lifecycleScope.launch {
                 mCodeScanner?.stopScanner()
-                onScan(it)
+                if ((parentFragment as? DojoConfigureBottomSheet)?.onScanPayload(it) != true) {
+                    resetCamera()
+                }
             }
         }
 
         view.findViewById<Button>(R.id.pastePubKey).setOnClickListener {
-            manualDetailsListener?.onClick(view)
+            (parentFragment as? DojoConfigureBottomSheet)?.onManualPasteClicked()
         }
 
     }
