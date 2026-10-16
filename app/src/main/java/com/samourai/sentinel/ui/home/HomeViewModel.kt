@@ -101,6 +101,18 @@ class HomeViewModel : ViewModel() {
     private var autoRetryPending = false
 
     private fun launchSyncRound(collections: ArrayList<PubKeyCollection>) {
+        // #175: choke point for every auto arm (observeTor ON re-arm,
+        // trailing re-run, getCollections). No collections and no endpoint
+        // means no work exists that needs Tor: Idle, never a WaitingForTor
+        // banner and never an empty round fabricating Success (#174). The
+        // signature stamp is left untouched so a later real round is not
+        // signature-skipped.
+        if (collections.isEmpty() && !prefsUtil.isAPIEndpointEnabled()) {
+            if (syncState.value !is SyncState.Failed) {
+                syncState.postValue(SyncState.Idle)
+            }
+            return
+        }
         if (syncRound?.isActive == true) {
             // Drop the re-arm; the in-flight round is already fetching this
             // data. Re-run at most once when it ends so genuine collection
@@ -191,7 +203,13 @@ class HomeViewModel : ViewModel() {
         SentinelTorManager.getTorStateLiveData().observeForever { torState ->
             when (torState.state) {
                 EnumTorState.STARTING -> {
-                    if (syncState.value !is SyncState.Syncing) {
+                    // #175: bootstrap progress is only banner-worthy when
+                    // something awaits it. An empty wallet with no endpoint
+                    // stays quiet (device-witnessed: 3x WaitingForTor in
+                    // exactly that regime, 2026-10-16 relaunch leg).
+                    val workPending = repository.collectionsSnapshot().isNotEmpty() ||
+                        prefsUtil.isAPIEndpointEnabled()
+                    if (syncState.value !is SyncState.Syncing && workPending) {
                         syncState.postValue(SyncState.WaitingForTor(torState.progressIndicator))
                     }
                 }
@@ -238,6 +256,19 @@ class HomeViewModel : ViewModel() {
             // wallets while any network work happens in the background.
             resultLiveData.value = collections
 
+            // #175/#174: an empty wallet with no endpoint configured has
+            // no work that needs Tor - no WaitingForTor banner, no round,
+            // and no empty-round Success painting the indicator green.
+            // A Failed the user earned (pull-to-refresh with nothing
+            // configured) stands.
+            if (collections.isEmpty() && !prefsUtil.isAPIEndpointEnabled()) {
+                if (syncState.value !is SyncState.Failed) {
+                    syncState.postValue(SyncState.Idle)
+                }
+                SentinelState.hasAppJustStarted = false
+                return@addSource
+            }
+
             // #135: full readiness, not the boot=5 ON emission. When not yet
             // ready the round is deferred and observeTor() re-arms it the
             // moment boot=100 AND the SOCKS listener are both published.
@@ -274,7 +305,17 @@ class HomeViewModel : ViewModel() {
      */
     private suspend fun syncCollections(collections: ArrayList<PubKeyCollection>) = coroutineScope {
         if (collections.isEmpty()) {
-            syncState.postValue(SyncState.Success(System.currentTimeMillis()))
+            // #174: "nothing to sync" is a success only when a server
+            // exists to have synced against. Unconfigured endpoint -> Idle;
+            // Success here painted the indicator GREEN on a fresh install
+            // with nothing configured (device-witnessed 2026-10-16).
+            // Execute-time truth for the admit/execute race (endpoint
+            // removed mid-round, #85 ground).
+            if (prefsUtil.isAPIEndpointEnabled()) {
+                syncState.postValue(SyncState.Success(System.currentTimeMillis()))
+            } else if (syncState.value !is SyncState.Failed) {
+                syncState.postValue(SyncState.Idle)
+            }
             updateBalance()
             SentinelState.hasAppJustStarted = false
             return@coroutineScope
@@ -405,9 +446,19 @@ class HomeViewModel : ViewModel() {
 
     fun fetchBalance(userInitiated: Boolean = false) {
         if (prefsUtil.apiEndPoint == null) {
-            syncState.postValue(
-                SyncState.Failed("No server configured.", retryable = false)
-            )
+            if (userInitiated) {
+                // A human pull-to-refresh keeps the loud, honest red -
+                // the one correction path on an unconfigured wallet (#174
+                // device leg, 2026-10-16).
+                syncState.postValue(
+                    SyncState.Failed("No server configured.", retryable = false)
+                )
+            } else if (syncState.value !is SyncState.Failed) {
+                // #175: auto triggers (startup one-shot, auto-retry
+                // relaunch) never shout about a state the user did not
+                // ask about.
+                syncState.postValue(SyncState.Idle)
+            }
             return
         }
 
