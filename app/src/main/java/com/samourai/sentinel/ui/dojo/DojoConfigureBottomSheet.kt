@@ -17,11 +17,9 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.viewModelScope
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
 import com.invertedx.hummingbird.QRScanner
 import com.samourai.sentinel.R
 import com.samourai.sentinel.databinding.FragmentBottomsheetViewPagerBinding
@@ -31,9 +29,7 @@ import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.GenericBottomSheet
-import com.samourai.sentinel.util.FormatsUtil
 import com.samourai.sentinel.util.apiScope
-import com.samourai.wallet.util.FormatsUtilGeneric
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -193,14 +189,16 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
 
                 override fun onFailure(call: Call, e: IOException) {
                     // e.message can be null; `!!` here crashed inside the failure handler.
-                    if (e.message?.contains("Unable to resolve host") == true) {
-                        Thread.sleep(5000)
-                        if (SentinelTorManager.getProxy() != null)
-                            setDojo()
-                        else
-                            dismissAllOrToast(false, true)
-                    }
-                    else {
+                    // #176: this arm decides nothing on the OkHttp dispatcher
+                    // thread anymore. Both failure kinds take the #159 capped
+                    // retry arm - resolve-host included, which used to sleep
+                    // 5s right here and re-enter setDojo() off-main, uncapped,
+                    // for as long as the proxy lived. The numRetries cap in
+                    // dismissAllOrToast bounds it now: three timer-driven
+                    // retries on the main looper, then toast-and-dismiss.
+                    // setDojo() is entered from main only (connect latch, Tor
+                    // observer, retry timer).
+                    mainHandler.post {
                         dismissAllOrToast(false, true)
                     }
                 }
@@ -210,8 +208,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             // contract is "pairing live, endpoints set"; firing on a
             // failure bursts stale state into the holders. Toast + dismiss
             // only, on the main looper from any caller thread
-            // (the retry arm re-enters setDojo off a timer, the
-            // onFailure path from the OkHttp thread).
+            // (setDojo is main-only post-#176; this post stays as
+            // defense).
             mainHandler.post {
                 dismiss()
                 if (context != null)
