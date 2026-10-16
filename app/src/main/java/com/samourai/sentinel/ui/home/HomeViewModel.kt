@@ -12,6 +12,7 @@ import com.samourai.sentinel.data.repository.TransactionsRepository
 import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.tor.TorState
+import com.samourai.sentinel.ui.utils.Preferences
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.util.MonetaryUtil
 import com.samourai.sentinel.util.UtxoMetaUtil
@@ -24,6 +25,7 @@ import kotlinx.coroutines.CancellationException
 import org.bitcoinj.core.Coin
 import org.koin.java.KoinJavaComponent.inject
 import timber.log.Timber
+import kotlin.reflect.KProperty
 
 class HomeViewModel : ViewModel() {
 
@@ -65,6 +67,13 @@ class HomeViewModel : ViewModel() {
     private val syncState: MutableLiveData<SyncState> = MutableLiveData(SyncState.Idle)
 
     fun syncState(): LiveData<SyncState> = syncState
+
+    // #184: endpoint + Tor-toggle writes are indicator inputs. Pref
+    // delegates notify listeners BEFORE the value lands (GenericPrefDelegate
+    // notifies first, writes after), so pokes travel via postValue - by
+    // main-loop dispatch time the write has landed and computeIndicator()
+    // reads fresh prefs.
+    private val endpointPoke = MutableLiveData<Unit>()
 
     /**
      * Coalescing guard (#47): at most ONE sync round in flight at a time -
@@ -124,6 +133,13 @@ class HomeViewModel : ViewModel() {
         val signature = collectionSignature(collections)
         if (lastRoundSignature != null && signature == lastRoundSignature) {
             Timber.i("sync round skipped: signature unchanged since last round")
+            // #184: a skipped re-arm must not leave the climb's
+            // WaitingForTor standing - no other emission is coming, and a
+            // stale WaitingForTor is what pulsed the dot amber forever
+            // after bootstrap on an unconfigured rig.
+            if (syncState.value is SyncState.WaitingForTor) {
+                syncState.postValue(SyncState.Idle)
+            }
             return
         }
         lastRoundSignature = signature
@@ -171,9 +187,47 @@ class HomeViewModel : ViewModel() {
      */
     fun payloadReadFailure(): LiveData<String?> = repository.readFailure()
 
+    // #184: only these pref writes are dot-relevant.
+    private val indicatorPrefs = setOf("apiEndPoint", "apiEndPointTor", "enableTor")
+
+    // Qualified via Preferences, the declaring class - Kotlin resolves
+    // nested classifiers only through their declaring class (SentinelState
+    // precedent). Declared ABOVE init: Kotlin initializes members in
+    // textual order and forward references are compile errors.
+    private val prefsListener = object : Preferences.SharedPrefsListener {
+        override fun onSharedPrefChanged(property: KProperty<*>) {
+            if (property.name !in indicatorPrefs) return
+            endpointPoke.postValue(Unit)
+        }
+    }
+
+    /**
+     * #184: a standing non-retryable Failed is the "No server configured."
+     * red; the moment an endpoint exists it is stale. A quiet auto round
+     * retires it (empty wallet -> immediate Success -> GREEN; real wallet
+     * -> honest terminal state, #47 coalescing guards stacking). Runs on
+     * endpointPoke dispatch so the pref write has landed before reads.
+     */
+    private val endpointKick = Observer<Unit> {
+        val sync = syncState.value
+        if (prefsUtil.isAPIEndpointEnabled() && sync is SyncState.Failed && !sync.retryable) {
+            fetchBalance(userInitiated = false)
+        }
+    }
+
     init {
         load()
         observeTor()
+        // #184: pairing/unpairing and the Tor toggle re-render the dot.
+        // observeForever needs the main thread; ViewModel creation is main.
+        prefsUtil.addListener(prefsListener)
+        endpointPoke.observeForever(endpointKick)
+    }
+
+    override fun onCleared() {
+        endpointPoke.removeObserver(endpointKick)
+        prefsUtil.removeListener(prefsListener)
+        super.onCleared()
     }
 
     private fun load() {
@@ -401,47 +455,68 @@ class HomeViewModel : ViewModel() {
     }
 
     /**
-     * Derives the toolbar traffic-light from Tor state + sync state.
-     *
-     * GREEN only when Tor is connected AND the last sync succeeded.
+     * #184: ONE shared mediator for the process. Recreated per call it could
+     * never gain a source after the fact - a mid-session Tor toggle left
+     * the dot blind to Tor for the rest of the process (the source set was
+     * frozen at first menu preparation, and only if Tor was already
+     * required then).
      */
-    fun connectionIndicator(): LiveData<ConnectionIndicator> {
-        val mediator = MediatorLiveData<ConnectionIndicator>()
-
-        // #99: the climb emission carries the authoritative snapshot (it
-        // includes progressIndicator); the syncState source falls back to a
-        // fresh manager read at recompute time.
-        fun recompute(tor: TorState = SentinelTorManager.getTorState()) {
-            val torRequired = SentinelState.isTorRequired()
-            val torState = tor.state
-            val sync = syncState.value ?: SyncState.Idle
-
-            mediator.value = when {
-                sync is SyncState.Failed -> ConnectionIndicator.RED
-                torRequired && torState == EnumTorState.OFF -> ConnectionIndicator.RED
-                torRequired && torState == EnumTorState.STARTING -> ConnectionIndicator.YELLOW
-                // #99: ON lands at boot=5 - NOT fully bootstrapped. GREEN means
-                // the 5->100 climb finished; mid-climb (circuit possibly not
-                // SOCKS-ready, 10-02 D3) stays YELLOW even if a round succeeded
-                // (operator-approved cost). The climb is monotonic, so the gate
-                // cannot flap (#47 family): GREEN lands exactly at boot=100.
-                torRequired && torState == EnumTorState.ON &&
-                    tor.progressIndicator < 100 -> ConnectionIndicator.YELLOW
-                sync is SyncState.WaitingForTor -> ConnectionIndicator.YELLOW
-                sync is SyncState.Syncing -> ConnectionIndicator.YELLOW
-                // Tor up (or not needed) and the last sync completed cleanly.
-                sync is SyncState.Success -> ConnectionIndicator.GREEN
-                else -> ConnectionIndicator.NEUTRAL
+    private val connectionIndicatorMediator: MediatorLiveData<ConnectionIndicator> by lazy {
+        MediatorLiveData<ConnectionIndicator>().also { mediator ->
+            val recompute: (TorState?) -> Unit = { tor ->
+                mediator.value = computeIndicator(tor)
             }
-        }
-
-        mediator.addSource(syncState) { recompute() }
-        if (SentinelState.isTorRequired()) {
+            mediator.addSource(syncState) { recompute(null) }
+            // Attached UNCONDITIONALLY: computeIndicator gates every Tor arm
+            // on a fresh isTorRequired() read, so a mid-session toggle is
+            // tracked without any re-wiring.
             mediator.addSource(SentinelTorManager.getTorStateLiveData()) { tor ->
                 recompute(tor)
             }
+            // #184: pairing/unpairing and the Tor toggle arrive as pokes;
+            // recompute reads the prefs fresh at dispatch time.
+            mediator.addSource(endpointPoke) { recompute(null) }
         }
-        return mediator
+    }
+
+    fun connectionIndicator(): LiveData<ConnectionIndicator> = connectionIndicatorMediator
+
+    /**
+     * Derives the toolbar traffic-light from Tor state + sync state +
+     * endpoint configuration. Pure; the controller's dedupe is untouched.
+     *
+     * GREEN only when Tor is connected AND the last sync succeeded.
+     */
+    private fun computeIndicator(torEmission: TorState?): ConnectionIndicator {
+        val torRequired = SentinelState.isTorRequired()
+        // #99: the climb emission carries the authoritative snapshot (it
+        // includes progressIndicator); the syncState and poke sources fall
+        // back to a fresh manager read at recompute time.
+        val tor = torEmission ?: SentinelTorManager.getTorState()
+        val sync = syncState.value ?: SyncState.Idle
+
+        return when {
+            sync is SyncState.Failed -> ConnectionIndicator.RED
+            torRequired && tor.state == EnumTorState.OFF -> ConnectionIndicator.RED
+            torRequired && tor.state == EnumTorState.STARTING -> ConnectionIndicator.YELLOW
+            // #99: ON lands at boot=5 - NOT fully bootstrapped. GREEN means
+            // the 5->100 climb finished; mid-climb (circuit possibly not
+            // SOCKS-ready, 10-02 D3) stays YELLOW even if a round succeeded
+            // (operator-approved cost). The climb is monotonic, so the gate
+            // cannot flap (#47 family): GREEN lands exactly at boot=100.
+            torRequired && tor.state == EnumTorState.ON &&
+                tor.progressIndicator < 100 -> ConnectionIndicator.YELLOW
+            sync is SyncState.WaitingForTor -> ConnectionIndicator.YELLOW
+            sync is SyncState.Syncing -> ConnectionIndicator.YELLOW
+            // Tor up (or not needed) and the last sync completed cleanly.
+            sync is SyncState.Success -> ConnectionIndicator.GREEN
+            // #184: Tor is demanded and up, but nothing is configured to
+            // sync against - an honest RED. This was NEUTRAL (hidden),
+            // which is how a bootstrapped no-endpoint rig sat dark or
+            // stale until a manual refresh manufactured a state change.
+            torRequired && !prefsUtil.isAPIEndpointEnabled() -> ConnectionIndicator.RED
+            else -> ConnectionIndicator.NEUTRAL
+        }
     }
 
     fun fetchBalance(userInitiated: Boolean = false) {

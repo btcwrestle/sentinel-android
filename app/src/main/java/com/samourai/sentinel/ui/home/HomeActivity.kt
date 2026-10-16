@@ -21,6 +21,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.shape.ShapeAppearanceModel
 import com.samourai.sentinel.R
+import com.samourai.sentinel.core.ConnectionIndicator
 import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.core.SyncState
 import com.samourai.sentinel.ui.views.ConnectionIndicatorController
@@ -73,6 +74,9 @@ class HomeActivity : SentinelActivity() {
     private val model: HomeViewModel by viewModels()
     private var balance = -1L
     private var indicatorController: ConnectionIndicatorController? = null
+    // #184: named observer so a menu re-pass can retire the previous one -
+    // the indicator LiveData is one shared mediator for the process now.
+    private var indicatorObserver: Observer<ConnectionIndicator>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -618,10 +622,17 @@ class HomeActivity : SentinelActivity() {
         // Traffic-light: green = Tor connected AND synced, flashing yellow =
         // connecting/syncing, red = failed. Driven by the ViewModel so Tor state
         // and sync state are considered together.
+        // #184: the indicator LiveData is one shared mediator for the process
+        // now - a menu re-pass must retire the previous observer, or the
+        // stale observer keeps rendering into the disposed controller while
+        // the fresh controller misses the replayed current value.
         indicatorController?.dispose()
-        indicatorController = ConnectionIndicatorController(statusCircle).also { controller ->
-            model.connectionIndicator().observe(this) { controller.render(it) }
-        }
+        indicatorObserver?.let { model.connectionIndicator().removeObserver(it) }
+        val controller = ConnectionIndicatorController(statusCircle)
+        indicatorController = controller
+        val observer = Observer<ConnectionIndicator> { controller.render(it) }
+        indicatorObserver = observer
+        model.connectionIndicator().observe(this, observer)
 
         rootView.setOnClickListener {
             startActivity(Intent(this, NetworkActivity::class.java))
@@ -631,6 +642,9 @@ class HomeActivity : SentinelActivity() {
     override fun onDestroy() {
         indicatorController?.dispose()
         indicatorController = null
+        // #184: lifecycle teardown owns observer removal; this drops the
+        // stale reference so a later pass cannot reuse a dead observer.
+        indicatorObserver = null
         super.onDestroy()
     }
 
