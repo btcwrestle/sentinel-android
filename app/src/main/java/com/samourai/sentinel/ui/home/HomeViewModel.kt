@@ -202,16 +202,41 @@ class HomeViewModel : ViewModel() {
     }
 
     /**
+     * #186: true when a poke retired a standing Success on unpair; the
+     * next arrive-direction poke (re-pair) spends it on a quiet round so
+     * the dot climbs back to GREEN with no manual refresh. Main-thread
+     * only - endpointKick dispatches on the main loop.
+     */
+    private var staleSuccessRetired = false
+
+    /**
      * #184: a standing non-retryable Failed is the "No server configured."
      * red; the moment an endpoint exists it is stale. A quiet auto round
      * retires it (empty wallet -> immediate Success -> GREEN; real wallet
      * -> honest terminal state, #47 coalescing guards stacking). Runs on
      * endpointPoke dispatch so the pref write has landed before reads.
+     *
+     * #186: the vanish direction. computeIndicator() is stateless and its
+     * Success arm is evaluated BEFORE the no-endpoint RED arm, so a
+     * standing Success from the paired era keeps the dot GREEN after
+     * unpairing until some other input changes. Retire it to Idle here:
+     * the Idle emission itself re-arms the mediator (syncState is a
+     * source) and the honest no-endpoint RED arm wins at recompute.
      */
     private val endpointKick = Observer<Unit> {
         val sync = syncState.value
-        if (prefsUtil.isAPIEndpointEnabled() && sync is SyncState.Failed && !sync.retryable) {
-            fetchBalance(userInitiated = false)
+        when {
+            prefsUtil.isAPIEndpointEnabled() && sync is SyncState.Failed && !sync.retryable -> {
+                fetchBalance(userInitiated = false)
+            }
+            !prefsUtil.isAPIEndpointEnabled() && sync is SyncState.Success -> {
+                staleSuccessRetired = true
+                syncState.postValue(SyncState.Idle)
+            }
+            prefsUtil.isAPIEndpointEnabled() && sync is SyncState.Idle && staleSuccessRetired -> {
+                staleSuccessRetired = false
+                fetchBalance(userInitiated = false)
+            }
         }
     }
 
