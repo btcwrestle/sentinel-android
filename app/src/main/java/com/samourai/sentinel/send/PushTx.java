@@ -22,32 +22,6 @@ public class PushTx {
         return instance;
     }
 
-//    public String samourai(String hexString) {
-//
-//        String _url = "pushtx/";
-//
-//        try {
-//            String response = null;
-//
-//            if(!TorManager.getInstance(context).isRequired())    {
-//                String _base = SamouraiWallet.getInstance().isTestNet() ? WebUtil.SAMOURAI_API2_TESTNET : WebUtil.SAMOURAI_API2;
-//                response = WebUtil.getInstance(context).postURL(_base + _url + "?at=" + APIFactory.getInstance(context).getAccessToken(), "tx=" + hexString);
-//            }
-//            else    {
-//                String _base = SamouraiWallet.getInstance().isTestNet() ? WebUtil.SAMOURAI_API2_TESTNET_TOR : WebUtil.SAMOURAI_API2_TOR;
-//                HashMap<String,String> args = new HashMap<String,String>();
-//                args.put("tx", hexString);
-//                response = WebUtil.getInstance(context).tor_postURL(_base + _url + "?at=" + APIFactory.getInstance(context).getAccessToken(), args);
-//            }
-//
-//            return response;
-//        }
-//        catch(Exception e) {
-//            return null;
-//        }
-//
-//    }
-//
 //    public String trustedNode(String hexString) {
 //
 //        try {

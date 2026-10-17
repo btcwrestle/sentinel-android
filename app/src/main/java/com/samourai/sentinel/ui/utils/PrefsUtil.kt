@@ -52,6 +52,22 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
     var selectedExplorer by stringPref(defaultValue = "Blockstream")
     var customExplorerUrl by stringPref(defaultValue = "")
     var apiEndPointTor by stringPref(defaultValue = null)
+
+    // Dojo Bay display metadata for the paired Dojo. Snapshot taken from the
+    // directory node already in memory at pairing time (no extra requests);
+    // keyed by pairing URL so it self-invalidates on re-pair or restore
+    // instead of showing a stale label. Display-only.
+    var dojoDisplayName by stringPref(defaultValue = null)
+    var dojoDisplayFlag by stringPref(defaultValue = null)
+    var dojoDisplayUrl by stringPref(defaultValue = null)
+    // #119 Route A / #122: sibling explorer declared by the paired
+    // Dojo's pairing payload (optional; absent = no self rung).
+    // Snapshot written at the pairing capture sites, restored by
+    // DojoUtil.read(), cleared with the pairing. Rides export()/
+    // import() reflection like dojoDisplay*; `type` is display-only -
+    // disclosure class is host-derived, never type-derived.
+    var dojoExplorerUrl by stringPref(defaultValue = null)
+    var dojoExplorerType by stringPref(defaultValue = null)
     var testnet by booleanPref(defaultValue = false)
     var ricochetStaggeredDelivery by booleanPref(defaultValue = false)
     var useRicochet by booleanPref(defaultValue = false)
@@ -59,6 +75,10 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
     var offlineMode by booleanPref(defaultValue = false)
     var blockHeight by longPref(defaultValue = 0L)
     var firstRun by booleanPref(defaultValue = true)
+
+    // Whirlpool auto-labeling toggle (#6). Rides export()/import()
+    // prefs backup automatically via reflection over declared props.
+    var whirlpoolAutoLabels by booleanPref(defaultValue = false)
 
     fun isAPIEndpointEnabled(): Boolean {
         return !this.apiEndPointTor.isNullOrEmpty() && !this.apiEndPoint.isNullOrEmpty()
@@ -72,6 +92,13 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
         val clazz = this.javaClass.kotlin
         val payload = JSONObject()
         clazz.declaredMemberProperties.forEach {
+            // Deliberate omission, not JSONObject.NULL (#81 residue):
+            // org.json's put(name, null) removes the mapping, so
+            // null-valued string prefs (apiEndPoint, apiEndPointTor,
+            // dojoDisplay*) are simply absent from the backup.
+            // import() iterates payload keys, so absent means "not
+            // restored" - readers must use tolerant access (optString);
+            // a hard getString on these keys is what crashed #80.
             payload.put(it.name, it.get(this@PrefsUtil))
         }
         return payload

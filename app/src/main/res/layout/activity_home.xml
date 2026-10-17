@@ -148,13 +148,14 @@
             android:visibility="gone"
             tools:visibility="visible">
 
-            <ProgressBar
+            <com.google.android.material.progressindicator.CircularProgressIndicator
                 android:id="@+id/syncStatusProgress"
-                style="?android:attr/progressBarStyleSmall"
+                style="@style/Widget.MaterialComponents.CircularProgressIndicator"
                 android:layout_width="18dp"
                 android:layout_height="18dp"
                 android:layout_marginEnd="12dp"
-                android:indeterminateTint="@color/warning_yellow" />
+                android:indeterminate="true"
+                app:indicatorColor="@color/warning_yellow" />
 
             <TextView
                 android:id="@+id/syncStatusText"

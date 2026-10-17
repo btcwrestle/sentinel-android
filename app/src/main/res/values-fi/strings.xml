@@ -102,7 +102,6 @@
     <string name="decryption_error">Virhe purettaessa lompakon varmuuskopion salausta. Yritä uudelleen.</string>
     <string name="restore_wallet_from_backup">Tuo lompakko varmuuskopiosta</string>
 
-    <string name="choose_email_client">Valitse sähköpostiohjelma:</string>
 
     <string name="bip32_account">BIP32-tili</string>
     <string name="bip44_account">BIP44/49-tili</string>

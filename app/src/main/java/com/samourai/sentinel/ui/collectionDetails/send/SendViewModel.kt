@@ -128,6 +128,17 @@ class SendViewModel : ViewModel() {
                     withContext(Dispatchers.Main) {
                         _validSpend.postValue(isValid)
                     }
+                } catch (e: com.samourai.sentinel.api.ApiService.ApiNotConfigured) {
+                    // #125: compose() reaches getTxHex (:351/:375) -> buildClient ->
+                    // getAPIUrl, throwing this on an unpaired install. Throwable, so the
+                    // Exception wall below is blind and viewModelScope has no CEH: the
+                    // throw would have escaped the compose job from the send screen. Same
+                    // degrade as :132-136. FQN deliberate: this file has no ApiService
+                    // import; simple-name cleanup may follow.
+                    Timber.e(e, "Compose aborted: no API endpoint configured")
+                    viewModelScope.launch(Dispatchers.Main) {
+                        _validSpend.postValue(false)
+                    }
                 } catch (e: Exception) {
                     viewModelScope.launch(Dispatchers.Main) {
                         _validSpend.postValue(false)

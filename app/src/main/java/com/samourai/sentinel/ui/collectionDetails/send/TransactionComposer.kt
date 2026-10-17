@@ -28,7 +28,6 @@ import org.bitcoinj.core.Address
 import org.bitcoinj.core.ECKey
 import org.bitcoinj.params.MainNetParams
 import org.json.JSONObject
-import org.koin.ext.scope
 import org.koin.java.KoinJavaComponent
 import timber.log.Timber
 import java.math.BigInteger

@@ -20,17 +20,27 @@
             app:key="scramblePin" />
 
         <CheckBoxPreference
-            android:title="@string/options_haptic"
+            app:title="@string/options_haptic"
             android:summary="@string/options_haptic_2"
             app:dependency="pinEnabled"
             android:key="haptic"
+            app:persistent="false"
             android:defaultValue="false" />
 
         <CheckBoxPreference
-            android:title="@string/street_mode"
+            app:title="@string/street_mode"
             android:summary="@string/hide_your_bitcoin_balance_from_prying_eyes"
+            app:persistent="false"
             android:defaultValue="false"
             android:key="streetMode" />
+
+        <CheckBoxPreference
+            app:key="whirlpoolAutoLabels"
+            app:persistent="false"
+            android:defaultValue="false"
+            app:title="Whirlpool auto-labels"
+            app:summaryOn="TX0 / mix / remix transactions are labeled automatically"
+            app:summaryOff="Whirlpool transactions are not labeled automatically" />
 
     </PreferenceCategory>
 
@@ -98,6 +108,31 @@
     <PreferenceCategory
         app:allowDividerAbove="true"
         app:allowDividerBelow="true"
+        app:title="Labels (BIP-329)">
+
+        <Preference
+            app:icon="@drawable/ic_file_export"
+            app:key="exportLabels"
+            app:summary="Export wallet labels as a BIP-329 JSONL file"
+            app:title="Export Labels" />
+
+        <Preference
+            app:icon="@drawable/ic_file_import"
+            app:key="importLabels"
+            app:summary="Import wallet labels from a BIP-329 JSONL file (Sparrow-compatible)"
+            app:title="Import Labels" />
+
+        <Preference
+            app:icon="@drawable/ic_baseline_qr_code_scanner_24"
+            app:key="importLabelsQr"
+            app:summary="Import wallet labels by scanning an animated UR (Sparrow BIP-329 export)"
+            app:title="Import Labels (QR)" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:allowDividerAbove="true"
+        app:allowDividerBelow="true"
         app:title="About">
 
         <Preference
@@ -114,11 +149,6 @@
             app:key="shareErrorLog"
             app:summary="Error file containing previously caught exceptions"
             app:title="Share error log" />
-
-        <Preference
-            app:key="sendBackupToSupport"
-            app:summary="Share your Sentinel backup with tech support to aid with troubleshooting"
-            app:title="Send backup to tech support" />
 
         <Preference
             app:key="rescanXpub"

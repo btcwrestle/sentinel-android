@@ -44,7 +44,7 @@ data class CommunityDojoNode(
      */
     fun pairingPayloadJson(): String? {
         val pairing = payload?.pairing ?: return null
-        return DojoPairing(pairing = pairing).toJSON()
+        return DojoPairing(pairing = pairing, explorer = payload.explorer).toJSON()
     }
 
     /**
@@ -66,5 +66,10 @@ data class CommunityDojoNode(
 
 data class CommunityDojoPayload(
     @SerializedName("pairing")
-    val pairing: Pairing? = null
+    val pairing: Pairing? = null,
+    // #119 Route A: most directory nodes also declare a sibling
+    // explorer; carried into the reconstructed pairing JSON so the
+    // pairing flow's capture sites see it.
+    @SerializedName("explorer")
+    val explorer: Explorer? = null
 )

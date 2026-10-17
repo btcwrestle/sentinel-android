@@ -78,7 +78,7 @@ class WalletPairingFragment(private val payload: String = "", secure: Boolean = 
             apiScope.launch {
                 try {
                     exchangeRateRepository.fetch()
-                    repository.pubKeyCollections.forEach {
+                    repository.collectionsSnapshot().forEach {
 
                         val job = apiScope.launch {
                             try {

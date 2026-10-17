@@ -42,68 +42,11 @@ class ExportImportUtil {
 
     fun makePayload(): JSONObject {
         return JSONObject().apply {
-            put("collections", JSONArray(collectionRepository.pubKeyCollections.toJSON()))
+            put("collections", JSONArray(collectionRepository.collectionsSnapshot().toJSON()))
             put("prefs", prefsUtil.export())
             if (dojoUtility.isDojoEnabled() && dojoUtility.exportDojoPayload() != null) {
                 put("dojo", JSONObject(dojoUtility.exportDojoPayload()!!))
             }
-        }
-    }
-
-    fun makeSupportBackup(): JSONObject {
-        val payload = makePayload()
-        val pubkeyInfoArray = payload.getJSONArray("collections")
-
-        for (i in 0 until pubkeyInfoArray.length()) {
-            (pubkeyInfoArray[i] as JSONObject).remove("lastRefreshed")
-        }
-
-        for (i in 0 until payload.getJSONArray("collections").length()) {
-            for (o in 0 until  (payload.getJSONArray("collections")[i]as JSONObject).getJSONArray("pubs").length()) {
-                ((payload.getJSONArray("collections")[i]as JSONObject).getJSONArray("pubs")[o] as JSONObject)
-                    .put("path", getPath((payload.getJSONArray("collections")[i]as JSONObject).getJSONArray("pubs")[o] as JSONObject))
-            }
-        }
-
-        val meta = JSONObject()
-        meta.put(
-            "version_name",
-            BuildConfig.VERSION_NAME
-        )
-        meta.put(
-            "android_release",
-            if (Build.VERSION.RELEASE == null) "" else Build.VERSION.RELEASE
-        )
-        meta.put("device_manufacturer", if (Build.MANUFACTURER == null) "" else Build.MANUFACTURER)
-        meta.put("device_model", if (Build.MODEL == null) "" else Build.MODEL)
-        meta.put("device_product", if (Build.PRODUCT == null) "" else Build.PRODUCT)
-
-        payload.put("meta", meta)
-
-        (payload.get("prefs") as JSONObject).remove("blockHeight")
-        (payload.get("prefs") as JSONObject).remove("pinHash")
-        (payload.get("prefs") as JSONObject).remove("apiEndPointTor")
-        (payload.get("prefs") as JSONObject).remove("apiEndPoint")
-        (payload.get("prefs") as JSONObject).remove("authorization")
-
-        return payload
-    }
-
-    private fun getPath(pubkey: JSONObject): String {
-        val HARDENED = 2147483648
-        var path = "m\\"
-        if (pubkey.getString("type").equals(AddressTypes.ADDRESS.toString()))
-            return ""
-        return try {
-            val xpub = XPUB(pubkey.getString("pubKey"))
-            xpub.decode()
-
-            path += getPurpose(pubkey).toString() + "'\\" // add purpose
-            path += if (SentinelState.getNetworkParam() == NetworkParameters.testNet3()) "1'\\" else "0'\\" //add coin type
-            path += (xpub.child + HARDENED).toString() + "'" // add account
-            path
-        } catch (_: Exception) {
-            ""
         }
     }
 
@@ -459,8 +402,13 @@ class ExportImportUtil {
                 collectionRepository.reset()
             }
             pubKeyCollection.forEach { collectionRepository.addNew(it) }
+            // #48: addNew's sync() writes are fire-and-forget; without an
+            // awaited final write, a restart-triggered read() could observe
+            // a partial list. syncNow() drains the queued writes and lands
+            // the complete list before the import reports success.
+            collectionRepository.syncNow()
         } catch (ex: Exception) {
-            throw  CancellationException(ex.message)
+            throw ex
         }
     }
 

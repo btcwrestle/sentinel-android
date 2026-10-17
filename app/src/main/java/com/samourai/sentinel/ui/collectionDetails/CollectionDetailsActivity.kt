@@ -133,9 +133,6 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         })
 
         binding.fragmentHostContainerPager.visibility = View.INVISIBLE
-        // lifecycleScope instead of GlobalScope: this touches view binding after a
-        // delay, so it must be cancelled when the Activity is destroyed. Otherwise
-        // it can run against a torn-down view hierarchy.
         lifecycleScope.launch {
             delay(1)
             binding.fragmentHostContainerPager.setCurrentItem(1, false)

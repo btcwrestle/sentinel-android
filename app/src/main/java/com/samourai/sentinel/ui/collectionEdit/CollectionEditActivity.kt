@@ -45,6 +45,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import org.koin.java.KoinJavaComponent.inject
 
 
@@ -162,7 +163,9 @@ class CollectionEditActivity : SentinelActivity() {
                         isEditNewPub = true
                         newPubEdit = newPubKey!!
                     }
-                    viewModel.setPubKeys(model.pubs.apply { add(newPubKey!!) })
+                    // #93: copy BEFORE the add - the old handoff mutated the
+                    // findById-live list in place on the way into the VM.
+                    viewModel.setPubKeys(ArrayList(model.pubs).apply { add(newPubKey!!) })
                     importWalletIfSegwit(newPubKey)
                 } else {
                     viewModel.setPubKeys(model.pubs)
@@ -193,19 +196,49 @@ class CollectionEditActivity : SentinelActivity() {
         if (newPubKey != null) {
             if (newPubKey.type == AddressTypes.ADDRESS) {
                 apiScope.launch {
-                    apiService.importAddress(newPubKey.pubKey)
+                    try {
+                        apiService.importAddress(newPubKey.pubKey)
+                    } catch (e: ApiService.ApiNotConfigured) {
+                        notifyEndpointLost()
+                    }
                 }
             }
             else if (newPubKey.type == AddressTypes.BIP84 || newPubKey.type == AddressTypes.BIP49) {
                 apiScope.launch {
-                    apiService.importXpub(newPubKey.pubKey, newPubKey.type!!.name)
+                    try {
+                        apiService.importXpub(newPubKey.pubKey, newPubKey.type!!.name)
+                    } catch (e: ApiService.ApiNotConfigured) {
+                        notifyEndpointLost()
+                    }
                 }
             }
             else {
                 apiScope.launch {
-                    apiService.importXpub(newPubKey.pubKey, "44")
+                    try {
+                        apiService.importXpub(newPubKey.pubKey, "44")
+                    } catch (e: ApiService.ApiNotConfigured) {
+                        notifyEndpointLost()
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * #125: the three launches above run on apiScope, which has no
+     * CoroutineExceptionHandler (Scopes.kt:12), and ApiNotConfigured extends Throwable
+     * (:364), so catch(Exception) could never intercept it - adding an xpub on an
+     * unpaired install killed the process. Degrade to a Snackbar on Main, the channel
+     * this screen already uses (:152, :216).
+     */
+    private suspend fun notifyEndpointLost() {
+        Timber.e("Xpub import aborted: no API endpoint configured")
+        withContext(Dispatchers.Main) {
+            showFloatingSnackBar(
+                binding.collectionDetailsRootLayout,
+                text = "No API endpoint configured - pairing is required to import",
+                duration = Snackbar.LENGTH_LONG
+            )
         }
     }
 
@@ -294,16 +327,21 @@ class CollectionEditActivity : SentinelActivity() {
                 onConfirm = { confirmed ->
                     if (confirmed) {
                         val collection = viewModel.getCollection().value ?: return@confirm
+                        // #93: index reads the VM's scratch - the screen's
+                        // current state. The live collection's pubs is a
+                        // frozen copy of the last save; an added-but-unsaved
+                        // key would indexOf() to -1 and OOB here.
+                        val pubs = viewModel.getPubKeys().value!!
                         apiScope.launch(context = Dispatchers.IO) {
                             transactionsRepository.removeTxsRelatedToPubKey(
-                                collection.pubs[collection.pubs.indexOf(pubKeyModel)],
+                                pubs[pubs.indexOf(pubKeyModel)],
                                 collection.id
                             )
                             needCollectionRefresh = true
                             withContext(Dispatchers.Main) {
                                 setResult(Activity.RESULT_OK)
                             }
-                            viewModel.removePubKey(collection.pubs.indexOf(pubKeyModel))
+                            viewModel.removePubKey(pubs.indexOf(pubKeyModel))
                             pubKeyAdapter.update(viewModel.getPubKeys().value!!)
                             //TODO: find a better way to refresh the pubkey list
                             binding.pubKeyRecyclerView.post {

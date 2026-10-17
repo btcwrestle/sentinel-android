@@ -86,6 +86,22 @@
             app:layout_constraintTop_toBottomOf="@+id/tvAmount"
             tools:text="17:10" />
 
+        <TextView
+            android:id="@+id/tvTxLabel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="32dp"
+            android:layout_marginEnd="8dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/v3_textColorSecondary"
+            android:textSize="12sp"
+            android:visibility="gone"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@+id/transactionDirection"
+            app:layout_constraintTop_toTopOf="@+id/tx_time"
+            tools:text="postmix deposit" />
+
         <androidx.constraintlayout.widget.Group
             android:id="@+id/tx_note_group"
             android:layout_width="wrap_content"

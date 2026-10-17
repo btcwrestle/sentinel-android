@@ -80,7 +80,6 @@
 
     <string name="enter_xpub">Enter XPUB or bitcoin address.</string>
     <string name="xpub_error">There was an error creating a wallet from your XPUBs/bitcoin addresses. Please try again.</string>
-
     <string name="create_pin">Create PIN code</string>
     <string name="confirm_pin">Confirm PIN code</string>
     <string name="entering_stealth">Applying PIN code. Please wait.</string>
@@ -114,7 +113,6 @@
     <string name="decryption_error">There was an error while decrypting your wallet backup. Please try again.</string>
     <string name="restore_wallet_from_backup">Restore wallet from backup</string>
 
-    <string name="choose_email_client">Choose an Email client:</string>
 
     <string name="bip32_account">BIP32 account</string>
     <string name="bip44_account">BIP44/49 account</string>
@@ -153,7 +151,7 @@
     <string name="get_started">Get Started</string>
     <string name="add_first_address">Add any Bitcoin address or XPUB and Sentinel will be activated</string>
 
-    <string name="tx_length_error">Samourai does not handle transactions over 100KB in size. Please try splitting your transaction.</string>
+    <string name="tx_length_error">Sentinel does not handle transactions over 100KB in size. Please try splitting your transaction.</string>
     <string name="tx_hex">Transaction hex</string>
     <string name="enter_tx_hex">Enter transaction in hex format</string>
     <string name="broadcast_transaction">Broadcast transaction</string>
@@ -169,7 +167,7 @@
     <string name="permission_alert_dialog_title_notifications">Requesting notification permission</string>
     <string name="permission_dialog_message_notifications">Sentinel needs access to push notifications to show Tor status and incoming txs.</string>
 
-    <string name="is_offline">Samourai is offline</string>
+    <string name="is_offline">Sentinel is offline</string>
     <string name="history_will_be_updated">Balance and transaction history will not be updated until a working data connection is established</string>
     <string name="you_received_s">You received</string>
     <string name="paynym_follow_message">This fee covers the cost of creating a special  type of transaction on the blockchain.  This keeps PayNym decentralized</string>
@@ -200,11 +198,19 @@
     -->
     <string name="community_dojo_browse_button" translatable="false">Browse community Dojos (DojoBay.org)</string>
     <string name="community_dojo_warning_title" translatable="false">Privacy warning</string>
-    <string name="community_dojo_warning_message" translatable="false">IT IS HIGHLY RECOMMENDED TO RUN YOUR OWN DOJO! It is easy to do within Start9/Umbrel or on your own hardware. This is a list of a federation of community members who run Dojo\'s for others to use in order to use Samourai/Ashigaru tools. Connecting to a Dojo that is not your own shares your transaction history and addresses with the owner of the Dojo. You are trusting this node with your privacy.</string>
+    <string name="community_dojo_warning_message" translatable="false">IT IS HIGHLY RECOMMENDED TO RUN YOUR OWN DOJO! It is easy to do within Start9/Umbrel or on your own hardware. This is a list of a federation of community members who run Dojo\'s for others to use in order to use Sentinel tools. Connecting to a Dojo that is not your own shares your transaction history and addresses with the owner of the Dojo. You are trusting this node with your privacy.</string>
     <string name="community_dojo_continue" translatable="false">Continue</string>
     <string name="community_dojo_toolbar_title" translatable="false">Community Dojos (DojoBay.org)</string>
     <string name="community_dojo_connecting_tor" translatable="false">Connecting via Tor…</string>
-    <string name="community_dojo_fetching" translatable="false">Fetching the DojoBay.org directory over Tor… this can take a while</string>
+    <!-- #135: name the server-side probe reality so a 1-2 minute wait is
+         expected instead of feeling hung. -->
+    <string name="community_dojo_fetching" translatable="false">Fetching the DojoBay.org directory over Tor… Dojo Bay probes every listed node before answering; this can take a minute or two</string>
+    <string name="community_dojo_fetching_elapsed" translatable="false">Fetching the DojoBay.org directory over Tor… Dojo Bay probes every listed node before answering; this can take a minute or two (%1$d s elapsed)</string>
+    <!-- #135: timeout-shaped failures get plain-language copy; the
+         dominant latency is Dojo Bay probing every listed node, and a
+         retry usually answers quickly once the probe cache is warm. -->
+    <string name="community_dojo_probe_timeout" translatable="false">Probing timed out. A second try is sometimes needed and usually answers quickly.</string>
+    <string name="community_dojo_auto_retry" translatable="false">First probe timed out - retrying. Dojo Bay usually answers on the second try…</string>
     <string name="community_dojo_empty" translatable="false">No active %1$s Dojos were found on DojoBay.org right now.</string>
     <string name="community_dojo_error" translatable="false">Could not reach Dojo Bay: %1$s</string>
     <string name="community_dojo_retry" translatable="false">Retry</string>
@@ -362,4 +368,15 @@
     <string name="utxo_label_empty_hint" translatable="false">Tap to add label</string>
     <string name="utxo_label_dialog_title" translatable="false">UTXO label</string>
     <string name="utxo_label_input_hint" translatable="false">Label (leave empty to remove)</string>
+    <string name="tor_disable_dojo_blocked">You won\'t be able to disable Tor if Dojo is enabled</string>
+    <string name="camera_permission_denied">Camera Permission Denied</string>
+    <string name="no_dojo_connected">No Dojo connected</string>
+    <string name="invalid_pairing_payload">Invalid pairing payload</string>
+    <string name="invalid_payload">Invalid payload</string>
+    <string name="dojo_connect_error">Error: %1$s</string>
+    <string name="dojo_connect_failed">Unable to connect to Dojo. Please try again</string>
+    <string name="dojo_pairing_details_unavailable">No Dojo pairing details available</string>
+    <string name="no_api_key_found">No API key found</string>
+    <string name="dojo_qr_render_failed">Could not render pairing QR code</string>
+    <string name="dojo_unnamed">Unnamed Dojo</string>
 </resources>

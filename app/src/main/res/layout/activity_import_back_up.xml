@@ -103,6 +103,25 @@
         android:orientation="horizontal"
         app:layout_constraintGuide_percent="0.42" />
 
+    <!--
+      Tor bootstrap bar for the Dojo pairing wait (#94). Determinate while
+      the daemon reports a bootstrap %, indeterminate below that; cleared
+      on exit (Tor ON, 60s timeout, cancellation) so no residue carries on.
+    -->
+    <com.google.android.material.progressindicator.LinearProgressIndicator
+        android:id="@+id/importTorProgressBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:indeterminate="true"
+        android:visibility="gone"
+        app:indicatorColor="@color/v3_accent"
+        app:trackColor="@color/md_grey_400"
+        app:trackThickness="4dp"
+        app:layout_constraintBottom_toTopOf="@+id/textView19"
+        app:layout_constraintEnd_toEndOf="@+id/importStartBtn"
+        app:layout_constraintStart_toStartOf="@+id/importStartBtn" />
+
     <TextView
         android:id="@+id/textView19"
         android:layout_width="wrap_content"

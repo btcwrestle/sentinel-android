@@ -29,12 +29,19 @@ class CollectionEditViewModel : ViewModel() {
         if (collection != null && pubKeys.value != null) {
             if (collection.id == "") {
                 if (pubKeys.value != null) {
-                    collection.pubs = pubKeys.value!!
+                    // #93: publication point - publishes the fully-formed
+                    // scratch list (birth-phase object; nothing can
+                    // observe it between here and addNew).
+                    collection.pubs = ArrayList(pubKeys.value!!)
                 }
                 addNew(collection)
                 message.postValue("Saved...")
             } else {
-                collection.pubs = pubKeys.value!!
+                // #93: publication point - the swap publishes the
+                // fully-formed scratch list; update()'s monitor owns
+                // structural safety from here (deep copy under the
+                // outer lock).
+                collection.pubs = ArrayList(pubKeys.value!!)
                 repository.update(collection)
                 pubKeyCollectionLiveData.postValue(collection)
                 message.postValue("Collection Updated")
@@ -49,7 +56,13 @@ class CollectionEditViewModel : ViewModel() {
     }
 
     fun setPubKeys(items: ArrayList<PubKeyModel>) {
-        pubKeys.postValue(items)
+        // #93: the VM owns a scratch copy from handoff on - callers may
+        // pass the findById-LIVE pubs list (CollectionEditActivity's
+        // checkIntent paths do), and every edit below would otherwise
+        // race a concurrent snapshot deep-copy. Scratch keeps the live
+        // list untouched until save() publishes the fully-formed state
+        // by reference swap.
+        pubKeys.postValue(ArrayList(items))
     }
 
     fun getCollection(): LiveData<PubKeyCollection> {

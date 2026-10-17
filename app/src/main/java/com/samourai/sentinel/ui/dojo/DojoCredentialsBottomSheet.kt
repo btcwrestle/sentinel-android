@@ -21,6 +21,7 @@ import com.google.zxing.WriterException
 import com.google.zxing.client.android.Contents
 import com.google.zxing.client.android.encode.QRCodeEncoder
 import com.samourai.sentinel.R
+import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
@@ -41,6 +42,7 @@ class DojoCredentialsBottomSheet(
 ) : GenericBottomSheet(secure = secure) {
 
     private val dojoUtility: DojoUtility by inject(DojoUtility::class.java)
+    private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
 
     override fun getTheme(): Int = R.style.AppTheme_BottomSheet_Theme
 
@@ -71,13 +73,15 @@ class DojoCredentialsBottomSheet(
 
         toolbar.setNavigationOnClickListener { dismiss() }
 
+        renderDirectoryHeader(view, dojoUtility.getPairing()?.url)
+
         val rawPayload = dojoUtility.exportDojoPayload()
         if (rawPayload.isNullOrBlank()) {
             // Should not happen (the entry point is hidden when no Dojo is paired),
             // but fail visibly rather than showing a screen of empty fields.
             Toast.makeText(
                 requireContext(),
-                "No Dojo pairing details available",
+                getString(R.string.dojo_pairing_details_unavailable),
                 Toast.LENGTH_SHORT
             ).show()
             dismiss()
@@ -102,11 +106,40 @@ class DojoCredentialsBottomSheet(
         copyApiKeyButton.setOnClickListener {
             val key = pairing?.apikey
             if (key.isNullOrBlank()) {
-                Toast.makeText(requireContext(), "No API key found", Toast.LENGTH_SHORT).show()
+                Toast.makeText(requireContext(), getString(R.string.no_api_key_found), Toast.LENGTH_SHORT).show()
             } else {
                 copyToClipboard("Dojo API key", key)
             }
         }
+    }
+
+    /**
+     * Shows the Dojo Bay directory name + country flag for the connected
+     * Dojo, if this pairing came from the directory and the snapshot still
+     * matches the paired URL. Hidden otherwise - never shows a stale label.
+     */
+    private fun renderDirectoryHeader(view: View, pairingUrl: String?) {
+        val header = view.findViewById<View>(R.id.dojoDirectoryHeader)
+        val flag = view.findViewById<TextView>(R.id.dojoDirectoryFlag)
+        val name = view.findViewById<TextView>(R.id.dojoDirectoryName)
+        val savedUrl = prefsUtil.dojoDisplayUrl
+        val displayName = prefsUtil.dojoDisplayName
+        val displayFlag = prefsUtil.dojoDisplayFlag
+        if (pairingUrl == null || savedUrl != pairingUrl ||
+            (displayName == null && displayFlag == null)) {
+            // Manual pairing, re-pair elsewhere, or restored payload without
+            // directory metadata: no header rather than a blank or stale one.
+            header.visibility = View.GONE
+            return
+        }
+        name.text = displayName ?: getString(R.string.dojo_unnamed)
+        if (displayFlag != null) {
+            flag.text = displayFlag
+            flag.visibility = View.VISIBLE
+        } else {
+            flag.visibility = View.GONE
+        }
+        header.visibility = View.VISIBLE
     }
 
     private fun String?.orPlaceholder(): String =
@@ -145,7 +178,7 @@ class DojoCredentialsBottomSheet(
             target.visibility = View.GONE
             Toast.makeText(
                 requireContext(),
-                "Could not render pairing QR code",
+                getString(R.string.dojo_qr_render_failed),
                 Toast.LENGTH_SHORT
             ).show()
             return

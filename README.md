@@ -1,37 +1,134 @@
-# Sentinel for Android
+# Sentinel — Dojo Bay Edition
 
-### Build:
+A watch-only Bitcoin wallet for Android: track xpubs, addresses and cold-storage
+wallets, derive receive addresses on the go, and broadcast pre-signed
+transactions — entirely over Tor, paired exclusively with a Bitcoin Dojo you
+control (or one from the community directory; visit https://DojoBay.org for more info).
 
-Import as Android Studio project. Should build "as is".
+This is a community continuation, not a new project. Credit where it belongs:
 
-### BIP44:
+- **Samourai Wallet** — original Sentinel (code preserved in the [Samourai-Wallet GitHub org](https://github.com/Samourai-Wallet); their web domains were seized in 2024 and later hosted phishing — treat any samouraiwallet.* site as hostile)
+- [btcwrestle/sentinel-android](https://github.com/btcwrestle/sentinel-android) —
+  the Dojo Bay integration that gave the project its post-2024 purpose, and the
+  Dojo-or-nothing direction after upstream infrastructure was seized
+- fixes adopted from wanderingking072's fork (authored by @MightyMercurian)
 
-Sentinel implementation based on [original BIP](https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki) (https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki) extends [bitcoinj](https://bitcoinj.github.io/).
+## Lineage
 
-### BIP49 (Segwit):
+Upstream Samourai Sentinel went dark in 2024. btcwrestle revived it as the Dojo
+Bay edition; this fork began at btcwrestle:master commit 36a7e27 ("Dojo
+onboarding, BIP84 default, UTXO labels, staging CI, and Network screen fixes",
+2026-09-06) and continues the maintenance arc here. Work flows back upstream
+via pull requests — our BIP-329 work was offered upstream (btcwrestle#5) and
+closed unmerged while upstream has been quiet since September 2026, so this
+repository is the live continuation as of October 2026. The histories share a
+common root; upstream holds nothing we lack.
 
-Sentinel implementation based on [original BIP] (https://github.com/bitcoin/bips/blob/master/bip-0049.mediawiki) by Daniel Weigl and includes support for BIP49-specific XPUBs: [YPUB](https://github.com/Samourai-Wallet/sentinel-android/issues/16).
+## What this fork has done since the fork point
 
-### BIP84 (Segwit):
+| Area | Status |
+|---|---|
+| kmp-tor 2.x migration (in-process TorRuntime) | done (#2, #10) |
+| Tor watchdog: bounded auto-recovery from boot=0 wedges | done (#11, #14) |
+| Boltzmann entropy/linkability per tx | done (#7) |
+| Whirlpool autolabels: TX0/mix/remix detection | done (#40, #43) |
+| Bad Bank deduction + lineage propagation | done (phase 1 via #53; umbrella #46, phase 2 = #54) |
+| BIP-329 label management (import/export/edit/render) | done (#24; upstream offer btcwrestle#5) |
+| Dojo-or-nothing: dead Samourai API key + build plumbing removed | done (#22, #23) |
+| QR pairing payload guard, string extraction, directory name+flag | done (#25, #21, #17) |
+| Dependency bumps one-family-per-PR (okhttp, coroutines, hummingbird) | done (#28, #29, #30) |
+| Build deprecation sweep + CI modernization (checkout v5, setup-java v5, ubuntu-26) | done (#33, #59) |
+| minSdk 21 -> 23 (Android 5.0/5.1 dropped) | done (#60) |
+| Tag-triggered release pipeline (APK + SHA-256) | done (#39, #63, #65, #67) |
+| Ordered catch arms for escape-class errors (ApiNotConfigured et al.) | done, partial (#103, #125, #131) |
+| Live tx-facts row retired; Confirmation renamed Confirmations | done (#119, #127) |
+| Connection light GREEN only at full bootstrap; staged climb UX | done (#99, #134) |
+| Dojo boot gating: sync/websocket wait on boot=100 + SOCKS listener | done (#135 arc: #136-#139) |
+| Entropy kill switch (nothing displays pending the re-enable design) | done (#106) |
 
-Sentinel implementation based on [original BIP](https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki) by Pavol Rusnak.
+## Currently open (backlog as of 2026-10-11, every line verified against the tracker)
 
-### BIP141 (Segwit):
+- Bad Bank Tainted — mixed-input propagation, phase 2 of #46 — #54
+- Bad Bank chips in tx details and tx list — #55
+- Per-tx entropy re-enable, tiered: local <=5x5, am-i.exposed deep link for
+  wide rounds, boltzmann-rs port for 6x6-9x9 — #107
+- CancellationException laundering at BroadcastTx and ImportSegWitService — #129
+- Mid-sync tx-table flicker / tx-sheet kick-out on fresh re-pair — #124
+- "Sync interrupted." flash on routine refresh — #132
+- Tor connection streamline (dormancy wake, post-bootstrap onion latency) — #135
+- Dead-code sweep — sweep/ package, WebUtil stubs, send/PushTx trustedNode,
+  LBC/BFX constants — #79
+- Mask sensitive data — dojo onion hostnames in logcat traces, XPUB/pairing
+  payload handling in shared storage — #96
+- 16 KB page-size for native libs (camera libs compliant; Tor leg pending
+  kmp-tor-resource#192; benign while sideloaded) — #20
+- Remaining on-device smoke debt: Dojo pairing/sync, websocket reconnect,
+  animated-UR scan — #36
+- Bip329Parser network classification unification with NetworkClassifier — #64
+- BBQR (BQR:) label import alongside animated UR — #70
+- Animated-UR label scan UX (minutes-long scans on small exports) — #71
+- Fee defaults 1-4 s/vb unusable on congested mempool — #77
+- Analytics provider chooser (local-first, separate PR) — #8
+- OXT seen-backend successor when an API lands — #9
+- Vendored bitcoinj suite fails locally on Kali JDK (locale data; CI green) — #75
+- Fork version line: stay v5.1.3-dojobay.N or major-bump to v6.0.0 — #66
 
-Sentinel P2WPKH based on [original BIP](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki) by Eric Lombrozo, Johnson Lau and Pieter Wuille.
+## Label engine
 
-### BIP173 (Segwit):
+Labels are a first-class subsystem:
 
-Sentinel implementation based on [original BIP](https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki) by Pieter Wuille and Greg Maxwell.
+- **Whirlpool autolabels** classify TX0/mix/remix transactions from account
+  identity alone — no explorer lookups, never implying anonymity gain.
+- **Bad Bank** pins the toxic change output ("badbank") of Whirlpool TX0s and
+  propagates the label to descendant spends of wallet-derived UTXOs; the
+  mixed-input (Tainted) class is the queued next phase.
+- **BIP-329** is the storage format: import/export/edit/render with total
+  parser semantics (absent label = do not alter, empty = explicit clear,
+  cross-network refs rejected, origin and createdAt preserved), verified
+  round-trip against Sparrow in both directions. Labels are privacy-sensitive
+  metadata: stored locally only, network-scoped, hidden under street mode.
 
-### License:
+Manual and imported labels always win over automatic ones.
 
-[Unlicense](https://github.com/Samourai-Wallet/samourai-wallet-android/blob/master/LICENSE) (https://github.com/Samourai-Wallet/samourai-wallet-android/blob/master/LICENSE)
+## Tor and Dojo behavior
 
-### Contributing:
+- Embedded Tor runs in-process (kmp-tor 2.x TorRuntime) with a watchdog that
+  recovers boot=0 wedges: stop first, wipe tor state, rebuild, restart —
+  bounded, with a retryable error when the recovery budget is exhausted.
+- The connection light is GREEN only at boot=100 with a live SOCKS listener;
+  the post-ON climb renders as legible stage summaries on the Network screen
+  and during Dojo import.
+- The first sync round and websocket connect are gated on full bootstrap;
+  directory-fetch probe failures explain themselves in plain language with
+  one auto-retry.
+- Directory and Dojo traffic goes only through the app's SOCKS proxy to onion
+  services; the Dojo Bay directory itself is an onion service. No clearnet
+  Samourai endpoints are contacted. Sentinel never holds your private keys.
 
-All development goes in 'develop' branch - do not submit pull requests to 'master'.
+## Releases
 
-### Contact:
+Tagging a `v*` tag runs the release workflow: a gated job builds the staging
+flavor and publishes the APK plus a SHA256SUMS.txt to GitHub Releases. First
+pipeline release: v5.1.3-dojobay.1 (staged as a prerelease; the app reports
+5.1.2 internally — the release-line decision is tracked in #66).
 
-[PGP](http://pgp.mit.edu/pks/lookup?op=get&search=0x72B5BACDFEDF39D7)
+## For testers
+
+The staging flavor installs as **Sentinel Beta** (applicationId
+`com.samourai.sentinel.staging`) and coexists with a production Sentinel
+install. Grab an APK from the
+[Releases](https://github.com/tetragrammalol/sentinel-android-dojobay/releases)
+page, from the
+[Actions](https://github.com/tetragrammalol/sentinel-android-dojobay/actions)
+build-staging-apk artifacts, or build it:
+
+    ./gradlew :app:assembleStagingDebug
+
+Requires a JDK 25+ compatible toolchain (Room runs via KSP; kapt is gone).
+minSdk is 23 (Android 6.0+).
+
+## Disclaimer
+
+Experimental community software, provided as-is, with no affiliation to
+Samourai Technologies or Dojo Bay operators. Read the code; that is the point
+of a wallet like this.

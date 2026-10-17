@@ -6,7 +6,7 @@ import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.text.InputType;
-import android.util.Log;
+import timber.log.Timber;
 import android.widget.EditText;
 import android.widget.Toast;
 
@@ -82,12 +82,12 @@ public class AppUtil {
         ActivityManager manager = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
         for (ActivityManager.RunningServiceInfo service : manager.getRunningServices(Integer.MAX_VALUE)) {
             if (serviceClass.getName().equals(service.service.getClassName())) {
-                Log.d("AppUtil", "service class name:" + serviceClass.getName() + " is running");
+                Timber.d("service class name: %s is running", serviceClass.getName());
                 return true;
             }
         }
 
-        Log.d("AppUtil", "service class name:" + serviceClass.getName() + " is not running");
+        Timber.d("service class name: %s is not running", serviceClass.getName());
         return false;
     }
 
@@ -175,13 +175,6 @@ public class AppUtil {
 //                                                                            clip = android.content.ClipData.newPlainText("Wallet backup", encrypted);
 //                                                                            clipboard.setPrimaryClip(clip);
 //                                                                            Toast.makeText(context, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
-//                                                                        } else {
-//                                                                            Intent email = new Intent(Intent.ACTION_SEND);
-//                                                                            email.putExtra(Intent.EXTRA_SUBJECT, "Sentinel backup");
-//                                                                            email.putExtra(Intent.EXTRA_TEXT, encrypted);
-//                                                                            email.setType("message/rfc822");
-//                                                                            context.startActivity(Intent.createChooser(email, context.getText(R.string.choose_email_client)));
-//                                                                        }
 
                                                                         dialog.dismiss();
                                                                     }
