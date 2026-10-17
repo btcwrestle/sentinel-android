@@ -70,7 +70,6 @@ class SendFragment : Fragment() {
     private var isBTCEditing = false
     private var isFiatEditing = false
     private var amount: Double = 0.0
-    private var transactionComposer = TransactionComposer()
     private var rate: ExchangeRateRepository.Rate = ExchangeRateRepository.Rate("", 0)
     private val exchangeRateRepository: ExchangeRateRepository by inject(ExchangeRateRepository::class.java)
     private var address: String = ""
@@ -556,15 +555,6 @@ class SendFragment : Fragment() {
             fragmentSpendBinding.fragmentComposeTx.pubKeySelector.setAdapter(adapter)
             val selectPubKeyModel = pubKeySelector.pubs[newIndex-1]
             viewModel.setPublicKey(selectPubKeyModel, viewLifecycleOwner, mCollection!!)
-            if (mCollection!!.isImportFromWallet && selectPubKeyModel.label.equals("Deposit")) {
-                transactionComposer.setPubKey(listOf(
-                    getPubKeyModelByLabel("Deposit BIP84"),
-                    getPubKeyModelByLabel("Deposit BIP49"),
-                    getPubKeyModelByLabel("Deposit BIP44")
-                ))
-            } else {
-                transactionComposer.setPubKey(listOf(selectPubKeyModel))
-            }
             setBalance(mCollection!!.pubs[newIndex-1])
             fragmentSpendBinding.fragmentComposeTx.pubKeySelector.setText(mCollection!!.pubs.get(newIndex-1).label, false)
 
@@ -632,15 +622,6 @@ class SendFragment : Fragment() {
                 val selectPubKeyModel = getPubKeyModelByLabel(items[index])
                 viewModel.setPublicKey(selectPubKeyModel, viewLifecycleOwner, mCollection!!)
 
-                if (mCollection!!.isImportFromWallet && selectPubKeyModel.label.equals("Deposit")) {
-                    transactionComposer.setPubKey(listOf(
-                        getPubKeyModelByLabel("Deposit BIP84"),
-                        getPubKeyModelByLabel("Deposit BIP49"),
-                        getPubKeyModelByLabel("Deposit BIP44")
-                    ))
-                } else {
-                    transactionComposer.setPubKey(listOf(selectPubKeyModel))
-                }
                 setBalance(getPubKeyModelByLabel(items[index]))
 
                 view?.isEnabled = true
