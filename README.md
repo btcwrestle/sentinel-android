@@ -8,23 +8,31 @@ control (or one from the community directory; visit https://DojoBay.org for more
 This is a community continuation, not a new project. Credit where it belongs:
 
 - **Samourai Wallet** — original Sentinel (code preserved in the [Samourai-Wallet GitHub org](https://github.com/Samourai-Wallet); their web domains were seized in 2024 and later hosted phishing — treat any samouraiwallet.* site as hostile)
-- [btcwrestle/sentinel-android](https://github.com/btcwrestle/sentinel-android) —
-  the Dojo Bay integration that gave the project its post-2024 purpose, and the
-  Dojo-or-nothing direction after upstream infrastructure was seized
+- [tetragrammalol/sentinel-android-dojobay](https://github.com/tetragrammalol/sentinel-android-dojobay) —
+  the maintenance arc merged back here in October 2026: the kmp-tor 2.x
+  migration, BIP-329 labels, Whirlpool autolabels, Bad Bank and the
+  tag-triggered release pipeline
 - fixes adopted from wanderingking072's fork (authored by @MightyMercurian)
 
 ## Lineage
 
-Upstream Samourai Sentinel went dark in 2024. btcwrestle revived it as the Dojo
-Bay edition; this fork began at btcwrestle:master commit 36a7e27 ("Dojo
-onboarding, BIP84 default, UTXO labels, staging CI, and Network screen fixes",
-2026-09-06) and continues the maintenance arc here. Work flows back upstream
-via pull requests — our BIP-329 work was offered upstream (btcwrestle#5) and
-closed unmerged while upstream has been quiet since September 2026, so this
-repository is the live continuation as of October 2026. The histories share a
-common root; upstream holds nothing we lack.
+Samourai Sentinel went dark in 2024. This repository revived it as the Dojo Bay
+edition, taking the Dojo-or-nothing direction after the original infrastructure
+was seized.
 
-## What this fork has done since the fork point
+[tetragrammalol/sentinel-android-dojobay](https://github.com/tetragrammalol/sentinel-android-dojobay)
+forked from here at 36a7e27 ("Dojo onboarding, BIP84 default, UTXO labels,
+staging CI, and Network screen fixes", 2026-09-06) and carried the maintenance
+arc forward while this tree was quiet. That work — 161 commits, including the
+BIP-329 support first offered as #5 — merged back here as #6 in October 2026.
+This repository is the canonical tree; the fork mirrors this history and
+remains an active contributor.
+
+## Contributed since 36a7e27
+
+Merged here as #6. Issue numbers in this section and the next refer to the
+[contributor's tracker](https://github.com/tetragrammalol/sentinel-android-dojobay/issues),
+not this repository's.
 
 | Area | Status |
 |---|---|
@@ -33,7 +41,7 @@ common root; upstream holds nothing we lack.
 | Boltzmann entropy/linkability per tx | done (#7) |
 | Whirlpool autolabels: TX0/mix/remix detection | done (#40, #43) |
 | Bad Bank deduction + lineage propagation | done (phase 1 via #53; umbrella #46, phase 2 = #54) |
-| BIP-329 label management (import/export/edit/render) | done (#24; upstream offer btcwrestle#5) |
+| BIP-329 label management (import/export/edit/render) | done (#24; first offered here as PR #5) |
 | Dojo-or-nothing: dead Samourai API key + build plumbing removed | done (#22, #23) |
 | QR pairing payload guard, string extraction, directory name+flag | done (#25, #21, #17) |
 | Dependency bumps one-family-per-PR (okhttp, coroutines, hummingbird) | done (#28, #29, #30) |
@@ -46,7 +54,7 @@ common root; upstream holds nothing we lack.
 | Dojo boot gating: sync/websocket wait on boot=100 + SOCKS listener | done (#135 arc: #136-#139) |
 | Entropy kill switch (nothing displays pending the re-enable design) | done (#106) |
 
-## Currently open (backlog as of 2026-10-11, every line verified against the tracker)
+## Known open items (contributor's backlog as of 2026-10-11)
 
 - Bad Bank Tainted — mixed-input propagation, phase 2 of #46 — #54
 - Bad Bank chips in tx details and tx list — #55
@@ -108,23 +116,25 @@ Manual and imported labels always win over automatic ones.
 ## Releases
 
 Tagging a `v*` tag runs the release workflow: a gated job builds the staging
-flavor and publishes the APK plus a SHA256SUMS.txt to GitHub Releases. First
-pipeline release: v5.1.3-dojobay.1 (staged as a prerelease; the app reports
-5.1.2 internally — the release-line decision is tracked in #66).
+flavor and publishes the APK plus a SHA256SUMS.txt to GitHub Releases. The
+pipeline arrived with #6, which had been cutting `v5.1.3-dojobay.N`
+prereleases on the fork; the version line to use here is still open, and the
+app reports 5.1.2 internally either way.
 
 ## For testers
 
 The staging flavor installs as **Sentinel Beta** (applicationId
 `com.samourai.sentinel.staging`) and coexists with a production Sentinel
 install. Grab an APK from the
-[Releases](https://github.com/tetragrammalol/sentinel-android-dojobay/releases)
+[Releases](https://github.com/btcwrestle/sentinel-android/releases)
 page, from the
-[Actions](https://github.com/tetragrammalol/sentinel-android-dojobay/actions)
+[Actions](https://github.com/btcwrestle/sentinel-android/actions)
 build-staging-apk artifacts, or build it:
 
     ./gradlew :app:assembleStagingDebug
 
-Requires a JDK 25+ compatible toolchain (Room runs via KSP; kapt is gone).
+Requires a JDK 21+ compatible toolchain (Room runs via KSP; kapt is gone);
+CI builds on Temurin 21.
 minSdk is 23 (Android 6.0+).
 
 ## Disclaimer
