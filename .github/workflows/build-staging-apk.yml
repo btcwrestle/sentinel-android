@@ -63,6 +63,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default is "tools platform-tools"; Google retired the obsolete
+          # "tools" package, so sdkmanager now exits 1 on it and the action
+          # fails before anything is built. The next step installs the
+          # platforms and build-tools this project needs explicitly.
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         shell: bash
