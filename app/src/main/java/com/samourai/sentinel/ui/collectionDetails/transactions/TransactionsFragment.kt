@@ -26,6 +26,7 @@ import com.samourai.sentinel.data.repository.ExchangeRateRepository
 import com.samourai.sentinel.databinding.FragmentTransactionsBinding
 import com.samourai.sentinel.ui.SentinelActivity
 import com.samourai.sentinel.ui.collectionEdit.CollectionEditActivity
+import com.samourai.sentinel.ui.dojo.PubKeyRescanner
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
 import com.samourai.sentinel.ui.utxos.UtxosActivity
 import com.samourai.sentinel.util.BalanceDisplayFormatter
@@ -316,6 +317,15 @@ class TransactionsFragment : Fragment() {
                 putExtra("collection", collection.id)
                 putExtra("indexPub", indexPubSelected.value)
             }, EDIT_REQUEST_ID)
+        }
+        if (item.itemId == R.id.collection_details_transaction_rescan) {
+            // Every key in this collection: a missing balance is noticed here,
+            // and the user has no reason to know which key the Dojo is missing.
+            PubKeyRescanner.confirmAndRescan(
+                requireActivity() as SentinelActivity,
+                collection.pubs,
+                listOf(collection.id)
+            )
         }
 
         return super.onOptionsItemSelected(item)

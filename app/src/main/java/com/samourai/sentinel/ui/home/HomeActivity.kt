@@ -45,7 +45,8 @@ import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.utils.RecyclerViewItemDividerDecorator
 import com.samourai.sentinel.ui.utils.SlideInItemAnimator
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
-import com.samourai.sentinel.ui.views.BalanceHelpDialog
+import com.samourai.sentinel.data.repository.CollectionRepository
+import com.samourai.sentinel.ui.dojo.PubKeyRescanner
 import com.samourai.sentinel.ui.views.confirm
 import com.samourai.sentinel.util.AppUtil
 import com.samourai.sentinel.util.BalanceDisplayFormatter
@@ -68,6 +69,7 @@ class HomeActivity : SentinelActivity() {
     private val collectionsAdapter = CollectionsAdapter()
     private val webSocketHandler: WebSocketHandler by inject(WebSocketHandler::class.java)
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
+    private val collectionRepository: CollectionRepository by inject(CollectionRepository::class.java)
     private var connectingDojo = false
     private var torAutoSyncFired = false
     private lateinit var binding: ActivityHomeBinding
@@ -510,8 +512,19 @@ class HomeActivity : SentinelActivity() {
                 } else {
                     // This sheet is only ever reached from the first-time setup
                     // flow (setUp() / showServerConfig()), so a successful
-                    // connection here is always the user's first Dojo.
-                    BalanceHelpDialog.show(this@HomeActivity)
+                    // connection here is always the user's first Dojo. Public
+                    // keys added before it was connected were never imported
+                    // anywhere, so offer to register them now.
+                    // collectionsSnapshot() rather than the sealed backing
+                    // list: iterating it cannot race the first sync.
+                    val collections = collectionRepository.collectionsSnapshot()
+                    if (collections.any { it.pubs.isNotEmpty() }) {
+                        PubKeyRescanner.confirmAndRescan(
+                            this@HomeActivity,
+                            collections.flatMap { it.pubs },
+                            collections.map { it.id }
+                        )
+                    }
                 }
             }
         })
