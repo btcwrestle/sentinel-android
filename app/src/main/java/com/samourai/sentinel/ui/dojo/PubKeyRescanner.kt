@@ -53,11 +53,29 @@ object PubKeyRescanner {
             return
         }
 
+        // Drop keys the Dojo has already rescanned in the last few minutes.
+        // Done before the dialog, not after: offering Continue and then
+        // refusing to do anything would read as a bug.
+        val now = System.currentTimeMillis()
+        val store = RescanCooldown.load(prefsUtil)
+        val eligible = keys.filter { RescanCooldown.isAllowed(store, it.pubKey, now) }
+
+        if (eligible.isEmpty()) {
+            val wait = keys.minOf { RescanCooldown.remainingMillis(store, it.pubKey, now) }
+            info(activity, cooldownBlockedText(activity, keys.size, wait))
+            return
+        }
+
+        val skipped = keys.size - eligible.size
+        val skippedWait = if (skipped == 0) 0L else keys
+            .filterNot { RescanCooldown.isAllowed(store, it.pubKey, now) }
+            .minOf { RescanCooldown.remainingMillis(store, it.pubKey, now) }
+
         MaterialAlertDialogBuilder(activity)
             .setTitle(activity.getString(R.string.rescan_xpub_title))
             .setMessage(activity.getString(R.string.rescan_xpub_warning_message))
             .setPositiveButton(activity.getString(R.string.rescan_xpub_continue)) { _, _ ->
-                rescan(activity, keys, collectionIds)
+                rescan(activity, eligible, collectionIds, skipped, skippedWait)
             }
             .setNegativeButton(activity.getString(R.string.cancel), null)
             .show()
@@ -66,7 +84,9 @@ object PubKeyRescanner {
     private fun rescan(
         activity: AppCompatActivity,
         keys: List<PubKeyModel>,
-        collectionIds: List<String>
+        collectionIds: List<String>,
+        skipped: Int,
+        skippedWait: Long
     ) {
         val progress = MaterialAlertDialogBuilder(activity)
             .setTitle(activity.getString(R.string.rescan_xpub_title))
@@ -90,6 +110,7 @@ object PubKeyRescanner {
                         JSONObject(body).optString("status") == "ok"
                     ) {
                         succeeded++
+                        startCooldown(key)
                     } else {
                         failures += "${key.label}: ${dojoErrorOf(response.code, body)}"
                     }
@@ -98,6 +119,11 @@ object PubKeyRescanner {
                     // Dojo carries on after we stop waiting, so this is "check
                     // back later", not a failure.
                     stillRunning++
+                    // The scan is running on the node whether or not we waited
+                    // for it, so this is exactly the case the cooldown exists
+                    // for - asking again now would queue a second scan of the
+                    // same key.
+                    startCooldown(key)
                 } catch (e: Exception) {
                     Timber.e(e, "Rescan failed for ${key.label}")
                     failures += "${key.label}: ${e.message ?: e.toString()}"
@@ -119,7 +145,12 @@ object PubKeyRescanner {
                 progress.dismiss()
                 MaterialAlertDialogBuilder(activity)
                     .setTitle(activity.getString(R.string.rescan_xpub_title))
-                    .setMessage(summary(activity, keys.size, succeeded, stillRunning, failures))
+                    .setMessage(
+                        summary(
+                            activity, keys.size, succeeded, stillRunning, failures,
+                            skipped, skippedWait
+                        )
+                    )
                     .setPositiveButton(activity.getString(R.string.ok)) { d, _ -> d.dismiss() }
                     .show()
             }
@@ -142,12 +173,57 @@ object PubKeyRescanner {
         else
             activity.getString(R.string.rescan_xpub_progress_multi, current, total)
 
+    /**
+     * Marks [key] as rescanned.
+     *
+     * Only called where the Dojo actually took the work on - a successful
+     * import, or a client-side timeout, which means it is still scanning. An
+     * outright failure deliberately does not start a cooldown: a rejected
+     * xpub or an expired token is worth retrying, and locking the user out for
+     * fifteen minutes over it would punish the wrong case.
+     */
+    private fun startCooldown(key: PubKeyModel) {
+        try {
+            val store = RescanCooldown.load(prefsUtil)
+            RescanCooldown.save(
+                prefsUtil,
+                RescanCooldown.record(store, key.pubKey, System.currentTimeMillis())
+            )
+        } catch (e: Exception) {
+            // Bookkeeping must never fail the rescan the user asked for.
+            Timber.e(e, "Could not record rescan cooldown for ${key.label}")
+        }
+    }
+
+    /** "14 minutes" / "1 minute" / "less than a minute". */
+    private fun waitText(activity: AppCompatActivity, millis: Long): String {
+        val minutes = Math.ceil(millis / 60_000.0).toInt()
+        return when {
+            minutes <= 0 -> activity.getString(R.string.rescan_xpub_cooldown_soon)
+            minutes == 1 -> activity.getString(R.string.rescan_xpub_cooldown_one_minute)
+            else -> activity.getString(R.string.rescan_xpub_cooldown_minutes, minutes)
+        }
+    }
+
+    private fun cooldownBlockedText(
+        activity: AppCompatActivity,
+        total: Int,
+        wait: Long
+    ): String = if (total == 1)
+        activity.getString(R.string.rescan_xpub_cooldown_blocked, waitText(activity, wait))
+    else
+        activity.getString(
+            R.string.rescan_xpub_cooldown_blocked_multi, total, waitText(activity, wait)
+        )
+
     private fun summary(
         activity: AppCompatActivity,
         total: Int,
         succeeded: Int,
         stillRunning: Int,
-        failures: List<String>
+        failures: List<String>,
+        skipped: Int,
+        skippedWait: Long
     ): String {
         val lines = mutableListOf<String>()
         if (succeeded > 0) {
@@ -161,6 +237,11 @@ object PubKeyRescanner {
         }
         if (failures.isNotEmpty()) {
             lines += activity.getString(R.string.rescan_xpub_failed, failures.joinToString("\n"))
+        }
+        if (skipped > 0) {
+            lines += activity.getString(
+                R.string.rescan_xpub_cooldown_skipped, skipped, waitText(activity, skippedWait)
+            )
         }
         return lines.joinToString("\n\n")
     }
