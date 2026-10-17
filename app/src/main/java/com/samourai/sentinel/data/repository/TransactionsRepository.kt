@@ -200,12 +200,58 @@ class TransactionsRepository {
                 txDao.deleteByCollectionID(collectionId)
             }
 
-            // Whirlpool auto-labels (#6 part 2): runs BEFORE the dup-hash
-            // renaming below (hashes are still uniform txid-collectionId
-            // here, so suffix stripping is unambiguous) and reads the
-            // in-memory list, so it cannot race saveTx. Labels must never
-            // break sync: failures are contained and logged.
-            if (prefsUtil.whirlpoolAutoLabels == true) {
+            // #198: the whirlpool/badbank label engine used to run HERE,
+            // inside the delete->insert window (deletes above, saveTx
+            // below), holding the tx table empty for the whole label
+            // pass. It now launches after saveUtxos on the pre-mangle
+            // capture below - the same move #102 made for the entropy
+            // ingest.
+            // Boltzmann tx entropy (issue #7, #72 fix): compute + cache
+            // per bare txid on the FULL tx (ApiService.getTx -> esplora
+            // adapter), never on a wallet slice - the payload cannot
+            // prove completeness. #102: the ingest no longer runs here -
+            // it ran inside the delete->insert window (deletes above,
+            // saveTx below), holding the tx table empty for the whole
+            // sync. What stays here is the CAPTURE: bare txids, as
+            // strings, pre-mangle (keepTransactionWithVariousPubkeys
+            // below appends -N suffixes to hashes in place - strings,
+            // not Tx references, so the mangle cannot reach the
+            // capture). The ingest launches after saveUtxos, outside
+            // the window.
+            // #105: kill switch. While ENTROPY_FEATURE_ENABLED is
+            // false the capture is null, the launch below never
+            // runs - and the by-lazy ingest means the engine object
+            // is never built while OFF.
+            val entropyTxids = if (ENTROPY_FEATURE_ENABLED && prefsUtil.whirlpoolAutoLabels == true) {
+                LinkedHashSet(newTransactions.map { it.hash.removeSuffix("-$collectionId") })
+            } else null
+            // #198 CAPTURE for the label engine: Tx copies, pre-mangle.
+            // keepTransactionWithVariousPubkeys below appends -N to
+            // hashes IN PLACE on the shared Tx objects - a bare
+            // toList() capture would leak mangled hashes into the
+            // deferred job. Tx is a data class: copy() duplicates the
+            // mutable hash field; inputs/out are val and never
+            // mutated, so shared list references are safe. Null when
+            // the flag is off - the launch below never runs.
+            val labelEngineTxs = if (prefsUtil.whirlpoolAutoLabels == true) {
+                newTransactions.map { it.copy() }
+            } else null
+            newTransactions = keepTransactionWithVariousPubkeys(newTransactions)
+            saveTx(newTransactions, collectionId)
+            saveUtxos(utxos, collectionId)
+            // #198: the label engine runs AFTER the inserts - the tx
+            // table is populated while labels compute and the tx list
+            // renders as soon as the inserts land; labels follow off
+            // this deferred pass and the UI refreshes when rows land.
+            // Fire-and-forget on apiScope (SupervisorJob): a labelling
+            // failure can never cancel the scope or break sync - the
+            // runCatching containment below is verbatim from the
+            // inline pass. The engine reads only the captured
+            // in-memory list and writes only label rows - never the
+            // tx table - so it cannot race saveTx. The histogram
+            // lines log from inside the job: the sync may already
+            // have returned; the log is the telemetry.
+            labelEngineTxs?.let { captured -> apiScope.launch {
                 runCatching {
                     val accountOfXpub = buildMap<String, Long> {
                         // Account from the key itself (UI-proven XPUB
@@ -229,7 +275,7 @@ class TransactionsRepository {
                         }
                     }
                     val backfillResult =
-                        whirlpoolBackfill.run(newTransactions, collectionId, accountOfXpub)
+                        whirlpoolBackfill.run(captured, collectionId, accountOfXpub)
                     Timber.i("whirlpool backfill: ${backfillResult.processed} processed, ${backfillResult.written} written, ${backfillResult.handsOff} hands-off, ${backfillResult.unclassified} unclassified")
 
                     // Badbank deduction + phase-1 propagation (#46):
@@ -246,7 +292,7 @@ class TransactionsRepository {
                     val badbankOutcomes =
                         HashMap<String, BadbankLabeler.Outcome>()
                     val badbankViews = WhirlpoolBackfill.mergePartialTxs(
-                        newTransactions, collectionId
+                        captured, collectionId
                     ).map { tx ->
                         WhirlpoolTxAdapter.toView(tx, collectionId, accountOfXpub)
                     }
@@ -291,29 +337,7 @@ class TransactionsRepository {
                         "not-descendant=${bb(BadbankLabeler.Outcome.NOT_DESCENDANT_SPEND)}")
                 }
                     .onFailure { Timber.e(it, "whirlpool/badbank labelling failed") }
-            }
-            // Boltzmann tx entropy (issue #7, #72 fix): compute + cache
-            // per bare txid on the FULL tx (ApiService.getTx -> esplora
-            // adapter), never on a wallet slice - the payload cannot
-            // prove completeness. #102: the ingest no longer runs here -
-            // it ran inside the delete->insert window (deletes above,
-            // saveTx below), holding the tx table empty for the whole
-            // sync. What stays here is the CAPTURE: bare txids, as
-            // strings, pre-mangle (keepTransactionWithVariousPubkeys
-            // below appends -N suffixes to hashes in place - strings,
-            // not Tx references, so the mangle cannot reach the
-            // capture). The ingest launches after saveUtxos, outside
-            // the window.
-            // #105: kill switch. While ENTROPY_FEATURE_ENABLED is
-            // false the capture is null, the launch below never
-            // runs - and the by-lazy ingest means the engine object
-            // is never built while OFF.
-            val entropyTxids = if (ENTROPY_FEATURE_ENABLED && prefsUtil.whirlpoolAutoLabels == true) {
-                LinkedHashSet(newTransactions.map { it.hash.removeSuffix("-$collectionId") })
-            } else null
-            newTransactions = keepTransactionWithVariousPubkeys(newTransactions)
-            saveTx(newTransactions, collectionId)
-            saveUtxos(utxos, collectionId)
+            } }
             // #102: the ingest runs AFTER the inserts - the tx table is
             // populated while entropy computes. Fire-and-forget on
             // apiScope (SupervisorJob): an ingest failure can never
