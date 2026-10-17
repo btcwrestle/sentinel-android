@@ -85,14 +85,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
-            echo "ANDROID_DEBUG_KEYSTORE_BASE64 is not configured."
-            exit 1
+          # The secret is withheld from pull_request events raised from a
+          # fork, so requiring it meant fork PRs could never compile - the
+          # build died here before Gradle ran and the whole check was
+          # unusable for review. Skip instead: app/build.gradle only wires
+          # signingConfigs.ciDebug when CI_DEBUG_KEYSTORE is set and the
+          # file exists, so an unset keystore degrades to Gradle's default
+          # debug signing. The cost is that those APKs are not stably
+          # signed, so they will not install over each other.
+          if [ -z "${ANDROID_DEBUG_KEYSTORE_BASE64:-}" ]; then
+            echo "::notice::ANDROID_DEBUG_KEYSTORE_BASE64 unavailable (expected for fork pull requests); using Gradle's default debug keystore. The APK still builds and tests, but is not stably signed."
+            exit 0
           fi
 
           keystore="$RUNNER_TEMP/sentinel-ci-debug.keystore"
 
+          # Strip whitespace before decoding: a secret pasted from a terminal
+          # or an editor easily picks up wrapped newlines or a trailing CR,
+          # and base64 --decode rejects a carriage return as invalid input.
           printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
+            | tr -d '[:space:]' \
             | base64 --decode > "$keystore"
 
           chmod 600 "$keystore"
