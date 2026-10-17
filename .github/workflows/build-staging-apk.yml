@@ -234,9 +234,25 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
-            release-assets/*.apk \
-            release-assets/SHA256SUMS.txt \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --prerelease
+
+          # The release may already exist. There is no way to create a tag
+          # from the GitHub web UI except by publishing a release, which
+          # makes the release first and the tag second - so the tag push
+          # that starts this job arrives with the release already there.
+          # A re-run of a tag build lands in the same place. Upload into
+          # the existing release instead of failing, and let --clobber
+          # replace assets from an earlier attempt.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::notice::Release $GITHUB_REF_NAME already exists; uploading assets into it."
+            gh release upload "$GITHUB_REF_NAME" \
+              release-assets/*.apk \
+              release-assets/SHA256SUMS.txt \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              release-assets/*.apk \
+              release-assets/SHA256SUMS.txt \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --prerelease
+          fi
