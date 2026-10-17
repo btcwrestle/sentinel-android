@@ -131,7 +131,7 @@ class WhirlpoolAutoWriterTest {
         val sink = FakeSink()
         val out = WhirlpoolAutoWriter(sink).process(tx0View())
         assertEquals(WhirlpoolAutoWriter.Outcome.WRITTEN, out)
-        assertEquals("Whirlpool TX0", sink.writes[0].second)
+        assertEquals("Whirlpool Tx0", sink.writes[0].second)
     }
 
     // ---- writer: guard ----

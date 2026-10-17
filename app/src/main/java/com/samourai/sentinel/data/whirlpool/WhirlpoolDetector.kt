@@ -147,7 +147,7 @@ data class WhirlpoolConfig(
     val labels: Labels = Labels(),
 ) {
     data class Labels(
-        val tx0: String = "Whirlpool TX0",
+        val tx0: String = "Whirlpool Tx0",
         val firstMix: String = "Whirlpool Mix",
         val remix: String = "Whirlpool Remix",
         /** #46: utxo-level badbank label — the tx0 change output and,

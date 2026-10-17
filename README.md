@@ -79,7 +79,7 @@ Labels are a first-class subsystem:
 
 - **Whirlpool autolabels** classify TX0/mix/remix transactions from account
   identity alone — no explorer lookups, never implying anonymity gain.
-- **Bad Bank** pins the toxic change output ("badbank") of Whirlpool TX0s and
+- **Bad Bank** pins the toxic change output ("badbank") of Whirlpool Tx0s and
   propagates the label to descendant spends of wallet-derived UTXOs; the
   mixed-input (Tainted) class is the queued next phase.
 - **BIP-329** is the storage format: import/export/edit/render with total
