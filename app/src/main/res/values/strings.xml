@@ -363,6 +363,12 @@
     <string name="rescan_xpub_failed" translatable="false">The Dojo could not rescan:\n%1$s</string>
     <string name="rescan_xpub_no_dojo" translatable="false">No Dojo is connected. Connect one first, then rescan.</string>
     <string name="rescan_xpub_no_keys" translatable="false">There are no public keys to rescan yet.</string>
+    <string name="rescan_xpub_cooldown_soon" translatable="false">less than a minute</string>
+    <string name="rescan_xpub_cooldown_one_minute" translatable="false">1 minute</string>
+    <string name="rescan_xpub_cooldown_minutes" translatable="false">%1$d minutes</string>
+    <string name="rescan_xpub_cooldown_blocked" translatable="false">This public key was rescanned a few minutes ago. A rescan can take a while to show up, so give the Dojo time to finish before asking again - try in %1$s.</string>
+    <string name="rescan_xpub_cooldown_blocked_multi" translatable="false">All %1$d public keys were rescanned a few minutes ago. A rescan can take a while to show up, so give the Dojo time to finish before asking again - try in %2$s.</string>
+    <string name="rescan_xpub_cooldown_skipped" translatable="false">Skipped %1$d already rescanned a few minutes ago - try those again in %2$s.</string>
 
     <string name="utxo_details_label_title" translatable="false">Label</string>
     <string name="utxo_label_empty_hint" translatable="false">Tap to add label</string>
