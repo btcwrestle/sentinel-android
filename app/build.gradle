@@ -7,15 +7,15 @@ apply plugin: 'com.google.devtools.ksp'
 apply plugin: 'kotlin-parcelize'
 
 android {
-    compileSdkVersion 34
+    compileSdkVersion 35
     flavorDimensions "versionCode"
     defaultConfig {
         applicationId "com.samourai.sentinel"
-        minSdkVersion 21
+        minSdkVersion 23
         targetSdkVersion 33
         versionCode 55
         versionName '5.1.2'
-        multiDexEnabled true
+        multiDexEnabled = true
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -45,10 +45,6 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
-        applicationVariants.all { variant ->
-            variant.buildConfigField "String", "XOR_1", "\"" + getApiKey("XOR_1") + "\""
-            variant.buildConfigField "String", "XOR_2", "\"" + getApiKey("XOR_2") + "\""
-        }
     }
     packagingOptions {
         resources {
@@ -56,7 +52,7 @@ android {
     }
     productFlavors {
         production {
-            minSdkVersion 21
+            minSdkVersion 23
             applicationId 'com.samourai.sentinel'
             targetSdkVersion 33
             versionCode 55
@@ -85,11 +81,12 @@ android {
     //Migrating from Kotlin synthetics to Jetpack view binding
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
-    namespace 'com.samourai.sentinel'
+    namespace = "com.samourai.sentinel"
     lint {
-        abortOnError false
-        checkReleaseBuilds false
+        abortOnError = false
+        checkReleaseBuilds = false
     }
 }
 
@@ -97,10 +94,10 @@ dependencies {
     api fileTree(include: ['*.jar'], dir: 'libs')
     implementation 'androidx.preference:preference:1.2.1'
     def lifecycle_version = "2.2.0"
-    def coroutines_version = '1.5.2'
-    def koin_version = '2.1.6'
+    def coroutines_version = '1.10.2'
+    def koin_version = '2.2.3'
     def topl_android_version = "2.1.2"
-    def room_version = "2.6.0"
+    def room_version = "2.7.1"
     def paging_version = "2.1.2"
 
     // for tor dependency
@@ -122,6 +119,7 @@ dependencies {
         exclude group: 'org.json', module: 'json'
     }
     implementation project(':boltzmann-java')
+implementation 'it.unimi.dsi:fastutil:8.3.0'   // boltzmann public API exposes fastutil types (implementation-scoped in the module)
 
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation 'org.apache.commons:commons-lang3:3.12.0'
@@ -132,13 +130,12 @@ dependencies {
         transitive = true
     }
 
-    implementation 'info.guardianproject:jtorctl:0.4.5.7'
 
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version"
 
-    implementation 'com.squareup.okhttp3:okhttp:4.9.3'
-    implementation 'com.squareup.okhttp3:logging-interceptor:4.9.3'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'
     implementation 'com.squareup.picasso:picasso:2.8'
     implementation 'com.jakewharton.timber:timber:4.7.1'
 
@@ -164,7 +161,11 @@ dependencies {
     // optional - Kotlin Extensions and Coroutines support for Room
     implementation "androidx.room:room-ktx:$room_version"
     implementation "androidx.paging:paging-runtime-ktx:$paging_version" // For Kotlin use paging-runtime-ktx
-    implementation "androidx.room:room-rxjava2:room_version"
+    implementation "androidx.room:room-rxjava2:$room_version"
+    // Robolectric: Android Context for Room in-memory unit tests (#5)
+    testImplementation "org.robolectric:robolectric:4.14.1"
+    testImplementation "androidx.test:core:1.6.1"
+    testImplementation "androidx.test.ext:junit:1.2.1"
 
     implementation "io.insert-koin:koin-android:$koin_version"
     implementation "io.insert-koin:koin-androidx-viewmodel:$koin_version"
@@ -180,21 +181,16 @@ dependencies {
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.4.0'
 
     // tor dependency
-    implementation "io.matthewnelson.kotlin-components:kmp-tor:$vTor-$vKmpTor"
+    implementation "io.matthewnelson.kmp-tor:runtime:2.6.0"
+    implementation "io.matthewnelson.kmp-tor:resource-noexec-tor:409.5.0"
     implementation (project(':hummingbird-android'))
-    implementation ('com.sparrowwallet:hummingbird:1.6.6')
+    implementation ('com.sparrowwallet:hummingbird:1.7.4')
     implementation "com.mikepenz:itemanimators:1.1.0"
 }
 repositories {
     mavenCentral()
 }
 
-
-def getApiKey(key) {
-    def Properties props = new Properties()
-//    props.load(new FileInputStream(new File('samourai.api')))
-    return props[key]
-}
 
 // Define publish tasks for each module
 tasks.register("publishAllModules") {

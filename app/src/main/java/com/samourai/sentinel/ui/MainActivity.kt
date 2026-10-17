@@ -14,6 +14,7 @@ import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.LockScreenDialog
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
 import org.koin.java.KoinJavaComponent.inject
 import timber.log.Timber
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
                     // Previously runBlocking{} here froze the UI thread (and could ANR)
                     // right at the point the user is waiting to get in.
                     lifecycleScope.launch {
+                        delay(100)
                         dojoUtil.read()
                         navigate()
                     }

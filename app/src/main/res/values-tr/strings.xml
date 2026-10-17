@@ -104,7 +104,6 @@
     <string name="decryption_error">Cüzdan yedeğinizin şifresi çözülürken bir hata oluştu. Lütfen yeniden deneyin.</string>
     <string name="restore_wallet_from_backup">Yedekten cüzdanı geri getir</string>
 
-    <string name="choose_email_client">Bir e-posta istemcisi seçin:</string>
 
     <string name="bip32_account">BIP32 hesabı</string>
     <string name="bip44_account">BIP44/49 hesabı</string>

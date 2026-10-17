@@ -35,6 +35,16 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
     private val simpleDateFormat = SimpleDateFormat("H:mm", Locale.getDefault())
     private val fmt = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
 
+    /**
+     * txid -> label, from LabelRepository.observeTxLabelMap(). Labels are
+     * not part of the PagedList items, so a new map re-renders the rows.
+     */
+    var txLabels: Map<String, String> = emptyMap()
+        set(value) {
+            field = value
+            notifyDataSetChanged()
+        }
+
     init {
         this.setHasStableIds(false)
         simpleDateFormat.timeZone = TimeZone.getDefault()
@@ -47,6 +57,7 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
         val directionImageView: ImageView = view.findViewById(R.id.transactionDirection)
         val txTime: TextView = view.findViewById(R.id.tx_time)
         val txContainer: View = view.findViewById(R.id.txContainer)
+        val txLabel: TextView = view.findViewById(R.id.tvTxLabel)
         private val dividerView: View = view.findViewById(R.id.dividerView)
         val section: TextView = view.findViewById(R.id.section_title)
 
@@ -105,6 +116,18 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
         val current = Date().apply { time = tx.time * 1000 }
 
         holder.txTime.text = simpleDateFormat.format(current)
+
+        if (prefsUtil.streetMode == false) {
+            val label = txLabels[tx.hash.split("-")[0].lowercase()]
+            if (label.isNullOrBlank()) {
+                holder.txLabel.visibility = View.GONE
+            } else {
+                holder.txLabel.visibility = View.VISIBLE
+                holder.txLabel.text = label
+            }
+        } else {
+            holder.txLabel.visibility = View.GONE
+        }
 
         if (position != 0) {
             val previous = getItem(position - 1)!!

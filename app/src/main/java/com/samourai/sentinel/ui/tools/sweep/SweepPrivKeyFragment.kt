@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -148,9 +149,25 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
             PrivKeyReader(payload.trim(), SentinelState.getNetworkParam()).format != null -> {
                 privKeyReader = PrivKeyReader(payload.trim(), SentinelState.getNetworkParam())
                 apiScope.launch {
-                    withContext(Dispatchers.Default) {
-                        findUTXOs()
-                        previewBottomSheet.setPrivKeyReader(privKeyReader!!)
+                    try {
+                        withContext(Dispatchers.Default) {
+                            findUTXOs()
+                            previewBottomSheet.setPrivKeyReader(privKeyReader!!)
+                        }
+                    } catch (e: ApiService.ApiNotConfigured) {
+                        // #125: fetchAddressForSweep (:175) -> getWallet -> buildClient
+                        // -> getAPIUrl (:318/:326) on an unpaired install, with no catch
+                        // anywhere on the path and no CEH on apiScope: the privkey paste
+                        // killed the process. Mirror the existing failure shape (:159-160,
+                        // :184-191): hide the spinner, Toast, stay on screen. Deliberate
+                        // non-change: no dismiss() - :193 belongs to the no-UTXO branch.
+                        Timber.e(e, "Sweep UTXO lookup aborted: no API endpoint configured")
+                        if (isAdded && activity != null) {
+                            requireActivity().runOnUiThread {
+                                view?.findViewById<CircularProgressIndicator>(R.id.sweepProgress)?.visibility = View.INVISIBLE
+                                Toast.makeText(context, "No API endpoint configured", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 }
             }
@@ -553,13 +570,19 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
             val hexTx = broadcastTx()
             var response: String? = null
             apiScope.launch {
-                // No runBlocking: already inside a coroutine, so this can suspend
-                // directly. The nested runBlocking blocked a dispatcher thread for
-                // the whole network round trip.
                 try {
                     response = apiService.broadcast(hexTx!!)
+                } catch (e: ApiService.ApiNotConfigured) {
+                    // #125: getAPIUrl (:318/:326) via broadcast's buildClient, then
+                    // InvalidResponse (:359) on a non-OK reply with no status field.
+                    // Both extend Throwable, so the Exception wall below is blind and
+                    // apiScope has no CEH (Scopes.kt:12): process death. Degrade by
+                    // leaving response null, so the existing :571 branch fires.
+                    Timber.e(e, "Sweep broadcast aborted: no API endpoint configured")
+                } catch (e: ApiService.InvalidResponse) {
+                    Timber.e(e, "Sweep broadcast got an invalid response")
                 } catch (e: Exception) {
-                    Timber.e(e, "Error broadcasting tx")
+                    Log.d("SweepPrivateKey", "Error broadcasting tx: " + e)
                 }
 
                 requireActivity().runOnUiThread {
@@ -582,7 +605,7 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                                 /*
                                 try {
                                     exchangeRateRepository.fetch()
-                                    repository.pubKeyCollections.forEach {
+                                    repository.collectionsSnapshot().forEach {
 
                                         val job = apiScope.launch {
                                             try {
@@ -952,8 +975,7 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
         mCodeScanner.setLifeCycleOwner(this)
 
         mCodeScanner.setQRDecodeListener {
-            // See DojoConfigureBottomSheet: scoped to the view lifecycle.
-            viewLifecycleOwner.lifecycleScope.launch {
+            lifecycleScope.launch {
                 onScan(it)
             }
         }

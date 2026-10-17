@@ -107,7 +107,6 @@
     <string name="decryption_error">Beim Entschlüsseln des Wallet-Backups ist ein Fehler aufgetreten. Bitte nochmal versuchen.</string>
     <string name="restore_wallet_from_backup">Wallet aus Backup wiederherstellen</string>
 
-    <string name="choose_email_client">E-Mail-Programm wählen:</string>
 
     <string name="bip32_account">BIP32-Account</string>
     <string name="bip44_account">BIP44/49-Account</string>

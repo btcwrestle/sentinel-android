@@ -1,9 +1,7 @@
 package com.samourai.sentinel.widgets;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.util.AttributeSet;
 import android.view.View;
@@ -11,20 +9,32 @@ import android.view.View;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 
-import com.samourai.boltzmann.processor.TxProcessorResult;
 import com.samourai.sentinel.R;
+import com.samourai.sentinel.data.entropy.EntropyBand;
 
 
+/**
+ * #115 band ladder. Five rungs; filled rungs = min(nbCmbn, 5),
+ * shortest-first (a full green ladder lights the tallest rung);
+ * rung color = the EntropyBands tier. Grey = no verdict: track
+ * only, nothing filled (declined / unparseable rows).
+ *
+ * Retires the pre-#115 semantics - fill = non-deterministic link
+ * ratio, green-only - which read as a privacy score it never was
+ * (a 1-bit tx rendered 2 green bars). The dead ratio overload
+ * setRange(TxProcessorResult) went with it (census: zero call
+ * sites); this widget no longer imports the vendored engine.
+ */
 public class EntropyBar extends View {
 
-    private Canvas mCanvas;
-    private Bitmap mBitmap;
-    private Paint mBarPaintActive, mBarPaintDisabled, mBarPaintRed;
-    private int maxBars = 3;
-    private int enabledBars = maxBars;
+    private static final int RUNGS = 5;
+
+    private Paint mRungTrack, mRungRed, mRungAmber, mRungGreen;
+    private int maxBars = RUNGS;
+    private int filledBars = 0;
+    private EntropyBand band = EntropyBand.GREY;
     private int mBarWidth = 0;
     private int mBarHeight = 0;
-    private boolean disable = false;
 
     public EntropyBar(Context context) {
         super(context);
@@ -42,107 +52,79 @@ public class EntropyBar extends View {
     }
 
     private void init() {
-        mBarPaintActive = new Paint(Paint.ANTI_ALIAS_FLAG);
-        mBarPaintActive.setColor(ContextCompat.getColor(getContext(), R.color.green_ui_2));
-        mBarPaintActive.setStyle(Paint.Style.FILL);
-        mBarPaintActive.setStrokeCap(Paint.Cap.BUTT);
-
-        mBarPaintDisabled = new Paint(Paint.ANTI_ALIAS_FLAG);
-        mBarPaintDisabled.setColor(ContextCompat.getColor(getContext(), R.color.disabled_grey));
-        mBarPaintDisabled.setStyle(Paint.Style.FILL);
-        mBarPaintDisabled.setStrokeCap(Paint.Cap.BUTT);
-
-        mBarPaintRed = new Paint(Paint.ANTI_ALIAS_FLAG);
-        mBarPaintRed.setColor(ContextCompat.getColor(getContext(), R.color.red));
-        mBarPaintRed.setStyle(Paint.Style.FILL);
-        mBarPaintRed.setStrokeCap(Paint.Cap.BUTT);
+        mRungTrack = fillPaint(R.color.disabled_grey);
+        mRungRed = fillPaint(R.color.red);
+        mRungAmber = fillPaint(R.color.md_amber_500);
+        mRungGreen = fillPaint(R.color.green_ui_2);
         mBarWidth = (getWidth() / maxBars) - (mBarWidth * maxBars);
         mBarHeight = (getHeight() / maxBars);
     }
 
-    public void disable() {
-        enabledBars = maxBars;
-        disable = true;
+    private Paint fillPaint(int colorRes) {
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(ContextCompat.getColor(getContext(), colorRes));
+        paint.setStyle(Paint.Style.FILL);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        return paint;
+    }
+
+    /**
+     * No verdict (engine declined / unparseable): grey track, zero
+     * rungs. The row stays refusal-plus-a-pointer, never a number.
+     */
+    public void setDeclined() {
+        band = EntropyBand.GREY;
+        filledBars = 0;
         invalidate();
     }
 
-    public void enable() {
-        disable = false;
-        invalidate();
-    }
-
-    public void setRange(int bars) {
-        this.enabledBars = bars;
-        this.enable();
-    }
-
-    public void setRange(TxProcessorResult result) {
-        int percentage = (int) (result.getNRatioDL() * 100);
-
-        if (percentage == 0) {
-            this.disable();
-            return;
-        }
-        if (percentage <= 25) {
-            setRange(1);
-            return;
-        }
-
-        if (percentage <= 50) {
-            setRange(2);
-            return;
-        }
-        if (percentage <= 75) {
-            setRange(3);
-            return;
-        }
-        if (percentage <= 100) {
-            setRange(3);
-        }
-
-    }
-
-    public void setMaxBars(int maxBars) {
-        this.maxBars = maxBars;
+    /**
+     * Ladder state: rung color = EntropyBands tier, filled rungs =
+     * min(nbCmbn, RUNGS). Clamped here as a guard; EntropyBands
+     * .filled already clamps.
+     */
+    public void setState(EntropyBand band, int filledBars) {
+        this.band = band;
+        this.filledBars = Math.max(0, Math.min(maxBars, filledBars));
         invalidate();
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-
         if (w != oldw || h != oldh) {
-            mBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            mBitmap.eraseColor(Color.TRANSPARENT);
-            mCanvas = new Canvas(mBitmap);
+            mBarWidth = (w / maxBars) - (mBarWidth * maxBars);
+            mBarHeight = (h / maxBars);
         }
-        mBarWidth = (getWidth() / maxBars) - (mBarWidth * maxBars);
-        mBarHeight = (getHeight() / maxBars);
-
         super.onSizeChanged(w, h, oldw, oldh);
     }
 
 
     @Override
     protected void onDraw(Canvas canvas) {
-        Paint paint;
         for (int i = 0; i < maxBars; i++) {
             int mBarMargin = 4;
             int left = getWidth() - ((mBarWidth * i) + mBarMargin);
             int right = getWidth() - (mBarWidth * (i + 1));
-            int bottom = !disable ? (mBarHeight * i) + 6 : getHeight() - 2;
-            int disabledTrack = this.maxBars - this.enabledBars;
+            int top = (mBarHeight * i) + 6;
+            // i counts from the right (tallest) rung; the lit set is
+            // the leftmost filledBars rungs - same fill direction as
+            // the old enabled/disabled split, so green = full ladder.
+            Paint paint = i >= (maxBars - filledBars) ? bandPaint() : mRungTrack;
+            canvas.drawRoundRect(left, getHeight(), right, top, 9f, 9f, paint);
+        }
+    }
 
-
-            if (i < disabledTrack) {
-                paint = mBarPaintDisabled;
-            } else {
-                paint = mBarPaintActive;
-            }
-            if (disable) {
-                paint = mBarPaintRed;
-            }
-            canvas.drawRoundRect(left, getHeight(), right, bottom,9f,9f, paint);
-
+    private Paint bandPaint() {
+        switch (band) {
+            case RED:
+                return mRungRed;
+            case AMBER:
+                return mRungAmber;
+            case GREEN:
+                return mRungGreen;
+            case GREY:
+            default:
+                return mRungTrack;
         }
     }
 }

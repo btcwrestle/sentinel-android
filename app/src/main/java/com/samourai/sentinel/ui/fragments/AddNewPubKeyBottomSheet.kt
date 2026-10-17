@@ -42,7 +42,7 @@ import com.samourai.wallet.util.PrivKeyReader
 import com.samourai.wallet.util.XPUB
 import com.sparrowwallet.hummingbird.URDecoder
 import com.sparrowwallet.hummingbird.registry.CryptoAccount
-import com.sparrowwallet.hummingbird.registry.PathComponent
+import com.sparrowwallet.hummingbird.registry.pathcomponent.IndexPathComponent
 import com.sparrowwallet.hummingbird.registry.RegistryType
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
@@ -54,6 +54,8 @@ import org.json.JSONObject
 import org.koin.java.KoinJavaComponent
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import com.samourai.sentinel.core.DerivedNetwork
+import com.samourai.sentinel.core.NetworkClassifier
 
 
 class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secure: Boolean = false) : GenericBottomSheet(secure = secure) {
@@ -162,13 +164,13 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
         val payload = FormatsUtil.extractPublicKey(code)
         val type = FormatsUtil.getPubKeyType(payload)
         if (FormatsUtil.isValidBitcoinAddress(payload.trim()) || FormatsUtil.isValidXpub(payload)) {
-            if (isPublicKeyTesnet(payload) && !SentinelState.isTestNet()) {
+            if (SentinelState.isNetworkEstablished() && isPublicKeyTesnet(payload) && !SentinelState.isTestNet()) {
                 if (context != null)
                     Toast.makeText(context, "Can't track Testnet public keys in Mainnet", Toast.LENGTH_LONG).show()
                 this.dismiss()
                 return
             }
-            if (!isPublicKeyTesnet(payload) && SentinelState.isTestNet()) {
+            if (SentinelState.isNetworkEstablished() && !isPublicKeyTesnet(payload) && SentinelState.isTestNet()) {
                 if (context != null)
                     Toast.makeText(context, "Can't track Mainnet public keys in Testnet", Toast.LENGTH_LONG).show()
                 this.dismiss()
@@ -210,7 +212,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                     }
                 }
             }
-            (JSONObject(payload.trim()).has("external") &&  JSONObject(payload.trim()).has("payload")) -> {
+            isDojoPairingPayload(payload) -> {
                 if (isAdded && activity != null) {
                     this.dismiss()
                     val bottomSheetFragment = WalletPairingFragment(payload.trim(), secure)
@@ -224,11 +226,14 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
     }
 
     private fun isPublicKeyTesnet(payload: String): Boolean {
-        if (payload.lowercase().startsWith("tb") || payload.lowercase().startsWith("2") || payload.lowercase().startsWith("m") || payload.lowercase().startsWith("n"))
-            return true
-        if (payload.lowercase().startsWith("tpub") || payload.lowercase().startsWith("upub") || payload.lowercase().startsWith("vpub"))
-            return true
-        return false
+        val lower = payload.lowercase()
+        // Address prefixes stay here (legacy heuristic for tb/2/m/n
+        // addresses); the xpub-family question belongs to the
+        // derivation primitive (core.NetworkClassifier, #42).
+        if (lower.startsWith("tb") || lower.startsWith("2") ||
+            lower.startsWith("m") || lower.startsWith("n")
+        ) return true
+        return NetworkClassifier.fromXpub(payload) == DerivedNetwork.TESTNET
     }
 
     private fun setUpViewPager() {
@@ -252,6 +257,13 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
     fun setPubKeyListener(listener: (pubKey: PubKeyModel?) -> Unit) {
         newPubKeyListener = listener
     }
+
+    companion object {
+        internal fun isDojoPairingPayload(payload: String): Boolean = runCatching {
+            val json = JSONObject(payload.trim())
+            json.has("external") && json.has("payload")
+        }.getOrDefault(false)
+    }
 }
 
 
@@ -260,6 +272,8 @@ class ScanPubKeyFragment : Fragment() {
     private lateinit var  mCodeScanner: QRScanner;
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
     private var onScan: (scanData: String) -> Unit = {}
+    private var urPayloadDecoder: ((URDecoder.Result) -> String?)? = null
+    private var pasteVisible: Boolean = true
     private var fingerprintHex: String? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
@@ -270,19 +284,36 @@ class ScanPubKeyFragment : Fragment() {
         this.onScan = callback
     }
 
+    fun setURPayloadDecoder(decoder: (URDecoder.Result) -> String?) {
+        this.urPayloadDecoder = decoder
+    }
+
+    fun resumeScan() {
+        if (AndroidUtil.isPermissionGranted(Manifest.permission.CAMERA, appContext)) {
+            mCodeScanner?.startScanner()
+        }
+    }
+
+    fun setPasteVisible(visible: Boolean) {
+        pasteVisible = visible
+        view?.findViewById<Button>(R.id.pastePubKey)?.visibility =
+            if (visible) View.VISIBLE else View.GONE
+    }
+
     fun getFingerprint(): String? {
         return fingerprintHex
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         view.findViewById<Button>(R.id.pastePubKey).text = "Paste"
+        view.findViewById<Button>(R.id.pastePubKey).visibility =
+            if (pasteVisible) View.VISIBLE else View.GONE
         mCodeScanner = view.findViewById(R.id.scannerViewXpub);
         mCodeScanner.setLifeCycleOwner(this)
 
         val clipboard = context?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         mCodeScanner.setQRDecodeListener {
-            // See DojoConfigureBottomSheet: scoped to the view lifecycle.
-            viewLifecycleOwner.lifecycleScope.launch {
+            lifecycleScope.launch {
                 mCodeScanner.stopScanner()
                 onScan(it)
             }
@@ -292,17 +323,30 @@ class ScanPubKeyFragment : Fragment() {
             mCodeScanner.stopScanner()
             result.fold(
                 onSuccess = {
-                    val xpub = getXpubFromUR(it)
-                    if (xpub != null) {
-                        onScan(xpub)
+                    val decoded = urPayloadDecoder?.invoke(it)
+                    if (decoded != null) {
+                        onScan(decoded)
                     }
-                    else {
+                    else if (urPayloadDecoder != null) {
                         MaterialAlertDialogBuilder(requireContext())
-                            .setTitle("Error decoding public key")
+                            .setTitle("Error decoding payload")
                             .setPositiveButton("Ok") { dialog, which ->
                                 dialog.dismiss()
                             }.show()
-                        mCodeScanner.stopScanner()
+                    }
+                    else {
+                        val xpub = getXpubFromUR(it)
+                        if (xpub != null) {
+                            onScan(xpub)
+                        }
+                        else {
+                            MaterialAlertDialogBuilder(requireContext())
+                                .setTitle("Error decoding public key")
+                                .setPositiveButton("Ok") { dialog, which ->
+                                    dialog.dismiss()
+                                }.show()
+                            mCodeScanner.stopScanner()
+                        }
                     }
                 },
                 onFailure = {
@@ -348,9 +392,11 @@ class ScanPubKeyFragment : Fragment() {
                 var version: Int
                 if (cryptoHDKey.origin != null) {
                     if (cryptoHDKey.origin.components.isNotEmpty()) {
-                        val lastComponent: PathComponent =
+                        val lastComponent =
                             cryptoHDKey.origin.components[cryptoHDKey.origin.components.size - 1]
-                        lastChild = ChildNumber(lastComponent.index, lastComponent.isHardened)
+                        if (lastComponent is IndexPathComponent) {
+                            lastChild = ChildNumber(lastComponent.index, lastComponent.isHardened)
+                        }
                         depth = cryptoHDKey.origin.depth
                     }
                     if (cryptoHDKey.origin.sourceFingerprint != null) {
@@ -382,7 +428,8 @@ class ScanPubKeyFragment : Fragment() {
             val decoder = StandardCharsets.UTF_8.newDecoder()
             val buf = ByteBuffer.wrap(urBytes as ByteArray)
             val charBuffer = decoder.decode(buf)
-            val xpubsJson = JSONObject(charBuffer.toString())
+            val xpubsJson = runCatching { JSONObject(charBuffer.toString()) }
+                .getOrElse { return null }
             if (xpubsJson.has("bip84")) {
                 try {
                     fingerprintHex = xpubsJson.getString("xfp").lowercase()

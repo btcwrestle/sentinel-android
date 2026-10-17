@@ -114,7 +114,6 @@
     <string name="decryption_error">Během dešifrování zálohy peněženky došlo k chybě. Zkuste to prosím znovu.</string>
     <string name="restore_wallet_from_backup">Obnovit peněženku ze zálohy peněženky</string>
 
-    <string name="choose_email_client">Vybrat e-mailového klienta:</string>
 
     <string name="bip32_account">Účet BIP32</string>
     <string name="bip44_account">Účet BIP44/49</string>
@@ -153,7 +152,7 @@
     <string name="get_started">Začít</string>
     <string name="add_first_address">Přidejte jakoukoliv bitcoinovou adresu nebo XPUB a aplikace Sentinel bude aktivována</string>
 
-    <string name="tx_length_error">Samourai neumí zpracovat transakce větší než 100 KB. Zkuste prosím transakci rozdělit.</string>
+    <string name="tx_length_error">Sentinel neumí zpracovat transakce větší než 100 KB. Zkuste prosím transakci rozdělit.</string>
     <string name="tx_hex">Hex transakce</string>
     <string name="enter_tx_hex">Zadejte transakci v hex formátu</string>
     <string name="broadcast_transaction">Odeslat transakci</string>
@@ -169,7 +168,7 @@
     <string name="permission_alert_dialog_title_notifications">Žádost o povolení oznámení</string>
     <string name="permission_dialog_message_notifications">Aplikace Sentinel potřebuje přístup k oznámením, aby mohla zobrazovat stav sítě Tor a příchozí transakce.</string>
 
-    <string name="is_offline">Samourai je offline</string>
+    <string name="is_offline">Sentinel je offline</string>
     <string name="history_will_be_updated">Historie zůstatků a transakcí nebude aktualizována, dokud nebude navázáno funkční datové připojení</string>
     <string name="you_received_s">Obdržel(a) jste</string>
     <string name="paynym_follow_message">Tento poplatek pokrývá náklady na vytvoření zvláštního typu transakce na blockchainu. Díky tomu je PayNym decentralizovaný</string>
@@ -179,7 +178,11 @@
     <string name="in_offline_mode">Aplikace Sentinel je v režimu offline.</string>
     <string name="dojo_headline">Napájejte Sentinel vaším Dojo</string>
     <string name="preorder">Předobjednat</string>
-    <string name="plug_and_play_full_bitcoin_node_automatically">- Plug and Play\n\n- Automaticky nakonfigurovaná skrytá služba Tor\n\n- Nezávislost na serverech Samourai</string>
+    <string name="plug_and_play_full_bitcoin_node_automatically">- Plug and Play
+
+ -Automaticky nakonfigurovaná skrytá služba Tor
+
+ -Nezávislost na jiných serverech</string>
     <string name="connect_to_existing_dojo">Připojte se ke stávajícímu Dojo</string>
     <string name="dojo_connect_instruction">Pokud již máte úplný uzel Dojo nebo nebo \nprovozujete bezplatný a open source software Dojo \nna vlastním hardware, naskenujte párovací QR kód \numístěný na Ovládacím panelu údržby Dojo</string>
     <string name="powering_sentinel">Připojení k vlastnímu plnohodnotnému uzlu Dojo nabízí nejlepší úroveň soukromí a nezávislosti při interakci s bitcoinovou sítí.</string>
@@ -283,7 +286,8 @@
     <string name="import_channel_description">Zobrazí oznámení s průběhem postupu během importování veřejných klíčů</string>
     <string name="confirm_exit">Potvrdit ukončení</string>
     <string name="setting_summary_displaySecure">Považovat obsah okna za zabezpečený a zabránit jeho zobrazení na snímcích obrazovky nebo zobrazení na nezabezpečených obrazovkách</string>
-    <string name="server_config_instruction">Aplikace Sentinel nastaví servery Samourai jako výchozí koncový bod,\n Jestliže se chcete připojit k vlastnímu uzlu, zvolte prosím tuto možnost</string>
+    <string name="server_config_instruction">Aplikace Sentinel nenastaví žádný výchozí server.
+ Pokud se chcete připojit k vlastnímu uzlu, zvolte prosím tuto možnost</string>
     <string name="copy_to_clipboard">Kopírovat do schránky</string>
     <string name="share_qr">Sdílet QR</string>
     <string name="view_unspend_outputs">Zobrazit neutracené výstupy</string>

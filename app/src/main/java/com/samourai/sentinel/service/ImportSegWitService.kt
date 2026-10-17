@@ -70,12 +70,13 @@ class ImportSegWitService : Service() {
                 val deferredImportStatus = async { apiService.checkImportStatus(pubKey) }
                 val importStatus = deferredImportStatus.await()
                 if (!importStatus) {
+                    // #129: the wrap inside this child laundered real failures
+                    // into CancellationException - type and stack destroyed, and
+                    // the outer ladder could only render a message string. The
+                    // real type now surfaces from await() as itself; genuine
+                    // cancellation passes the CE arm added below.
                     val job = async {
-                        try {
-                            apiService.importXpub(pubKey, segwit)
-                        } catch (e: Exception) {
-                            throw CancellationException(e.message)
-                        }
+                        apiService.importXpub(pubKey, segwit)
                     }
                     val response = job.await()
                     if (response.isSuccessful) {
@@ -98,8 +99,23 @@ class ImportSegWitService : Service() {
                         }
                     }
                 }
+            } catch (e: ApiService.ApiNotConfigured) {
+                // #125: checkImportStatus throws this before a request is even
+                // sent; held by the async child, rethrown by await(), so one arm
+                // closes both legs - the import child's await() also used to skip
+                // the child's inner Exception wall, which #129 removed
+                // (de-laundered). scope is a bare SupervisorJob with no CEH. No
+                // logger: this Service's notification IS the user-visible degrade,
+                // and success() is now unreachable.
+                failure("No API endpoint configured")
+            } catch (e: CancellationException) {
+                // #129: genuine scope teardown, not an import failure - rethrow,
+                // do not report (ladder precedent: ImportBackUpActivity).
+                throw e
             } catch (e: Exception) {
-                e.message?.let { failure(it) }
+                // #145: a null message must not silently skip the report -
+                // render the type when the message is absent.
+                failure(e.message ?: "${e::class.simpleName} (no message)")
                 e.printStackTrace()
             }
         }

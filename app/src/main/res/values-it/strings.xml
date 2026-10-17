@@ -104,7 +104,6 @@
     <string name="decryption_error">Si è verificato un errore durante la decriptazione del tuo backup del wallet. Riprova.</string>
     <string name="restore_wallet_from_backup">Ripristina wallet da backup</string>
 
-    <string name="choose_email_client">Scegli un client email:</string>
 
     <string name="bip32_account">Account BIP32</string>
     <string name="bip44_account">Account BIP44/49</string>
@@ -143,7 +142,7 @@
     <string name="get_started">Per cominciare</string>
     <string name="add_first_address">Aggiungi un qualsiasi indirizzo Bitcoin o XPUB e Sentinel inizierà a tracciarlo</string>
 
-    <string name="tx_length_error">Samourai non gestisce transazioni oltre i 100KB di dimensioni. Prova a suddividere la tua transazione.</string>
+    <string name="tx_length_error">Sentinel non gestisce transazioni oltre i 100KB di dimensioni. Prova a suddividere la tua transazione.</string>
     <string name="tx_hex">Esadecimale della transazione</string>
     <string name="enter_tx_hex">Inserisci la transazione in codice esadecimale</string>
     <string name="broadcast">Trasmetti transazione</string>

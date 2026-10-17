@@ -107,7 +107,6 @@
     <string name="decryption_error">Erreur survenue lors du déchiffrement de votre sauvegarde portefeuille. Veuillez réessayer.</string>
     <string name="restore_wallet_from_backup">Restaurer le portefeuille à partir de la sauvegarde</string>
 
-    <string name="choose_email_client">Choisissez un client de messagerie:</string>
 
     <string name="bip32_account">Compte BIP32</string>
     <string name="bip44_account">Compte BIP44/49</string>
@@ -146,7 +145,7 @@
     <string name="get_started">Commencer</string>
     <string name="add_first_address">Ajouter n\'importe quelle clé publique étendue ou adresse bitcoin et Sentinel sera activé</string>
 
-    <string name="tx_length_error">Samourai ne permet pas les transactions de taille supérieure à 100KB. Veuillez essayer de fractionner votre transaction en plusieurs montants.</string>
+    <string name="tx_length_error">Sentinel ne permet pas les transactions de taille supérieure à 100KB. Veuillez essayer de fractionner votre transaction en plusieurs montants.</string>
     <string name="tx_hex">Transaction hex</string>
     <string name="enter_tx_hex">Entrer la transaction établie sous format hexadécimal</string>
     <string name="broadcast">Émettre la transaction</string>

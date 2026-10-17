@@ -38,3 +38,13 @@ app/staging/
 app/output.json
 
 .vscode/
+
+sentinel-ci-debug.keystore
+*.keystore
+
+# Samourai backend API key file (dead backend, refs #3)
+samourai.api
+
+ci-apk/
+ci-apk-head/
+ci-apk-head.zip

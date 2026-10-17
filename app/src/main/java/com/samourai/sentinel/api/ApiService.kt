@@ -14,6 +14,7 @@ import com.samourai.sentinel.util.apiScope
 import com.samourai.wallet.api.backend.beans.UnspentOutput
 import com.samourai.wallet.api.backend.beans.WalletResponse
 import com.samourai.wallet.util.XPUB
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -71,16 +72,29 @@ open class ApiService {
 
 
     fun authenticateDojo(): Job {
-        return apiScope.launch {
+        // #85: this launch used to wrap any auth failure in a raw
+        // Throwable(e.message) and rethrow it - an unhandled IO-coroutine
+        // failure that killed the process (erase-all-data stops Tor while
+        // the endpoints are still set: "Malformed reply from SOCKS
+        // server"). The failure still reaches callers through the
+        // returned Job - WebSocketHandler's invokeOnCompletion drives its
+        // bounded reconnect backoff from it - so the CEH below only exists
+        // to keep the exception away from the process-killing default
+        // handler. Removing the catch-and-wrap also un-corrupts
+        // cancellation: a CancellationException now completes the Job as
+        // cancellation instead of a synthetic failure.
+        val failureHandler = CoroutineExceptionHandler { _, t ->
+            Timber.e(t, "Dojo re-auth failed")
+        }
+        return apiScope.launch(failureHandler) {
             if (dojoUtility.getApiKey() != null) {
-                try {
-                    val response = authenticateDojo(dojoUtility.getApiKey()!!)
-                    if (response.isSuccessful) {
-                        val string = response.body?.string()
-                        string?.let { dojoUtility.setAuthToken(it) }
-                    }
-                } catch (e: Exception) {
-                    throw  Throwable(e.message)
+                // No catch-and-wrap: let the original exception (type and
+                // stack intact) complete the Job so observers can
+                // classify it; the CEH above keeps it off the process.
+                val response = authenticateDojo(dojoUtility.getApiKey()!!)
+                if (response.isSuccessful) {
+                    val string = response.body?.string()
+                    string?.let { dojoUtility.setAuthToken(it) }
                 }
             }
         }
@@ -375,7 +389,7 @@ open class ApiService {
         ): OkHttpClient {
             val builder = OkHttpClient.Builder()
             if (BuildConfig.DEBUG) {
-                builder.addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY))
+                builder.addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.HEADERS))
             }
             builder.callTimeout(60, TimeUnit.SECONDS)
             builder.readTimeout(90, TimeUnit.SECONDS)
@@ -400,7 +414,6 @@ open class ApiService {
 
             /**
              * Intercept current request and add the Dojo access token if needed.
-             * See https://code.samourai.io/dojo/samourai-dojo/-/blob/master/doc/POST_auth_login.md#authentication
              *
              * IMPORTANT: the token is resolved PER REQUEST via [currentAuthToken]
              * rather than captured from the [authToken] parameter.

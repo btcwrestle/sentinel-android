@@ -130,7 +130,49 @@
                     android:layout_marginTop="1dp"
                     android:background="@color/md_grey_800" />
 
-                <LinearLayout
+                                <LinearLayout
+                    android:id="@+id/txDetailsLabelRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:padding="@dimen/spacing_middle">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="start"
+                            android:layout_weight="1"
+                            android:text="Label" />
+
+                        <TextView
+                            android:id="@+id/txDetailsLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="end"
+                            android:layout_weight="1"
+                            android:background="?attr/selectableItemBackground"
+                            android:gravity="end"
+                            android:paddingTop="6dp"
+                            android:textColor="@color/text_secondary"
+                            tools:text="postmix" />
+
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_margin="@dimen/spacing_middle"
+                        android:layout_marginTop="1dp"
+                        android:background="@color/md_grey_800" />
+
+                </LinearLayout>
+
+<LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
@@ -241,7 +283,7 @@
                         android:layout_height="wrap_content"
                         android:layout_gravity="start"
                         android:layout_weight="1"
-                        android:text="Confirmation" />
+                        android:text="Confirmations" />
 
                     <TextView
                         android:id="@+id/txDetailsConfirmation"
@@ -389,6 +431,54 @@
                         android:textColor="@color/text_secondary"
                         tools:text="1234" />
 
+
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_margin="@dimen/spacing_middle"
+                    android:layout_marginTop="1dp"
+                    android:background="@color/md_grey_800" />
+
+                <LinearLayout
+                    android:id="@+id/txDetailsEntropyRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="?attr/selectableItemBackground"
+                    android:orientation="horizontal"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="start"
+                        android:layout_weight="1"
+                        android:text="Privacy" />
+
+                    <com.samourai.sentinel.widgets.EntropyBar
+                        android:id="@+id/txDetailsEntropyBar"
+                        android:layout_width="48dp"
+                        android:layout_height="12dp"
+                        android:layout_gravity="center_vertical|end"
+                        android:layout_marginEnd="8dp" />
+
+                    <TextView
+                        android:id="@+id/txDetailsEntropy"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="end"
+                        android:gravity="end"
+                        android:textColor="@color/text_secondary"
+                        tools:text="10.55 bits · 1496 interpretations" />
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:layout_gravity="center_vertical"
+                        android:layout_marginStart="4dp"
+                        android:contentDescription="Analyze externally"
+                        android:src="@drawable/ic_open_in_new" />
 
                 </LinearLayout>
 

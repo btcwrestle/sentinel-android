@@ -60,7 +60,18 @@ class CommunityDojoAdapter(
         val subtitleParts = listOfNotNull(
             node.version?.takeIf { it.isNotBlank() }?.let { "v$it" },
             node.jurisdiction?.takeIf { it.isNotBlank() },
-            if (node.isOnline) "online" else "offline"
+            if (node.isOnline) "online" else "offline",
+            // Directory-declared sibling explorer (#119/#122), display-only.
+            // Glance spec: first 14 chars expose the host token - a
+            // mempool-declared onion renders "http://mempool", a random
+            // onion renders a random head; last 6 prove ".onion" (Tor) vs a
+            // clearnet tail. Absent/blank URL renders unchanged - silence is
+            // honest. <=21 chars renders whole: truncation would not shorten
+            // it (https://mempool.space is exactly 21 and shows in full).
+            // Raw payload mirror, no trim - TxFactsResolver trims at use time.
+            node.payload?.explorer?.url
+                ?.takeIf { it.isNotBlank() }
+                ?.let { if (it.length > 21) "${it.take(14)}…${it.takeLast(6)}" else it }
         )
         holder.subtitle.text = subtitleParts.joinToString(" • ")
 

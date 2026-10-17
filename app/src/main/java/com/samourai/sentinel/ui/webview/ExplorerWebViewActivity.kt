@@ -105,7 +105,8 @@ class ExplorerWebViewActivity : AppCompatActivity() {
             }
         }
         tx?.let {
-            url = ExplorerRepository().getExplorer(it.hash.split("-")[0])
+            url = intent.getStringExtra(EXTRA_URL)
+                ?: ExplorerRepository().getExplorer(it.hash.split("-")[0])
             binding.webView.loadUrl(url)
         }
 
@@ -180,5 +181,15 @@ class ExplorerWebViewActivity : AppCompatActivity() {
             cm.setPrimaryClip(clipData)
             Toast.makeText(applicationContext, getString(R.string.copied_to_clipboard), Toast.LENGTH_SHORT).show()
         }
+    }
+
+    companion object {
+        /**
+         * #107 tier 1: when present, load this URL instead of the
+         * user's selected explorer. The entropy row's external
+         * analysis link sets it; every other caller omits it and
+         * gets unchanged explorer behavior.
+         */
+        const val EXTRA_URL = "com.samourai.sentinel.ui.webview.EXTRA_URL"
     }
 }

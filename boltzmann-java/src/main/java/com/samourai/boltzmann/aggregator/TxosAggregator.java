@@ -319,7 +319,13 @@ public class TxosAggregator {
       long deltaTimeSeconds = (currTime - startTime) / 1000;
       if (maxDuration != null && deltaTimeSeconds >= maxDuration) {
         System.out.println("maxDuration limit reached!");
-        return new TxosAggregatorResult(0, null);
+        // #107 guard: join the txos-cap sentinel state (nbCmbn=0 +
+        // zero matrix) instead of returning null - TxosLinker hands
+        // the matrix to findDtrmLinks unguarded and null NPEs there
+        // (the #102 class, 45 device txids). Dims follow the
+        // linker's own txos-cap init: [output][input].
+        return new TxosAggregatorResult(
+            0, ListsUtils.newIntMatrix(txos.getOutputs().size(), txos.getInputs().size(), 0));
       }
 
       // Gets data from task

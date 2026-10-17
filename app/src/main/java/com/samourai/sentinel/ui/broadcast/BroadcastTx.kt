@@ -35,6 +35,7 @@ import com.samourai.wallet.psbt.PSBT
 import com.sparrowwallet.hummingbird.registry.CryptoPSBT
 import com.sparrowwallet.hummingbird.registry.RegistryType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
@@ -43,6 +44,7 @@ import kotlinx.coroutines.withContext
 import org.bitcoinj.core.Transaction
 import org.bouncycastle.util.encoders.Hex
 import org.koin.java.KoinJavaComponent.inject
+import timber.log.Timber
 import java.io.BufferedReader
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -57,14 +59,29 @@ class BroadcastTx : SentinelActivity() {
         private val _hex = MutableLiveData("")
         val hex: LiveData<String> get() = _hex
         private val apiService: ApiService by inject(ApiService::class.java)
+        // #125: ApiNotConfigured (:318/:326) and InvalidResponse (:359) extend
+        // Throwable, so the catch(Exception) below cannot intercept them, and this
+        // launch had no handler: the throw reached the process-killing default
+        // handler. No arms here - BroadcastVm has no Context, so it cannot Toast,
+        // while :143 invokeOnCompletion already maps a failed Job to "Unable to
+        // broadcast ..." (:154-160). The original type survives (#80), so no false
+        // success sheet. Shape mirrors ApiService.authenticateDojo (:86-89).
+        private val broadcastFailureHandler = CoroutineExceptionHandler { _, t ->
+            Timber.e(t, "Broadcast failed outside the Exception wall")
+        }
+
         fun broadCast(): Job {
-            return viewModelScope.launch(Dispatchers.IO) {
+            return viewModelScope.launch(Dispatchers.IO + broadcastFailureHandler) {
                 hex.value?.let {
-                    try {
-                        apiService.broadcast(it)
-                    } catch (e: Exception) {
-                        throw CancellationException(e.message)
-                    }
+                    // #129: the old wrap (catch (Exception) { throw
+                    // CancellationException(e.message) }) laundered real failures -
+                    // type and stack destroyed, and a genuine failure became
+                    // indistinguishable from scope teardown. #126's
+                    // broadcastFailureHandler contains any escape, and the
+                    // consumer below reads the real cause from
+                    // invokeOnCompletion; genuine cancellation arrives as CE and
+                    // is guarded there.
+                    apiService.broadcast(it)
                 }
             }
         }
@@ -79,6 +96,15 @@ class BroadcastTx : SentinelActivity() {
     private val model: BroadcastVm by viewModels()
     private var hash = ""
     private lateinit var binding: LayoutBroadcastBottomSheetBinding
+
+    // #145: the file-import launch had no handler - a de-laundered escape
+    // (FileNotFoundException/IOException) would reach the process-killing
+    // default handler, which is exactly what the old CE wraps were
+    // suppressing. Handler first (#126-shape, BroadcastVm precedent above),
+    // then the wraps come off in onActivityResult.
+    private val fileImportHandler = CoroutineExceptionHandler { _, t ->
+        Timber.e(t, "File import failed outside the Exception wall")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,6 +177,10 @@ class BroadcastTx : SentinelActivity() {
                         bottomSheet.show(supportFragmentManager, bottomSheet.tag)
                         binding.hexTextView.text = ""
                         model.setHex("")
+                    } else if (it is CancellationException) {
+                        // #129: genuine scope teardown, not a broadcast failure -
+                        // nothing to report. Pre-de-laundering this arrived as the
+                        // laundered cause and toasted "Unable to broadcast".
                     } else {
                         Toast.makeText(
                                 applicationContext,
@@ -250,35 +280,35 @@ class BroadcastTx : SentinelActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (data != null && data.data != null && data.data!!.path != null && requestCode == ImportBackUpActivity.REQUEST_FILE_CODE) {
             val job =
-                model.viewModelScope.launch(Dispatchers.Main) {
-                    try {
-                        val inputStream = contentResolver.openInputStream(data.data!!)
-                        val reader = BufferedReader(InputStreamReader(inputStream))
-                        val size = inputStream?.available()
-                        if (size != null) {
-                            if (size > 5e+6) {
-                                throw  IOException("File size is too large to open")
-                            }
+                // #145: the three CE wraps here laundered real failures into
+                // cancellation, and existed to suppress process death on a
+                // handler-less launch. Sequenced per #145: this launch now
+                // carries fileImportHandler (above), so the wraps come off and
+                // the real types flow - the size-guard IOException included.
+                // The job completes with the real cause; the CEH contains any
+                // escape, and the consumer below guards genuine teardown.
+                model.viewModelScope.launch(Dispatchers.Main + fileImportHandler) {
+                    val inputStream = contentResolver.openInputStream(data.data!!)
+                    val reader = BufferedReader(InputStreamReader(inputStream))
+                    val size = inputStream?.available()
+                    if (size != null) {
+                        if (size > 5e+6) {
+                            throw  IOException("File size is too large to open")
                         }
-                        var string = ""
-                        string = reader.buffered().readText()
-                        withContext(Dispatchers.Main) {
-                            validate(string)
-                        }
-                    } catch (fn: FileNotFoundException) {
-                        fn.printStackTrace()
-                        throw CancellationException((fn.message))
-                    } catch (ioe: IOException) {
-                        ioe.printStackTrace()
-                        throw CancellationException((ioe.message))
-                    } catch (ex: Exception) {
-                        ex.printStackTrace()
-                        throw CancellationException((ex.message))
+                    }
+                    var string = ""
+                    string = reader.buffered().readText()
+                    withContext(Dispatchers.Main) {
+                        validate(string)
                     }
                 }
             job.invokeOnCompletion {
-                if (it != null) {
-                    Toast.makeText(this, "Error ${it.message}", Toast.LENGTH_LONG).show()
+                if (it != null && it !is CancellationException) {
+                    // #145: report the real cause - the type name keeps a
+                    // null-message failure honest (previously rendered
+                    // "Error null"). Genuine scope teardown is not an error.
+                    val reason = it.message ?: it::class.simpleName ?: "unknown error"
+                    Toast.makeText(this, "Error: $reason", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -307,10 +337,8 @@ class ScanTxFragment : BottomSheetDialogFragment() {
         mCodeScanner.setLifeCycleOwner(this)
 
         mCodeScanner.setQRDecodeListener {
-            // See DojoConfigureBottomSheet: scoped to the view lifecycle so a scan
-            // arriving as the sheet closes cannot touch a destroyed view.
-            viewLifecycleOwner.lifecycleScope.launch {
-                onScan(it)
+            lifecycleScope.launch {
+                    onScan(it)
             }
         }
 

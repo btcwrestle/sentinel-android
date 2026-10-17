@@ -47,6 +47,15 @@ class TokenAuthenticator(private val apiService: ApiService) : Authenticator {
             try {
                 // Blocking and awaited, unlike the old fire-and-forget Job.
                 apiService.refreshDojoAuth()
+            } catch (e: ApiService.ApiNotConfigured) {
+                // #125: ApiNotConfigured extends Throwable (:364), so the Exception wall
+                // below cannot intercept it - and neither can refreshDojoAuth's own
+                // Exception-only walls (:129, :141-149) nor OkHttp's interceptor chain,
+                // so the throw escaped runBlocking on an OkHttp dispatcher thread. Degrade
+                // to false: refreshed == false returns null (:59) and the call fails, the
+                // honest outcome when there is no endpoint to re-auth against.
+                Timber.e(e, "Dojo re-auth aborted: no API endpoint configured")
+                false
             } catch (e: Exception) {
                 Timber.e(e, "Dojo re-authentication failed")
                 false

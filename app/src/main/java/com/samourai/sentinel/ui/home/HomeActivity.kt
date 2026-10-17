@@ -5,10 +5,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.transition.ChangeBounds
+import android.transition.TransitionManager
 import android.view.Gravity
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.viewModels
@@ -18,7 +21,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.shape.ShapeAppearanceModel
 import com.samourai.sentinel.R
-import com.samourai.sentinel.api.APIConfig
+import com.samourai.sentinel.core.ConnectionIndicator
 import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.core.SyncState
 import com.samourai.sentinel.ui.views.ConnectionIndicatorController
@@ -55,8 +58,8 @@ import com.samourai.sentinel.widgets.popUpMenu.popupMenu
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.koin.java.KoinJavaComponent.inject
+import timber.log.Timber
 
 
 class HomeActivity : SentinelActivity() {
@@ -66,10 +69,14 @@ class HomeActivity : SentinelActivity() {
     private val webSocketHandler: WebSocketHandler by inject(WebSocketHandler::class.java)
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
     private var connectingDojo = false
+    private var torAutoSyncFired = false
     private lateinit var binding: ActivityHomeBinding
     private val model: HomeViewModel by viewModels()
     private var balance = -1L
     private var indicatorController: ConnectionIndicatorController? = null
+    // #184: named observer so a menu re-pass can retire the previous one -
+    // the indicator LiveData is one shared mediator for the process now.
+    private var indicatorObserver: Observer<ConnectionIndicator>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,8 +98,10 @@ class HomeActivity : SentinelActivity() {
         UtxoMetaUtil.read()
 
         if (SentinelState.isTorRequired() && SentinelTorManager.getTorState().state == EnumTorState.OFF) {
+            // #170: the boot start stays (a paired Dojo or the user's own
+            // toggle gates it now); the enableTor stomp is gone - the
+            // toggle is the user's alone.
             SentinelTorManager.start()
-            prefsUtil.enableTor = true
         }
 
         val needsNotificationPermissionPrompt =
@@ -179,7 +188,7 @@ class HomeActivity : SentinelActivity() {
 
         if (intent != null) {
             if (intent.hasExtra("forceRefresh") && intent.getBooleanExtra("forceRefresh", true)) {
-                model.fetchBalance()
+                model.fetchBalance(userInitiated = true)
             }
         }
 
@@ -207,11 +216,32 @@ class HomeActivity : SentinelActivity() {
      *
      * Cached collections stay visible at all times; this only annotates them.
      */
+    private var lastBannerText: String? = null
+
     private fun renderSyncState(state: SyncState) {
         val banner = binding.syncStatusBanner
         val text = binding.syncStatusText
         val progress = binding.syncStatusProgress
         val retry = binding.syncRetryButton
+
+        Timber.i("SyncState -> $state")
+
+        // Hysteresis (#47): glide layout changes instead of snapping so the
+        // FAB never teleports, and suppress no-op text rewrites.
+        val target = if (state is SyncState.Idle) View.GONE else View.VISIBLE
+        if (banner.visibility != target) {
+            TransitionManager.beginDelayedTransition(
+                binding.root as ViewGroup,
+                ChangeBounds().setDuration(250L)
+            )
+        }
+
+        fun setText(s: String) {
+            if (s != lastBannerText) {
+                lastBannerText = s
+                text.text = s
+            }
+        }
 
         when (state) {
             is SyncState.Idle -> {
@@ -222,38 +252,65 @@ class HomeActivity : SentinelActivity() {
                 banner.visibility = View.VISIBLE
                 progress.visibility = View.VISIBLE
                 retry.visibility = View.GONE
-                text.text = if (state.progress in 1..99) {
-                    "Connecting via Tor\u2026 ${state.progress}%"
-                } else {
-                    "Connecting via Tor\u2026"
+                // #94: determinate bootstrap % on the banner indicator -
+                // same threshold as the text below it.
+                if (state.progress in 1..99) {
+                    if (progress.isIndeterminate) {
+                        // Mode switches must never run on a VISIBLE indicator;
+                        // INVISIBLE keeps the slot without drawing.
+                        progress.visibility = View.INVISIBLE
+                        progress.isIndeterminate = false
+                        progress.visibility = View.VISIBLE
+                    }
+                    progress.setProgressCompat(state.progress, true)
                 }
+                setText(
+                    if (state.progress in 1..99) {
+                        "Connecting via Tor\u2026 ${state.progress}%"
+                    } else {
+                        "Connecting via Tor\u2026"
+                    }
+                )
             }
 
             is SyncState.Syncing -> {
                 banner.visibility = View.VISIBLE
-                progress.visibility = View.VISIBLE
                 retry.visibility = View.GONE
+                // #94: a Tor bar frozen at N% must not ride through the
+                // sync round - reset to indeterminate behind INVISIBLE.
+                if (!progress.isIndeterminate) {
+                    progress.visibility = View.INVISIBLE
+                    progress.isIndeterminate = true
+                }
+                progress.visibility = View.VISIBLE
                 val base = if (state.total > 1) {
                     "Syncing ${state.done} of ${state.total} collections\u2026"
                 } else {
                     "Syncing\u2026"
                 }
-                // Explain the delay rather than failing: Tor can be genuinely slow.
-                text.text = if (state.slow) {
-                    "$base still working over Tor, this can take a while"
-                } else {
-                    base
-                }
+                setText(
+                    if (state.slow) {
+                        "$base still working over Tor, this can take a while"
+                    } else {
+                        base
+                    }
+                )
             }
 
             is SyncState.Success -> {
                 progress.visibility = View.GONE
+                // #94: re-arm indeterminate behind GONE for the next cycle.
+                progress.isIndeterminate = true
                 retry.visibility = View.GONE
-                text.text = "Updated just now"
+                setText("Updated just now")
                 banner.visibility = View.VISIBLE
-                // Briefly confirm, then get out of the way.
+                // Briefly confirm, then glide out of the way.
                 banner.postDelayed({
                     if (model.syncState().value is SyncState.Success) {
+                        TransitionManager.beginDelayedTransition(
+                            binding.root as ViewGroup,
+                            ChangeBounds().setDuration(250L)
+                        )
                         banner.visibility = View.GONE
                     }
                 }, 2000)
@@ -262,7 +319,9 @@ class HomeActivity : SentinelActivity() {
             is SyncState.Failed -> {
                 banner.visibility = View.VISIBLE
                 progress.visibility = View.GONE
-                text.text = state.reason
+                // #94: re-arm indeterminate behind GONE for the next cycle.
+                progress.isIndeterminate = true
+                setText(state.reason)
                 retry.visibility = if (state.retryable) View.VISIBLE else View.GONE
             }
         }
@@ -272,19 +331,25 @@ class HomeActivity : SentinelActivity() {
      * Single entry point for user-initiated refresh, from either the pull gesture
      * or the banner's Retry button.
      */
+    /**
+     * Single entry point for user-initiated refresh, from either the pull
+     * gesture or the banner's Retry button. User refreshes REPLACE any
+     * in-flight round; auto triggers never do (#47).
+     */
     private fun requestRefresh() {
         if (SentinelState.isTorRequired()) {
             when (SentinelTorManager.getTorState().state) {
-                EnumTorState.ON -> model.fetchBalance()
+                EnumTorState.ON -> model.fetchBalance(userInitiated = true)
                 EnumTorState.OFF -> {
+                    // #170: refresh-triggered start, no stomp on the toggle -
+                    // isTorRequired() already gates this arm.
                     SentinelTorManager.start()
-                    prefsUtil.enableTor = true
                 }
                 // STARTING / STOPPING: the banner already communicates progress.
                 else -> Unit
             }
         } else {
-            model.fetchBalance()
+            model.fetchBalance(userInitiated = true)
         }
     }
 
@@ -342,23 +407,23 @@ class HomeActivity : SentinelActivity() {
         }
         popupMenu.show(this@HomeActivity, it)
     }
+    /**
+     * Auto-sync once, when Tor first reports ON. Single-shot: kmp-tor can
+     * re-emit ON during bootstrap, and each emission arming a fresh
+     * fetchBalance was the rapid round churn at startup (#47).
+     */
     private fun fetch(model: HomeViewModel) {
         if (!SentinelState.isRecentlySynced()) {
             if (SentinelState.isTorRequired() && SentinelTorManager.getTorState().state == EnumTorState.ON) {
+                torAutoSyncFired = true
                 model.fetchBalance()
             } else {
-                SentinelTorManager.getTorStateLiveData().observe(this, {
-                    if (it.state == EnumTorState.ON) {
-                        // lifecycleScope instead of GlobalScope: this is tied to the
-                        // Activity, so it is cancelled on destroy rather than leaking
-                        // and touching the ViewModel after the Activity is gone.
-                        // lifecycleScope is already main-dispatched, so the inner
-                        // withContext(Main) was redundant.
-                        lifecycleScope.launch {
-                            model.fetchBalance()
-                        }
+                SentinelTorManager.getTorStateLiveData().observe(this, ({
+                    if (it.state == EnumTorState.ON && !torAutoSyncFired) {
+                        torAutoSyncFired = true
+                        model.fetchBalance()
                     }
-                })
+                }))
             }
         }
     }
@@ -431,41 +496,6 @@ class HomeActivity : SentinelActivity() {
             } else {
                 showDojoSetUpBottomSheet()
             }
-            /*
-            this.confirm(label = "Choose server",
-                    positiveText = "Connect to Dojo",
-                    //negativeText = "Connect to Samourai’s server",
-                    isCancelable = false,
-                    onConfirm = { confirm ->
-                        if (confirm) {
-                            connectingDojo = true
-                            if (!AndroidUtil.isPermissionGranted(Manifest.permission.CAMERA, applicationContext)) {
-                                this.askCameraPermission()
-                            } else {
-                                showDojoSetUpBottomSheet()
-                            }
-                        } else {
-                            this.confirm(label = "Connect through Tor?",
-                                message = "",
-                                positiveText = "Yes",
-                                negativeText = "No",
-                                onConfirm = { confirmed ->
-                                    if (confirmed) {
-                                        SentinelTorManager.start()
-                                        prefsUtil.enableTor = true
-                                    }
-                                }
-                            )
-                            if (prefsUtil.testnet == true) {
-                                prefsUtil.apiEndPoint = APIConfig.SAMOURAI_API_TESTNET
-                                prefsUtil.apiEndPointTor = APIConfig.SAMOURAI_API_TOR_TESTNET
-                            } else {
-                                prefsUtil.apiEndPoint = APIConfig.SAMOURAI_API
-                                prefsUtil.apiEndPointTor = APIConfig.SAMOURAI_API_TOR
-                            }
-                        }
-                    })
-             */
         }
     }
 
@@ -592,10 +622,17 @@ class HomeActivity : SentinelActivity() {
         // Traffic-light: green = Tor connected AND synced, flashing yellow =
         // connecting/syncing, red = failed. Driven by the ViewModel so Tor state
         // and sync state are considered together.
+        // #184: the indicator LiveData is one shared mediator for the process
+        // now - a menu re-pass must retire the previous observer, or the
+        // stale observer keeps rendering into the disposed controller while
+        // the fresh controller misses the replayed current value.
         indicatorController?.dispose()
-        indicatorController = ConnectionIndicatorController(statusCircle).also { controller ->
-            model.connectionIndicator().observe(this) { controller.render(it) }
-        }
+        indicatorObserver?.let { model.connectionIndicator().removeObserver(it) }
+        val controller = ConnectionIndicatorController(statusCircle)
+        indicatorController = controller
+        val observer = Observer<ConnectionIndicator> { controller.render(it) }
+        indicatorObserver = observer
+        model.connectionIndicator().observe(this, observer)
 
         rootView.setOnClickListener {
             startActivity(Intent(this, NetworkActivity::class.java))
@@ -605,6 +642,9 @@ class HomeActivity : SentinelActivity() {
     override fun onDestroy() {
         indicatorController?.dispose()
         indicatorController = null
+        // #184: lifecycle teardown owns observer removal; this drops the
+        // stale reference so a later pass cannot reuse a dead observer.
+        indicatorObserver = null
         super.onDestroy()
     }
 

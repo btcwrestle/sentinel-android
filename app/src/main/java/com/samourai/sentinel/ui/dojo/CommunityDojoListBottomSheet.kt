@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -22,8 +23,12 @@ import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.koin.java.KoinJavaComponent.inject
+import java.net.SocketTimeoutException
 
 /**
  * Lists the community Dojos published by Dojo Bay (fetched live, over Tor) and
@@ -46,12 +51,36 @@ class CommunityDojoListBottomSheet(
 
     private var fetchInFlight = false
 
+    /** #135: ticks elapsed seconds into the status line while a fetch runs. */
+    private var elapsedTicker: Job? = null
+
+    /**
+     * #135: the dominant directory latency is Dojo Bay's own probing of every
+     * listed node (server-side, unshortenable from here). A client-side 120 s
+     * timeout therefore does NOT mean the work was wasted - the operator
+     * measured attempt 2 answering in ~3 s right after a 120 s timeout, the
+     * signature of a warmed probe cache. One automatic retry converts the
+     * worst first-run experience into a self-healing one; a second timeout
+     * surfaces the plain-language message instead of raw exception text.
+     */
+    private companion object {
+        const val AUTO_PROBE_RETRIES = 1
+        const val AUTO_PROBE_RETRY_DELAY_MS = 3_000L
+    }
+
     private val adapter = CommunityDojoAdapter(
         onSelect = { node ->
             val json = node.pairingPayloadJson()
             if (json == null) {
                 Toast.makeText(requireContext(), "Invalid pairing details for this Dojo", Toast.LENGTH_SHORT).show()
             } else {
+                // Snapshot directory display metadata now: past this callback
+                // only the pairing JSON travels, and the stored payload has no
+                // name/flag. The node object is already in memory from the
+                // directory fetch (over Tor) - nothing new is requested.
+                prefsUtil.dojoDisplayName = node.name?.takeIf { it.isNotBlank() }
+                prefsUtil.dojoDisplayFlag = node.flagEmoji
+                prefsUtil.dojoDisplayUrl = node.payload?.pairing?.url
                 onDojoSelected(json)
                 dismiss()
             }
@@ -84,62 +113,151 @@ class CommunityDojoListBottomSheet(
 
     private fun connectTorThenFetch() {
         showLoading(getString(R.string.community_dojo_connecting_tor))
-        if (SentinelTorManager.getTorState().state == EnumTorState.ON) {
+        // State can say ON from a stale LiveData while the proxy object
+        // is not (yet) available; require both to take the fast path.
+        // #135: ON alone is NOT enough - it is published at boot=5, before
+        // the SOCKS listener exists and before boot=100. Ask the manager for
+        // full readiness so a fresh start cannot fetch through a proxy-less
+        // or circuit-less client.
+        if (SentinelTorManager.isTorReady()) {
             fetchDirectory()
             return
         }
         SentinelTorManager.setUp(requireContext().applicationContext as Application)
+        // #170: directory-fetch start, no stomp on the user's toggle.
         SentinelTorManager.start()
-        prefsUtil.enableTor = true
         SentinelTorManager.getTorStateLiveData().observe(viewLifecycleOwner) { state ->
-            if (state.state == EnumTorState.ON) {
-                fetchDirectory()
+            when (state.state) {
+                EnumTorState.ON -> {
+                    // #135: this sheet has no transition dedupe, so every ON
+                    // emission of the 5->100 climb used to call
+                    // fetchDirectory() at boot=5-ish. Await full readiness
+                    // instead (returns false on OFF/STOPPING, letting the
+                    // OFF handler below own the failure); the fetchInFlight
+                    // guard collapses any overlapping ready emissions.
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        if (SentinelTorManager.awaitTorReady()) {
+                            fetchDirectory()
+                        }
+                    }
+                }
+                EnumTorState.OFF ->
+                    // Tor stopped while the sheet is open; surface a
+                    // retryable error instead of spinning forever.
+                    showMessage(
+                        getString(R.string.community_dojo_error, "Tor stopped"),
+                        canRetry = true
+                    )
+                else -> Unit // STARTING/STOPPING: keep waiting
             }
         }
     }
 
+    /**
+     * #135: timeout-shaped failures (120 s callTimeout or socket read
+     * timeout) get the plain-language probe message; everything else keeps
+     * the detailed error string.
+     */
+    private fun isProbeTimeout(e: Exception): Boolean =
+        e is SocketTimeoutException ||
+            e.message?.contains("timeout", ignoreCase = true) == true ||
+            e.message?.contains("timed out", ignoreCase = true) == true
+
     private fun fetchDirectory() {
         if (fetchInFlight) return
         fetchInFlight = true
-        showLoading(getString(R.string.community_dojo_fetching))
         viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                val nodes = CommunityDojoRepository.fetchDirectory()
-                // The directory fetch may take up to 120s and can complete
-                // after the user has dismissed this sheet. Touching the
-                // fragment context or its views at that point crashes with
-                // IllegalStateException (not attached to a context), so
-                // bail out whenever we are no longer attached.
-                if (!isAdded) {
+            var attempt = 0
+            while (true) {
+                attempt++
+                startElapsedTicker()
+                try {
+                    val nodes = CommunityDojoRepository.fetchDirectory()
+                    // The directory fetch may take up to 120s and can complete
+                    // after the user has dismissed this sheet. Touching the
+                    // fragment context or its views at that point crashes with
+                    // IllegalStateException (not attached to a context), so
+                    // bail out whenever we are no longer attached.
+                    if (!isAdded) {
+                        fetchInFlight = false
+                        stopElapsedTicker()
+                        return@launch
+                    }
+                    val network = if (prefsUtil.testnet == true) "testnet" else "mainnet"
+                    val filtered = nodes
+                        .filter { it.network.equals(network, ignoreCase = true) }
+                        .sortedWith(
+                            compareByDescending<CommunityDojoNode> { it.isOnline }
+                                .thenBy { it.name.orEmpty().lowercase() }
+                        )
                     fetchInFlight = false
+                    stopElapsedTicker()
+                    if (filtered.isEmpty()) {
+                        showMessage(getString(R.string.community_dojo_empty, network), canRetry = true)
+                    } else {
+                        showList(filtered)
+                    }
                     return@launch
-                }
-                val network = if (prefsUtil.testnet == true) "testnet" else "mainnet"
-                val filtered = nodes
-                    .filter { it.network.equals(network, ignoreCase = true) }
-                    .sortedWith(
-                        compareByDescending<CommunityDojoNode> { it.isOnline }
-                            .thenBy { it.name.orEmpty().lowercase() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    stopElapsedTicker()
+                    val timeout = isProbeTimeout(e)
+                    if (timeout && attempt <= AUTO_PROBE_RETRIES) {
+                        // The first attempt's server-side probing is not
+                        // wasted - retry once before giving up (operator
+                        // datum: 120 s timeout then ~3 s success).
+                        if (!isAdded) {
+                            fetchInFlight = false
+                            return@launch
+                        }
+                        showLoading(getString(R.string.community_dojo_auto_retry))
+                        delay(AUTO_PROBE_RETRY_DELAY_MS)
+                        if (!isAdded) {
+                            fetchInFlight = false
+                            return@launch
+                        }
+                        continue
+                    }
+                    fetchInFlight = false
+                    if (!isAdded) {
+                        return@launch
+                    }
+                    showMessage(
+                        if (timeout) getString(R.string.community_dojo_probe_timeout)
+                        else getString(R.string.community_dojo_error, e.message ?: e.toString()),
+                        canRetry = true
                     )
-                fetchInFlight = false
-                if (filtered.isEmpty()) {
-                    showMessage(getString(R.string.community_dojo_empty, network), canRetry = true)
-                } else {
-                    showList(filtered)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                fetchInFlight = false
-                if (!isAdded) {
                     return@launch
                 }
-                showMessage(
-                    getString(R.string.community_dojo_error, e.message ?: e.toString()),
-                    canRetry = true
-                )
             }
         }
+    }
+
+    /** #135: 1 s ticks into the status line so the wait stays legible. */
+    private fun startElapsedTicker() {
+        stopElapsedTicker()
+        // First paint: probing copy with "(0 s elapsed)" at once,
+        // instead of leaving the previous label up for the first tick.
+        statusText.text =
+            getString(R.string.community_dojo_fetching_elapsed, 0)
+        val startedAt = SystemClock.elapsedRealtime()
+        elapsedTicker = viewLifecycleOwner.lifecycleScope.launch {
+            while (isActive) {
+                delay(1_000)
+                // Same attachment rule as the fetch completion path: never
+                // touch views once the sheet is gone.
+                if (!isAdded) return@launch
+                val seconds = (SystemClock.elapsedRealtime() - startedAt) / 1000
+                statusText.text =
+                    getString(R.string.community_dojo_fetching_elapsed, seconds)
+            }
+        }
+    }
+
+    private fun stopElapsedTicker() {
+        elapsedTicker?.cancel()
+        elapsedTicker = null
     }
 
     private fun showLoading(message: String) {
@@ -151,6 +269,7 @@ class CommunityDojoListBottomSheet(
     }
 
     private fun showMessage(message: String, canRetry: Boolean) {
+        stopElapsedTicker()
         progressBar.visibility = View.GONE
         statusText.visibility = View.VISIBLE
         statusText.text = message
@@ -159,6 +278,7 @@ class CommunityDojoListBottomSheet(
     }
 
     private fun showList(nodes: List<CommunityDojoNode>) {
+        stopElapsedTicker()
         progressBar.visibility = View.GONE
         statusText.visibility = View.GONE
         retryButton.visibility = View.GONE

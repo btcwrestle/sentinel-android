@@ -4,9 +4,11 @@ import com.samourai.sentinel.api.okHttp.await
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.tor.SentinelTorManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /**
@@ -16,8 +18,12 @@ import java.util.concurrent.TimeUnit
  */
 object CommunityDojoRepository {
 
-    suspend fun fetchDirectory(): List<CommunityDojoNode> = withContext(Dispatchers.IO) {
-        val proxy = SentinelTorManager.getProxy()
+    suspend fun fetchDirectory(maxWaitMs: Long = 120_000L): List<CommunityDojoNode> = withContext(Dispatchers.IO) {
+        // Tor's STATE observer can report ON slightly before its LISTENERS
+        // observer delivers the SOCKS proxy. On a cold bootstrap that window
+        // surfaced as an instant "Tor is not connected" error on fresh
+        // installs. Poll briefly for the proxy before giving up.
+        val proxy = awaitProxy(maxWaitMs)
             ?: throw IllegalStateException("Tor is not connected")
 
         val client = OkHttpClient.Builder()
@@ -44,5 +50,21 @@ object CommunityDojoRepository {
             ?: throw IllegalStateException("Could not parse the DojoBay.org directory")
 
         directory.nodes.orEmpty()
+    }
+
+    /**
+     * Polls briefly for the Tor SOCKS proxy with a bounded wait. STATE can
+     * report ON before LISTENERS delivers the proxy object. Returns null
+     * if the proxy never appears within [maxWaitMs] - caller reports it.
+     */
+    private suspend fun awaitProxy(maxWaitMs: Long): Proxy? {
+        var waited = 0L
+        var proxy = SentinelTorManager.getProxy()
+        while (proxy == null && waited < maxWaitMs) {
+            delay(250)
+            waited += 250
+            proxy = SentinelTorManager.getProxy()
+        }
+        return proxy
     }
 }

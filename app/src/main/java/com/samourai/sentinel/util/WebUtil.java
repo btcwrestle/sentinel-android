@@ -39,18 +39,6 @@ public class WebUtil {
         return instance;
     }
 
-
-    public static final String SAMOURAI_API = "https://api.samouraiwallet.com/";
-    public static final String SAMOURAI_API_CHECK = "https://api.samourai.com/v1/status";
-    public static final String SAMOURAI_API2 = "https://api.samouraiwallet.com/v2/";
-    public static final String SAMOURAI_API2_TESTNET = "https://api.samouraiwallet.com/test/v2/";
-
-    public static final String SAMOURAI_API2_TOR_DIST = "http://d2oagweysnavqgcfsfawqwql2rwxend7xxpriq676lzsmtfwbt75qbqd.onion/v2/";
-    public static final String SAMOURAI_API2_TESTNET_TOR_DIST = "http://d2oagweysnavqgcfsfawqwql2rwxend7xxpriq676lzsmtfwbt75qbqd.onion/test/v2/";
-
-    public static String SAMOURAI_API2_TOR = SAMOURAI_API2_TOR_DIST;
-    public static String SAMOURAI_API2_TESTNET_TOR = SAMOURAI_API2_TESTNET_TOR_DIST;
-
     public static final String LBC_EXCHANGE_URL = "https://localbitcoins.com/bitcoinaverage/ticker-all-currencies/";
     public static final String BFX_EXCHANGE_URL = "https://api.bitfinex.com/v1/pubticker/btcusd";
 
@@ -285,11 +273,6 @@ public class WebUtil {
     }
 
     public static String getAPIUrl(Context context) {
-//        if (TorManager.getInstance(context).isRequired()) {
-//            return SamouraiSentinel.getInstance().isTestNet() ? SAMOURAI_API2_TESTNET_TOR : SAMOURAI_API2_TOR;
-//        } else {
-//            return SamouraiSentinel.getInstance().isTestNet() ? SAMOURAI_API2_TESTNET : SAMOURAI_API2;
-//        }
 
         return  "";
     }

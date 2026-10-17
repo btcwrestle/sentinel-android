@@ -13,12 +13,12 @@ import androidx.transition.TransitionManager
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.transition.MaterialSharedAxis
 import com.samourai.sentinel.R
-import com.samourai.sentinel.api.APIConfig
 import com.samourai.sentinel.api.ApiService
 import com.samourai.sentinel.core.access.AccessFactory
 import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.databinding.ActivityImportBackUpBinding
+import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.SentinelActivity
 import com.samourai.sentinel.ui.home.HomeActivity
@@ -29,6 +29,8 @@ import com.samourai.sentinel.ui.views.LockScreenDialog
 import com.samourai.sentinel.util.ExportImportUtil
 import com.samourai.sentinel.util.apiScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,6 +60,13 @@ class ImportBackUpActivity : SentinelActivity() {
     private lateinit var binding: ActivityImportBackUpBinding
     private val repository: CollectionRepository by inject(CollectionRepository::class.java)
     private val apiService: ApiService by inject(ApiService::class.java)
+
+    // #80: real failures in the import launches must reach the
+    // invokeOnCompletion reporting path, not the process. Masking
+    // them as CancellationException destroyed type and stack.
+    private val importExceptionHandler = CoroutineExceptionHandler { _, t ->
+        Timber.e(t, "import failed")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,28 +99,183 @@ class ImportBackUpActivity : SentinelActivity() {
         binding.importStartBtn.isEnabled = false
 
         binding.importStartBtn.setOnClickListener {
-            if (binding.importPasswordInput.text?.length == 0) {
-                binding.importPasswordInput.error = "Please type payload password"
-            } else {
-                decryptPayload()
-
-            }
+            // #48: empty password is NO LONGER refused. Backups exported with
+            // an empty password (before the export-side guard existed) are
+            // valid AES payloads keyed on the empty string; refusing empty
+            // here made them permanently unimportable. A wrong password on a
+            // protected backup still fails honestly in decryptPayload().
+            decryptPayload()
         }
         showImportButton(true)
     }
 
-    private fun importAllXpubs() {
-        apiScope.launch {
-            try {
-                val pubKeyCollectionsCopy = ArrayList(repository.pubKeyCollections)
-                pubKeyCollectionsCopy.forEach { collection ->
-                    collection.pubs.forEach { pub ->
-                        apiService.importXpub(pub.pubKey, "bip${pub.getPurpose()}")
-                    }
+    /**
+     * Registers every xpub with the configured server (#48).
+     *
+     * Per-item containment: one failing registration must NOT cancel the
+     * rest (this was the 2-of-3 partial import). Awaited by the caller so
+     * the completion handler reports the real outcome. Returns
+     * (imported, failed).
+     */
+    private suspend fun importAllXpubs(): Pair<Int, Int> {
+        var imported = 0
+        var failed = 0
+        val pubKeyCollectionsCopy = ArrayList(repository.collectionsSnapshot())
+        pubKeyCollectionsCopy.forEach { collection ->
+            collection.pubs.forEach { pub ->
+                try {
+                    apiService.importXpub(pub.pubKey, "bip${pub.getPurpose()}")
+                    imported++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: ApiService.ApiNotConfigured) {
+                    // #125: NOT a crash site - this launch carries importExceptionHandler
+                    // (:67), which already absorbed the class. The defect was reporting
+                    // fidelity: without this arm the throw skipped the per-item ladder and
+                    // aborted the loop, losing the (ok of ok+bad) partial tally at
+                    // :343-347, so an import that registered nothing could report clean.
+                    failed++
+                    Timber.e(e, "Failed to register xpub (bip${pub.getPurpose()})")
+                } catch (e: Exception) {
+                    failed++
+                    Timber.e(e, "Failed to register xpub (bip${pub.getPurpose()})")
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                throw CancellationException(e.message)
+            }
+        }
+        return imported to failed
+    }
+
+    /**
+     * Dojo pairing leg (#48). DojoUtil.setDojo persists creds + endpoints
+     * LOCALLY first, then makes ONE network auth call - which is what dies
+     * with "unable to resolve host" while the Tor circuit is still
+     * bootstrapping. So: wait for Tor readiness (bootstrap is legitimately
+     * slow), retry the auth call boundedly, and report failure as a
+     * PARTIAL (collections + prefs + creds already imported) instead of
+     * letting one auth exception fail the whole import's report.
+     *
+     * Returns true when pairing succeeded (or there was nothing to do).
+     */
+    private suspend fun importDojoWithRetry(dojo: JSONObject?): Boolean {
+        if (dojo == null) return true
+        // #99: the bar now spans the Tor wait AND the bounded auth-retry
+        // window. The old code hid it at ON - before repeat(3), where rounds
+        // fail on a not-yet-usable circuit (10-02: two auth attempts failed
+        // ~1s after ON; attempt 3 succeeded ~12.7s after ON).
+        showTorWait(true)
+        try {
+            // start() stays pre-ON only: an already-running daemon must not
+            // be re-started. An ON-but-proxy-less window just waits below.
+            if (SentinelTorManager.getTorState().state != EnumTorState.ON) {
+                // #170: pairing-leg start, no stomp on the user's toggle.
+                SentinelTorManager.start()
+            }
+            // #10 precedent (pairing sheet): readiness is state==ON AND a
+            // live SOCKS proxy - ON alone is not SOCKS-ready (10-02 D3).
+            // The poll keeps updateTorProgressBar alive through the post-ON
+            // climb, so the import screen now shows the climb too.
+            val deadline = System.currentTimeMillis() + 60_000L
+            while ((SentinelTorManager.getTorState().state != EnumTorState.ON ||
+                    SentinelTorManager.getProxy() == null) &&
+                System.currentTimeMillis() < deadline
+            ) {
+                updateTorProgressBar(SentinelTorManager.getTorState().progressIndicator)
+                delay(500L)
+            }
+            val torReady = SentinelTorManager.getTorState().state == EnumTorState.ON &&
+                SentinelTorManager.getProxy() != null
+            if (!torReady) {
+                Timber.e(
+                    "dojo import: Tor not ready within 60s " +
+                        "(state=${SentinelTorManager.getTorState().state}, " +
+                        "proxyLive=${SentinelTorManager.getProxy() != null})"
+                )
+                return false
+            }
+            repeat(3) { attempt ->
+                setTorStageLabel("Waiting for Tor circuit\u2026 (attempt ${attempt + 1} of 3)")
+                try {
+                    ExportImportUtil().importDojo(dojo)
+                    return true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "dojo import auth attempt ${attempt + 1}/3 failed")
+                }
+                if (attempt < 2) delay(3_000L)
+            }
+            return false
+        } finally {
+            // Every exit hides the bar: Tor ready, the 60s deadline, or
+            // cancellation. finally only hides views - it never swallows
+            // the CE rethrow above (#80).
+            showTorWait(false)
+        }
+    }
+
+    /**
+     * #99: retry-window stage on textView19 (the bar's own label). Main-
+     * confined like every other view write on this screen (#80). Cleared
+     * by showTorWait(false) in the finally above.
+     */
+    private fun setTorStageLabel(text: String) {
+        runOnUiThread {
+            binding.textView19.text = text
+        }
+    }
+
+    /**
+     * The import runs long (Tor wait up to 60s + network legs) with no
+     * other feedback; without this the app reads as hung (#48 QA).
+     * The start button doubles as the progress cue.
+     */
+    private fun setImportBusy(busy: Boolean) {
+        // #80: completion handlers run on the completing thread (an IO
+        // worker); confine the view writes to main.
+        runOnUiThread {
+            binding.importStartBtn.text = if (busy) "Importing\u2026" else "Import Sentinel Backup"
+            binding.importStartBtn.isEnabled = !busy
+        }
+    }
+
+    /**
+     * #94: shows/hides the Tor bootstrap bar for the Dojo pairing wait.
+     * Main-confined per setImportBusy (#80); every exit path hides
+     * cleanly so no residue carries into later screens.
+     */
+    private fun showTorWait(show: Boolean) {
+        runOnUiThread {
+            val bar = binding.importTorProgressBar
+            if (show) {
+                bar.visibility = View.VISIBLE
+            } else {
+                bar.visibility = View.GONE
+                // Re-arm indeterminate while GONE for the next wait.
+                bar.isIndeterminate = true
+                binding.textView19.text = ""
+            }
+        }
+    }
+
+    /**
+     * #94: drives the Tor bar from the existing 500ms poll tick - no
+     * second poller. Determinate while a bootstrap % exists (the mode
+     * flip runs INVISIBLE-first, never on a VISIBLE indicator),
+     * indeterminate below that; textView19 carries the %.
+     */
+    private fun updateTorProgressBar(progress: Int) {
+        runOnUiThread {
+            val bar = binding.importTorProgressBar
+            if (progress in 1..99) {
+                if (bar.isIndeterminate) {
+                    bar.visibility = View.INVISIBLE
+                    bar.isIndeterminate = false
+                    bar.visibility = View.VISIBLE
+                }
+                bar.setProgressCompat(progress, true)
+                binding.textView19.text = "Connecting via Tor\u2026 $progress%"
+            } else {
+                binding.textView19.text = "Connecting via Tor\u2026"
             }
         }
     }
@@ -124,174 +288,274 @@ class ImportBackUpActivity : SentinelActivity() {
     }
 
     private fun decryptPayload() {
+        setImportBusy(true)
         when (importType) {
             ImportType.SENTINEL -> {
-                var payload: Triple<ArrayList<PubKeyCollection>?, JSONObject, JSONObject?>? = null
-                try {
-                    payload = ExportImportUtil().decryptSentinel(
-                        payloadObject.toString(),
-                        binding.importPasswordInput.text.toString()
-                    )
-                } catch (e: Exception) {
-                    this@ImportBackUpActivity.showFloatingSnackBar(
-                        binding.importPayloadTextView.parent as ViewGroup,
-                        text = "Incorrect password, please try again.",
-                        duration = Snackbar.LENGTH_SHORT
-                    )
-                }
+                // #82: the decrypt (AES + PBKDF2) ran on the click
+                // thread and stalled Main (Davey 2534ms, 227 skipped
+                // frames). Run it on IO; setImportBusy(true) above
+                // keeps the progress cue for the duration.
+                viewModel.viewModelScope.launch(Dispatchers.Main + importExceptionHandler) {
+                    var payload: Triple<ArrayList<PubKeyCollection>?, JSONObject, JSONObject?>? = null
+                    val payloadText = payloadObject.toString()
+                    val password = binding.importPasswordInput.text.toString()
+                    try {
+                        payload = withContext(Dispatchers.IO) {
+                            ExportImportUtil().decryptSentinel(payloadText, password)
+                        }
+                    } catch (e: Exception) {
+                        this@ImportBackUpActivity.showFloatingSnackBar(
+                            binding.importPayloadTextView.parent as ViewGroup,
+                            text = "Incorrect password, please try again.",
+                            duration = Snackbar.LENGTH_SHORT
+                        )
+                    }
 
-                if (payload == null)
-                    return
+                    if (payload == null) {
+                        setImportBusy(false)
+                        return@launch
+                    }
 
-                if (payload.second.get("pinEnabled").equals(true)) {
-                    val fragmentManager = supportFragmentManager
-                    val lockScreenDialog = LockScreenDialog(lockScreenMessage = "Enter pin code")
-                    val transaction = fragmentManager.beginTransaction()
-                    transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
-                    transaction.add(android.R.id.content, lockScreenDialog).commit()
-                    lockScreenDialog.setOnPinEntered {
-                        if (AccessFactory.getInstance(this).validateHash(it,
-                                payload.second.get("pinHash").toString()
-                            )) {
-                            AccessFactory.getInstance(this).pin = it
-                            lockScreenDialog.dismiss()
+                    if (payload.second.get("pinEnabled").equals(true)) {
+                        val fragmentManager = supportFragmentManager
+                        val lockScreenDialog = LockScreenDialog(lockScreenMessage = "Enter pin code")
+                        val transaction = fragmentManager.beginTransaction()
+                        transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+                        transaction.add(android.R.id.content, lockScreenDialog).commit()
+                        lockScreenDialog.setOnPinEntered {
+                            if (AccessFactory.getInstance(this@ImportBackUpActivity).validateHash(it,
+                                    payload.second.get("pinHash").toString()
+                                )) {
+                                AccessFactory.getInstance(this@ImportBackUpActivity).pin = it
+                                lockScreenDialog.dismiss()
 
-                            viewModel.viewModelScope.launch(Dispatchers.IO) {
-                                try {
-                                    withContext(Dispatchers.Main) {
-                                        binding.importPasswordInputLayout.visibility = View.INVISIBLE
-                                        binding.importSentinelBackUpLayout.visibility = View.VISIBLE
-                                        binding.importCollections.text =
-                                            "${binding.importCollections.text} (${payload.first?.size})"
-                                    }
-
-                                    if (binding.importPrefs.isChecked) {
-                                        payload.second.let { ExportImportUtil().importPrefs(it) }
-                                    }
-
-                                    if (binding.importCollections.isChecked) {
-                                        payload.first?.let {
-                                            ExportImportUtil().startImportCollections(
-                                                it,
-                                                binding.importClearExisting.isChecked
-                                            )
+                                // Hoisted OUT of the launch body: the
+                                // invokeOnCompletion lambda below is outside
+                                // that scope and must close over it (#48).
+                                var xpubImport: Pair<Int, Int>? = null
+                                var dojoPairingFailed = false
+                                viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
+                                    try {
+                                        withContext(Dispatchers.Main) {
+                                            binding.importPasswordInputLayout.visibility = View.INVISIBLE
+                                            binding.importSentinelBackUpLayout.visibility = View.VISIBLE
+                                            binding.importCollections.text =
+                                                binding.importCollections.text.toString().substringBefore(" (") +
+                                                    " (${payload.first?.size})"
                                         }
-                                    }
-                                    if (binding.importDojo.isChecked) {
-                                        if ((payload.second.getString("apiEndPointTor").equals(APIConfig.SAMOURAI_API_TOR)
-                                                    && payload.second.getString("apiEndPoint").equals(APIConfig.SAMOURAI_API))
-                                            ||
-                                            (payload.second.getString("apiEndPointTor").equals(APIConfig.SAMOURAI_API_TOR_TESTNET)
-                                                    && payload.second.getString("apiEndPoint").equals(APIConfig.SAMOURAI_API_TESTNET))) {
 
+                                        if (binding.importPrefs.isChecked) {
+                                            payload.second.let { ExportImportUtil().importPrefs(it) }
+                                        }
+
+                                        if (binding.importCollections.isChecked) {
+                                            payload.first?.let {
+                                                ExportImportUtil().startImportCollections(
+                                                    it,
+                                                    binding.importClearExisting.isChecked
+                                                )
+                                            }
+                                        }
+                                        if (binding.importDojo.isChecked) {
+                                            if (importDojoWithRetry(payload.third)) {
+                                                payload.second.optString("apiEndPointTor").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPointTor = it }
+                                                payload.second.optString("apiEndPoint").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPoint = it }
+                                            } else {
+                                                dojoPairingFailed = true
+                                            }
                                         }
                                         else {
-                                            SentinelTorManager.start()
-                                            prefsUtil.enableTor = true
-                                            payload.third?.let { ExportImportUtil().importDojo(it) }
-                                            prefsUtil.apiEndPointTor = payload.second.getString("apiEndPointTor")
-                                            prefsUtil.apiEndPoint = payload.second.getString("apiEndPoint")
+                                            xpubImport = importAllXpubs()
                                         }
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        throw e
                                     }
-                                    else {
-                                        importAllXpubs()
+                                }.invokeOnCompletion {
+                                    runOnUiThread {
+                                    if (it == null) {
+                                        binding.importStartBtn.text = "Imported \u2713"
+                                        requireRestart = true
+                                        val xpubNote = xpubImport?.let { (ok, bad) ->
+                                            if (bad > 0)
+                                                " ($ok of ${ok + bad} keys registered - retry from Network screen)"
+                                            else ""
+                                        } ?: ""
+                                        val dojoNote = if (dojoPairingFailed)
+                                            " Dojo pairing failed - retry from Network screen."
+                                        else ""
+                                        val note = "$xpubNote$dojoNote"
+                                        showFloatingSnackBar(
+                                            binding.importPastePayloadBtn, "Successfully imported$note",
+                                            anchorView = binding.importStartBtn.id,
+                                            actionText = "restart",
+                                            actionClick = { restart() }
+                                        )
+                                    } else if (it is CancellationException) {
+                                        // Scope teardown, not a failure (#80).
+                                        setImportBusy(false)
+                                    } else {
+                                        setImportBusy(false)
+                                        Timber.e(it)
+                                        showFloatingSnackBar(
+                                            binding.importPastePayloadBtn,
+                                            "Error: ${it.message}",
+                                            anchorView = binding.importStartBtn.id
+                                        )
                                     }
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                    throw CancellationException(e.message)
-                                }
-                            }.invokeOnCompletion {
-                                if (it == null || it.toString().contains("Unable to resolve host")) {
-                                    requireRestart = true
-                                    showFloatingSnackBar(
-                                        binding.importPastePayloadBtn, "Successfully imported",
-                                        anchorView = binding.importStartBtn.id,
-                                        actionText = "restart"
-                                    )
-                                } else {
-                                    Timber.e(it)
-                                    showFloatingSnackBar(
-                                        binding.importPastePayloadBtn,
-                                        "Unable to decrypt. Wrong password",
-                                        anchorView = binding.importStartBtn.id
-                                    )
-                                }
-                            }
-                        }
-                        else {
-                            lockScreenDialog.showError()
-                        }
-                    }
-                } else {
-                    viewModel.viewModelScope.launch(Dispatchers.IO) {
-                        try {
-                            withContext(Dispatchers.Main) {
-                                binding.importPasswordInputLayout.visibility = View.INVISIBLE
-                                binding.importSentinelBackUpLayout.visibility = View.VISIBLE
-                                binding.importCollections.text =
-                                    "${binding.importCollections.text} (${payload.first?.size})"
-                            }
-
-                            if (binding.importPrefs.isChecked) {
-                                payload.second.let { ExportImportUtil().importPrefs(it) }
-                            }
-
-                            if (binding.importCollections.isChecked) {
-                                payload.first?.let {
-                                    ExportImportUtil().startImportCollections(
-                                        it,
-                                        binding.importClearExisting.isChecked
-                                    )
-                                }
-                            }
-                            if (binding.importDojo.isChecked) {
-                                if ((payload.second.getString("apiEndPointTor").equals(APIConfig.SAMOURAI_API_TOR)
-                                            && payload.second.getString("apiEndPoint").equals(APIConfig.SAMOURAI_API))
-                                    ||
-                                    (payload.second.getString("apiEndPointTor").equals(APIConfig.SAMOURAI_API_TOR_TESTNET)
-                                            && payload.second.getString("apiEndPoint").equals(APIConfig.SAMOURAI_API_TESTNET))) {
-
-                                }
-                                else {
-                                    SentinelTorManager.start()
-                                    prefsUtil.enableTor = true
-                                    payload.third?.let { ExportImportUtil().importDojo(it) }
-                                    prefsUtil.apiEndPointTor = payload.second.getString("apiEndPointTor")
-                                    prefsUtil.apiEndPoint = payload.second.getString("apiEndPoint")
+                                    }
                                 }
                             }
                             else {
-                                importAllXpubs()
+                                lockScreenDialog.showError()
                             }
+                        }
+                    } else {
+                        // Hoisted OUT of the launch body (see branch above).
+                        var xpubImport: Pair<Int, Int>? = null
+                        var dojoPairingFailed = false
+                        viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
+                            try {
+                                withContext(Dispatchers.Main) {
+                                    binding.importPasswordInputLayout.visibility = View.INVISIBLE
+                                    binding.importSentinelBackUpLayout.visibility = View.VISIBLE
+                                    binding.importCollections.text =
+                                        binding.importCollections.text.toString().substringBefore(" (") +
+                                            " (${payload.first?.size})"
+                                }
+
+                                if (binding.importPrefs.isChecked) {
+                                    payload.second.let { ExportImportUtil().importPrefs(it) }
+                                }
+
+                                if (binding.importCollections.isChecked) {
+                                    payload.first?.let {
+                                        ExportImportUtil().startImportCollections(
+                                            it,
+                                            binding.importClearExisting.isChecked
+                                        )
+                                    }
+                                }
+                                if (binding.importDojo.isChecked) {
+                                    if (importDojoWithRetry(payload.third)) {
+                                        payload.second.optString("apiEndPointTor").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPointTor = it }
+                                        payload.second.optString("apiEndPoint").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPoint = it }
+                                    } else {
+                                        dojoPairingFailed = true
+                                    }
+                                }
+                                else {
+                                    xpubImport = importAllXpubs()
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                throw e
+                            }
+                        }.invokeOnCompletion {
+                            runOnUiThread {
+                            if (it == null) {
+                                binding.importStartBtn.text = "Imported \u2713"
+                                requireRestart = true
+                                val xpubNote = xpubImport?.let { (ok, bad) ->
+                                    if (bad > 0)
+                                        " ($ok of ${ok + bad} keys registered - retry from Network screen)"
+                                    else ""
+                                } ?: ""
+                                val dojoNote = if (dojoPairingFailed)
+                                    " Dojo pairing failed - retry from Network screen."
+                                else ""
+                                val note = "$xpubNote$dojoNote"
+                                showFloatingSnackBar(
+                                    binding.importPastePayloadBtn, "Successfully imported$note",
+                                    anchorView = binding.importStartBtn.id,
+                                    actionText = "restart",
+                                    actionClick = { restart() }
+                                )
+                            } else if (it is CancellationException) {
+                                // Scope teardown, not a failure (#80).
+                                setImportBusy(false)
+                            } else {
+                                setImportBusy(false)
+                                Timber.e(it)
+                                showFloatingSnackBar(
+                                    binding.importPastePayloadBtn,
+                                    "Error: ${it.message}",
+                                    anchorView = binding.importStartBtn.id
+                                )
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+            ImportType.SAMOURAI -> {
+                // #81 residue: SAMOURAI was assigned by validatePayload
+                // but never handled here - the start tap fell through
+                // to the else branch's "choose a valid file" snackbar.
+                // The parser is the same one the WalletPairingFragment
+                // pairing sheet uses.
+                // #82 pattern: EditText reads on Main, crypto on IO.
+                val payloadText = payloadObject.toString()
+                val password = binding.importPasswordInput.text.toString()
+                viewModel.viewModelScope.launch(Dispatchers.Main + importExceptionHandler) {
+                    val collection = withContext(Dispatchers.IO) {
+                        ExportImportUtil().decryptAndParseSamouraiPayload(payloadText, password)
+                    }
+                    if (collection == null) {
+                        setImportBusy(false)
+                        this@ImportBackUpActivity.showFloatingSnackBar(
+                            binding.importPayloadTextView.parent as ViewGroup,
+                            text = "Import failed - check the password, or use the wallet's Pairing tool for watch-only setup.",
+                            duration = Snackbar.LENGTH_SHORT
+                        )
+                        return@launch
+                    }
+                    viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
+                        try {
+                            ExportImportUtil().startImportCollections(
+                                arrayListOf(collection),
+                                false
+                            )
                         } catch (e: Exception) {
                             e.printStackTrace()
-                            throw CancellationException(e.message)
+                            throw e
                         }
                     }.invokeOnCompletion {
-                        if (it == null || it.toString().contains("Unable to resolve host")) {
-                            requireRestart = true
-                            showFloatingSnackBar(
-                                binding.importPastePayloadBtn, "Successfully imported",
-                                anchorView = binding.importStartBtn.id,
-                                actionText = "restart"
-                            )
-                        } else {
-                            Timber.e(it)
-                            showFloatingSnackBar(
-                                binding.importPastePayloadBtn,
-                                "Unable to decrypt. Wrong password",
-                                anchorView = binding.importStartBtn.id
-                            )
+                        runOnUiThread {
+                            if (it == null) {
+                                binding.importStartBtn.text = "Imported \u2713"
+                                requireRestart = true
+                                showFloatingSnackBar(
+                                    binding.importPastePayloadBtn, "Successfully imported",
+                                    anchorView = binding.importStartBtn.id,
+                                    actionText = "restart",
+                                    actionClick = { restart() }
+                                )
+                            } else if (it is CancellationException) {
+                                // Scope teardown, not a failure (#80).
+                                setImportBusy(false)
+                            } else {
+                                setImportBusy(false)
+                                showFloatingSnackBar(
+                                    binding.importPastePayloadBtn,
+                                    "Error: ${it.message}",
+                                    anchorView = binding.importStartBtn.id
+                                )
+                            }
                         }
                     }
                 }
             }
             ImportType.SENTINEL_LEGACY -> {
-                viewModel.viewModelScope.launch(Dispatchers.IO) {
+                // #82 pattern: capture the EditText reads on Main (the
+                // click thread) before the IO hop.
+                val payloadText = payloadObject.toString()
+                val password = binding.importPasswordInput.text.toString()
+                viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
                     try {
                         val payload = ExportImportUtil().decryptSentinelLegacy(
-                                payloadObject.toString(),
-                                binding.importPasswordInput.text.toString()
+                                payloadText,
+                                password
                         )
                         val pubKeys = payload.first
                         if (pubKeys.isNotEmpty()) {
@@ -303,31 +567,40 @@ class ImportBackUpActivity : SentinelActivity() {
                                     false
                             )
                         } else {
-                            throw  CancellationException("0 public keys found")
+                            throw IllegalStateException("0 public keys found")
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        throw CancellationException(e.message)
+                        throw e
                     }
                 }
                         .invokeOnCompletion {
+                            runOnUiThread {
                             if (it == null) {
+                                binding.importStartBtn.text = "Imported \u2713"
                                 requireRestart = true
                                 showFloatingSnackBar(
                                         binding.importPastePayloadBtn, "Successfully imported",
                                         anchorView = binding.importStartBtn.id,
-                                        actionText = "restart"
+                                        actionText = "restart",
+                                        actionClick = { restart() }
                                 )
+                            } else if (it is CancellationException) {
+                                // Scope teardown, not a failure (#80).
+                                setImportBusy(false)
                             } else {
+                                setImportBusy(false)
                                 showFloatingSnackBar(
                                         binding.importPastePayloadBtn,
                                         "Error: ${it.message}",
                                         anchorView = binding.importStartBtn.id
                                 )
                             }
+                            }
                         }
             }
             else -> {
+                setImportBusy(false)
                 showFloatingSnackBar(binding.importPastePayloadBtn, "Please choose a valid Sentinel backup file")
             }
         }
@@ -347,11 +620,19 @@ class ImportBackUpActivity : SentinelActivity() {
      * Method uses coroutines to parse json
      */
     private fun validatePayload(string: String) {
-        viewModel.viewModelScope.launch(Dispatchers.Default) {
+        viewModel.viewModelScope.launch(Dispatchers.Default + importExceptionHandler) {
             try {
                 val json = JSONObject(string)
                 withContext(Dispatchers.Main) {
                     binding.importPayloadTextView.text = "${binding.importPayloadTextView.text}${json.toString(2)}"
+                    // #81 residue: drop any previously-validated payload
+                    // before classifying the new one - a failed or
+                    // different-type re-pick must not leave the old
+                    // payload armed or the Sentinel checkbox panel
+                    // visible.
+                    payloadObject = null
+                    importType = ImportType.SENTINEL
+                    binding.importSentinelBackUpLayout.visibility = View.GONE
                     if (json.has("external") && json.has("payload")) {
                         payloadObject = json
                         importType = ImportType.SAMOURAI
@@ -366,15 +647,18 @@ class ImportBackUpActivity : SentinelActivity() {
                         importType = ImportType.SENTINEL_LEGACY
                         showImportButton(false)
                     } else {
-                        showImportButton(false)
+                        // #81 residue: showImportButton(false) SHOWS the
+                        // start button; an invalid payload must restore
+                        // the hidden baseline, not arm it.
+                        showImportButton(true)
                         showFloatingSnackBar(binding.importStartBtn, text = "Invalid payload")
                     }
                 }
             } catch (e: Exception) {
-                throw  CancellationException((e.message))
+                throw e
             }
         }.invokeOnCompletion {
-            if (it != null) {
+            if (it != null && it !is CancellationException) {
                 Timber.e(it)
             }
         }
@@ -385,34 +669,38 @@ class ImportBackUpActivity : SentinelActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (data != null && data.data != null && data.data!!.path != null && requestCode == REQUEST_FILE_CODE) {
             val job =
-                    viewModel.viewModelScope.launch(Dispatchers.Main) {
+                    viewModel.viewModelScope.launch(Dispatchers.Main + importExceptionHandler) {
                         try {
-                            val inputStream = contentResolver.openInputStream(data.data!!)
-                            val reader = BufferedReader(InputStreamReader(inputStream))
-                            val size = inputStream?.available()
-                            if (size != null) {
-                                if (size > 5e+6) {
-                                    throw  IOException("File size is too large to open")
+                            // #82: up to 5MB of file I/O ran on Main in
+                            // the picker result; the read (size guard
+                            // included) belongs on IO.
+                            val string = withContext(Dispatchers.IO) {
+                                val inputStream = contentResolver.openInputStream(data.data!!)
+                                val reader = BufferedReader(InputStreamReader(inputStream))
+                                val size = inputStream?.available()
+                                if (size != null) {
+                                    if (size > 5e+6) {
+                                        throw IOException("File size is too large to open")
+                                    }
                                 }
+                                reader.buffered().readText()
                             }
-                            var string = ""
-                            string = reader.buffered().readText()
                             withContext(Dispatchers.Main) {
                                 validatePayload(string)
                             }
                         } catch (fn: FileNotFoundException) {
                             fn.printStackTrace()
-                            throw CancellationException((fn.message))
+                            throw fn
                         } catch (ioe: IOException) {
                             ioe.printStackTrace()
-                            throw CancellationException((ioe.message))
+                            throw ioe
                         } catch (ex: Exception) {
                             ex.printStackTrace()
-                            throw CancellationException((ex.message))
+                            throw ex
                         }
                     }
             job.invokeOnCompletion {
-                if (it != null) {
+                if (it != null && it !is CancellationException) {
                     this.showFloatingSnackBar(binding.importPastePayloadBtn, "Error ${it.message}")
                 }
             }

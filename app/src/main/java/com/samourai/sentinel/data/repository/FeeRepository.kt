@@ -57,8 +57,14 @@ class FeeRepository : FeeUtil() {
                 val json = JSONObject(response.body?.string())
                 parse(json)
             }
-        } catch (Ex: Exception) {
-            throw Exception(Ex.message)
+        } catch (e: ApiService.ApiNotConfigured) {
+            // Not-configured is a state, not an error: keep the fees
+            // hydrated by init() from the local store. ApiNotConfigured
+            // extends Throwable, not Exception — an `catch (Exception)`
+            // here let it escape and kill the sync round's coroutine
+            // (#73).
+        } catch (e: Exception) {
+            throw Exception(e.message)
         }
     }
 
