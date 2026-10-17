@@ -164,7 +164,7 @@ class HomeViewModel : ViewModel() {
                     )
                     return@launch
                 }
-                syncCollections(collections)
+                syncCollections(collections, self)
             } finally {
                 // Identity check: a cancelled/replaced round must never clear
                 // the guard state of its successor.
@@ -204,9 +204,11 @@ class HomeViewModel : ViewModel() {
     /**
      * #186: true when a poke retired a standing Success on unpair; the
      * next arrive-direction poke (re-pair) spends it on a quiet round so
-     * the dot climbs back to GREEN with no manual refresh. Main-thread
-     * only - endpointKick dispatches on the main loop.
+     * the dot climbs back to GREEN with no manual refresh. #188: round
+     * tails on IO threads set it too when they suppress a terminal
+     * Success (endpoint vanished mid-round) - hence @Volatile.
      */
+    @Volatile
     private var staleSuccessRetired = false
 
     /**
@@ -225,6 +227,15 @@ class HomeViewModel : ViewModel() {
      */
     private val endpointKick = Observer<Unit> {
         val sync = syncState.value
+        // #188: the kick was silent through two device legs - name the
+        // dispatch next time. Booleans and the state class only; never
+        // endpoint material (#96).
+        Timber.i(
+            "endpointKick: endpointSet=%s torEndpointSet=%s sync=%s",
+            prefsUtil.apiEndPoint != null,
+            prefsUtil.apiEndPointTor != null,
+            sync?.javaClass?.simpleName
+        )
         when {
             prefsUtil.isAPIEndpointEnabled() && sync is SyncState.Failed && !sync.retryable -> {
                 fetchBalance(userInitiated = false)
@@ -382,7 +393,10 @@ class HomeViewModel : ViewModel() {
      * to `Syncing(slow = true)` so the UI can explain the delay while the request
      * keeps running. The `finally` block still guarantees a terminal state.
      */
-    private suspend fun syncCollections(collections: ArrayList<PubKeyCollection>) = coroutineScope {
+    private suspend fun syncCollections(
+        collections: ArrayList<PubKeyCollection>,
+        round: Job?
+    ) = coroutineScope {
         if (collections.isEmpty()) {
             // #174: "nothing to sync" is a success only when a server
             // exists to have synced against. Unconfigured endpoint -> Idle;
@@ -449,6 +463,14 @@ class HomeViewModel : ViewModel() {
                         "$failed of ${collections.size} collections failed to sync.",
                         retryable = true
                     )
+                    // #188: execute-time endpoint truth. A Success posted
+                    // after the pairing vanished mid-round is the witnessed
+                    // remainder (issue #188) - suppress to Idle and arm the
+                    // re-pair flag. A user-earned Failed stands (#174).
+                    !prefsUtil.isAPIEndpointEnabled() -> {
+                        staleSuccessRetired = syncState.value !is SyncState.Failed
+                        SyncState.Idle
+                    }
                     else -> SyncState.Success(System.currentTimeMillis())
                 }
             )
@@ -458,7 +480,11 @@ class HomeViewModel : ViewModel() {
             slowWatchdog.cancel()
             // Guaranteed to run, so the UI can never be left mid-sync.
             SentinelState.hasAppJustStarted = false
-            if (!resolved) {
+            // #132: only the live round posts the terminal fallback - a
+            // superseded round's Failed flashed over its successor's
+            // Syncing ("Sync interrupted." on routine refresh).
+            // round == null: caller had no identity - today's behavior.
+            if (!resolved && (round == null || syncRound === round)) {
                 syncState.postValue(SyncState.Failed("Sync interrupted.", retryable = true))
             }
         }
@@ -605,7 +631,14 @@ class HomeViewModel : ViewModel() {
             }
 
             if (collections.isEmpty()) {
-                syncState.postValue(SyncState.Success(System.currentTimeMillis()))
+                // #188: the head guard checked the endpoint at admit;
+                // re-check at post time - it can vanish mid-round.
+                if (prefsUtil.isAPIEndpointEnabled()) {
+                    syncState.postValue(SyncState.Success(System.currentTimeMillis()))
+                } else if (syncState.value !is SyncState.Failed) {
+                    staleSuccessRetired = true
+                    syncState.postValue(SyncState.Idle)
+                }
                 return@launch
             }
 
@@ -666,6 +699,17 @@ class HomeViewModel : ViewModel() {
                             SyncState.Failed("Could not reach the server.", retryable = true)
                         )
                     }
+                } else if (!prefsUtil.isAPIEndpointEnabled()) {
+                    // #188: fetches succeeded against a pairing that was
+                    // removed mid-round - the late Success here is the
+                    // witnessed remainder. No Success, no lastSynced
+                    // write; Idle + the re-pair flag instead. A
+                    // user-earned Failed stands (#174 discipline).
+                    autoRetryBudget = 0
+                    staleSuccessRetired = syncState.value !is SyncState.Failed
+                    if (staleSuccessRetired) {
+                        syncState.postValue(SyncState.Idle)
+                    }
                 } else {
                     autoRetryBudget = 0
                     prefsUtil.lastSynced = System.currentTimeMillis()
@@ -673,7 +717,8 @@ class HomeViewModel : ViewModel() {
                 }
                 resolved = true
             } finally {
-                if (syncRound === self) {
+                val roundIsSelf = syncRound === self
+                if (roundIsSelf) {
                     syncRound = null
                     if (autoRetryPending) {
                         autoRetryPending = false
@@ -694,7 +739,10 @@ class HomeViewModel : ViewModel() {
                 }
                 slowWatchdog.cancel()
                 // postValue() is async, so syncState.value cannot be trusted here.
-                if (!resolved) {
+                // #132: only the live round posts the terminal fallback - a
+                // superseded round's Failed flashed over its successor's
+                // Syncing ("Sync interrupted." on routine refresh).
+                if (!resolved && roundIsSelf) {
                     syncState.postValue(SyncState.Failed("Sync interrupted.", retryable = true))
                 }
             }
