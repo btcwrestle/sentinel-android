@@ -5,7 +5,14 @@ on:
   push:
     branches:
       - develop-v5.1.3
+      - master
       - "feature-*"
+      - tor-kmp-2x
+    tags:
+      - "v*"
+    paths-ignore: 
+      - "**.md"
+      - "docs/**"
   pull_request:
 
 permissions:
@@ -18,12 +25,21 @@ concurrency:
 jobs:
   build:
     name: Build and test staging APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Guard - no Samourai endpoints or support addresses
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -rEin 'samourai\.(io|com)|samouraiwallet\.com' app/src; then
+            echo "::error::Samourai remnant detected - see #68"
+            exit 1
+          fi
 
       - name: Install missing system dependencies
         shell: bash
@@ -55,19 +71,15 @@ jobs:
             echo "All required system packages are already installed."
           fi
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          # Default is "tools platform-tools"; Google retired the obsolete
-          # "tools" package, so sdkmanager now exits 1 on it and the action
-          # fails before anything is built. The next step installs the
-          # platforms and build-tools this project needs explicitly.
           packages: 'platform-tools'
 
       - name: Install Android SDK packages
@@ -78,7 +90,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager \
             "platform-tools" \
-            "platforms;android-34" \
+            "platforms;android-35" \
             "build-tools;34.0.0"
 
       - name: Make Gradle wrapper executable
@@ -91,26 +103,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The secret is withheld from pull_request events raised from a
-          # fork, so requiring it meant fork PRs could never compile - the
-          # build died here before Gradle ran and the whole check was
-          # unusable for review. Skip instead: app/build.gradle only wires
-          # signingConfigs.ciDebug when CI_DEBUG_KEYSTORE is set and the
-          # file exists, so an unset keystore degrades to Gradle's default
-          # debug signing. The cost is that those APKs are not stably
-          # signed, so they will not install over each other.
-          if [ -z "${ANDROID_DEBUG_KEYSTORE_BASE64:-}" ]; then
-            echo "::notice::ANDROID_DEBUG_KEYSTORE_BASE64 unavailable (expected for fork pull requests); using Gradle's default debug keystore. The APK still builds and tests, but is not stably signed."
-            exit 0
+          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
+            echo "ANDROID_DEBUG_KEYSTORE_BASE64 is not configured."
+            exit 1
           fi
 
           keystore="$RUNNER_TEMP/sentinel-ci-debug.keystore"
 
-          # Strip whitespace before decoding: a secret pasted from a terminal
-          # or an editor easily picks up wrapped newlines or a trailing CR,
-          # and base64 --decode rejects a carriage return as invalid input.
           printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
-            | tr -d '[:space:]' \
             | base64 --decode > "$keystore"
 
           chmod 600 "$keystore"
@@ -123,7 +123,7 @@ jobs:
           echo "CI_DEBUG_KEYSTORE=$keystore" >> "$GITHUB_ENV"
 
       - name: Configure Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Show build environment
         shell: bash
@@ -155,7 +155,7 @@ jobs:
           fi
 
           if find artifacts -type f -name "*.apk" | grep -q .; then
-            sha256sum artifacts/*.apk > artifacts/SHA256SUMS.txt
+            (cd artifacts && sha256sum *.apk > SHA256SUMS.txt)
             cat artifacts/SHA256SUMS.txt
           else
             echo "No staging debug APK was produced."
@@ -170,7 +170,7 @@ jobs:
 
       - name: Upload staging APK
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sentinel-staging-debug-${{ github.sha }}
           path: |
@@ -178,3 +178,53 @@ jobs:
             artifacts/SHA256SUMS.txt
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Upload unit-test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sentinel-test-results-${{ github.sha }}
+          path: app/build/test-results/testStagingDebugUnitTest/*.xml
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    name: Publish APK to GitHub Releases
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: sentinel-staging-debug-${{ github.sha }}
+          path: release-assets
+
+      - name: Verify checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l release-assets/
+          cd release-assets
+          sha256sum -c SHA256SUMS.txt
+          # rename for the release page, then regenerate sums flat
+          mv app-staging-debug.apk "sentinel-staging-${GITHUB_REF_NAME}.apk"
+          sha256sum sentinel-staging-*.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create release with APK + checksum
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/*.apk \
+            release-assets/SHA256SUMS.txt \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --prerelease
