@@ -99,7 +99,7 @@ class WhirlpoolBackfillTest {
         val result = WhirlpoolBackfill(WhirlpoolAutoWriter(sink))
             .run(listOf(tx0Tx()), collectionId)
         assertEquals(1, result.written)
-        assertEquals("Whirlpool TX0", sink.writes[0].second)
+        assertEquals("Whirlpool Tx0", sink.writes[0].second)
         assertEquals(tx0Txid, sink.writes[0].first)
     }
 

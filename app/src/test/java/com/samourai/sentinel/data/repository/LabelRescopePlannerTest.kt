@@ -33,7 +33,7 @@ class LabelRescopePlannerTest {
 
     private fun mainnetEntry() = LabelEntry(
         network = "mainnet", type = "tx", ref = otherTxid,
-        label = "Whirlpool TX0", origin = "auto:whirlpool:v1",
+        label = "Whirlpool Tx0", origin = "auto:whirlpool:v1",
         createdAt = 333L, updatedAt = 444L
     )
 
@@ -68,7 +68,7 @@ class LabelRescopePlannerTest {
         assertEquals("testnet", copy.network)
         assertEquals("tx", copy.type)
         assertEquals(otherTxid, copy.ref)
-        assertEquals("Whirlpool TX0", copy.label)
+        assertEquals("Whirlpool Tx0", copy.label)
         assertEquals(333L, copy.createdAt)
         assertEquals(setOf("mainnet"), plan.purgeNetworks)
     }
