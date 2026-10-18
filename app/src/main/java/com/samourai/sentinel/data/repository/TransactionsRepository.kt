@@ -138,12 +138,16 @@ class TransactionsRepository {
                         var latestBlockHeight = 1L
                         if (SentinelState.blockHeight != null)
                             latestBlockHeight = SentinelState.blockHeight?.height!!
+                        // #201: no per-tx confirmations write here anymore -
+                        // it targeted rows the reconcile below refreshes
+                        // anyway, and every write invalidated the LiveData
+                        // queries mid-fetch (~105 spurious re-queries per
+                        // round before the old wipe even ran). The computed
+                        // confirmations travel inside each Tx row.
                         val items = response.txs.map { tx ->
                             tx.hash = tx.hash + "-" + collectionId
                             tx.associatedPubKey = pubKeyAssociated.pubKey
                             val txBlockHeight = tx.block_height ?: 0
-                            if (tx.block_height != null)
-                                txDao.updateTxConfirmations(tx.hash, latestBlockHeight.minus(tx.block_height).plus(1))
                             tx.collectionId = collectionId
                             tx.confirmations =
                                 if (latestBlockHeight > 0L && txBlockHeight > 0L)
@@ -195,9 +199,14 @@ class TransactionsRepository {
                     throw  e
                 }
             }
+            // #201: the tx pre-wipe is gone - TxDao.upsertCollectionTx
+            // (called from saveTx below) reconciles inside ONE transaction,
+            // so the tx table never passes through an empty state
+            // mid-sync. The utxo pre-wipe stays verbatim: saveUtxos'
+            // vanished-row reconcile is neutralized by it - tracked as
+            // a follow-up issue, out of scope here.
             withContext(Dispatchers.IO) {
                 utxoDao.deleteByCollection(collectionId)
-                txDao.deleteByCollectionID(collectionId)
             }
 
             // #198: the whirlpool/badbank label engine used to run HERE,
@@ -393,12 +402,20 @@ class TransactionsRepository {
         return transactions
     }
 
-    private fun saveTx(transactions: ArrayList<Tx>, collectionId: String) = apiScope.launch {
-        withContext(Dispatchers.IO) {
-            transactions.forEach {
-                txDao.insert(it)
-            }
-        }
+    // #201: was an apiScope.launch doing a per-row insert loop on top of
+    // the pre-wipe - together they emitted an empty list plus ~106
+    // partial lists per round (the flash; and the tab-switch freeze
+    // via the re-query storm). Now: ONE awaited @Transaction reconcile,
+    // TxDao.upsertCollectionTx - one commit, one LiveData emission,
+    // never an empty intermediate state; the tx table is consistent
+    // before fetchFromServer returns (previously the fire-and-forget
+    // launch could still be inserting after the sync returned).
+    // #87 parity with saveUtxos: a collection deleted mid-sync
+    // reconciles to nothing instead of resurrecting rows.
+    private suspend fun saveTx(transactions: ArrayList<Tx>, collectionId: String) {
+        val collection = collectionRepository.findById(collectionId)
+            ?: return
+        txDao.upsertCollectionTx(collectionId, transactions)
     }
 
 
