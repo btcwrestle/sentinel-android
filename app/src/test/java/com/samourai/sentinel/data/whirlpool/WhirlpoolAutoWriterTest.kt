@@ -78,7 +78,7 @@ class WhirlpoolAutoWriterTest {
         assertEquals(
             WhirlpoolLabelPolicy.Decision.Write,
             WhirlpoolLabelPolicy.decide(
-                ExistingLabel("Whirlpool Remix", "auto:whirlpool:v1")),
+                ExistingLabel("Whirlpool Mix", "auto:whirlpool:v1")),
         )
 
     @Test fun policy_otherAuto_writes() =
@@ -110,16 +110,6 @@ class WhirlpoolAutoWriterTest {
 
     // ---- writer: classification -> label ----
 
-    @Test fun writer_remix_writesRemixLabel() = runBlocking {
-        val sink = FakeSink()
-        val out = WhirlpoolAutoWriter(sink).process(remixView())
-        assertEquals(WhirlpoolAutoWriter.Outcome.WRITTEN, out)
-        assertEquals(1, sink.writes.size)
-        assertEquals(txid, sink.writes[0].first)
-        assertEquals("Whirlpool Remix", sink.writes[0].second)
-        assertEquals("auto:whirlpool:v1", sink.writes[0].third)
-    }
-
     @Test fun writer_firstMix_writesMixLabel() = runBlocking {
         val sink = FakeSink()
         val out = WhirlpoolAutoWriter(sink).process(firstMixView())
@@ -134,6 +124,21 @@ class WhirlpoolAutoWriterTest {
         assertEquals("Whirlpool Tx0", sink.writes[0].second)
     }
 
+    // ---- writer: #207 remix guard ----
+
+    /**
+     * A classified remix is counted as hands-off with the sink never
+     * touched — reads == 0 pins that the guard fires before the find
+     * (a policy hands-off reads first; see the tx0 tests below).
+     */
+    @Test fun writer_remix_handsOff_sinkUntouched() = runBlocking {
+        val sink = FakeSink()
+        val out = WhirlpoolAutoWriter(sink).process(remixView())
+        assertEquals(WhirlpoolAutoWriter.Outcome.HANDS_OFF, out)
+        assertEquals(0, sink.reads)
+        assertEquals(0, sink.writes.size)
+    }
+
     // ---- writer: guard ----
 
     @Test fun writer_badbankSpend_unclassified_sinkUntouched() = runBlocking {
@@ -146,24 +151,26 @@ class WhirlpoolAutoWriterTest {
 
     @Test fun writer_manualLabel_handsOff() = runBlocking {
         val sink = FakeSink(ExistingLabel("My own label", null))
-        val out = WhirlpoolAutoWriter(sink).process(remixView())
+        val out = WhirlpoolAutoWriter(sink).process(tx0View())
         assertEquals(WhirlpoolAutoWriter.Outcome.HANDS_OFF, out)
+        assertEquals(1, sink.reads)
         assertEquals(0, sink.writes.size)
     }
 
     @Test fun writer_foreignImport_handsOff() = runBlocking {
         val sink = FakeSink(ExistingLabel("from sparrow", "sparrow"))
-        val out = WhirlpoolAutoWriter(sink).process(remixView())
+        val out = WhirlpoolAutoWriter(sink).process(tx0View())
         assertEquals(WhirlpoolAutoWriter.Outcome.HANDS_OFF, out)
+        assertEquals(1, sink.reads)
         assertEquals(0, sink.writes.size)
     }
 
     @Test fun writer_ownNamespace_refreshes() = runBlocking {
         val sink = FakeSink(
             ExistingLabel("Whirlpool Mix", "auto:whirlpool:v1"))
-        val out = WhirlpoolAutoWriter(sink).process(remixView())
+        val out = WhirlpoolAutoWriter(sink).process(firstMixView())
         assertEquals(WhirlpoolAutoWriter.Outcome.WRITTEN, out)
-        assertEquals("Whirlpool Remix", sink.writes[0].second)
+        assertEquals("Whirlpool Mix", sink.writes[0].second)
     }
 
     /**
@@ -177,7 +184,7 @@ class WhirlpoolAutoWriterTest {
         val writer = WhirlpoolAutoWriter(sink)
         repeat(4) {
             assertEquals(
-                WhirlpoolAutoWriter.Outcome.WRITTEN, writer.process(remixView()))
+                WhirlpoolAutoWriter.Outcome.WRITTEN, writer.process(firstMixView()))
         }
         assertTrue(sink.writes.all { it == sink.writes[0] })
     }
