@@ -149,7 +149,8 @@ data class WhirlpoolConfig(
     data class Labels(
         val tx0: String = "Whirlpool Tx0",
         val firstMix: String = "Whirlpool Mix",
-        val remix: String = "Whirlpool Remix",
+        // No remix label by design: the upstream render is remix's
+        // sole presentation; the writer hands remixes off (#207).
         /** #46: utxo-level badbank label — the tx0 change output and,
          *  transitively, its wallet-descendant outputs. */
         val badbank: String = "Bad Bank",

@@ -85,13 +85,14 @@ class WhirlpoolBackfillTest {
         }
     }
 
-    @Test fun backfill_remix_writtenWithBareTxid() = runBlocking {
+    /** #207: a classified remix is counted hands-off, never written. */
+    @Test fun backfill_remix_handsOff_neverWritten() = runBlocking {
         val sink = FakeSink()
         val result = WhirlpoolBackfill(WhirlpoolAutoWriter(sink))
             .run(listOf(remixTx()), collectionId)
-        assertEquals(1, result.written)
-        assertEquals(remixTxid, sink.writes[0].first)   // suffix stripped
-        assertEquals("Whirlpool Remix", sink.writes[0].second)
+        assertEquals(1, result.handsOff)
+        assertEquals(0, result.written)
+        assertTrue(sink.writes.isEmpty())
     }
 
     @Test fun backfill_tx0_written() = runBlocking {
@@ -117,14 +118,15 @@ class WhirlpoolBackfillTest {
         val result = WhirlpoolBackfill(WhirlpoolAutoWriter(sink))
             .run(listOf(remixTx(), remixTx()), collectionId)
         assertEquals(1, result.processed)
-        assertEquals(1, result.written)
-        assertEquals(1, sink.writes.size)
+        assertEquals(1, result.handsOff)
+        assertEquals(0, result.written)
+        assertTrue(sink.writes.isEmpty())
     }
 
     @Test fun backfill_manualLabel_protectedAndCounted() = runBlocking {
         val sink = FakeSink(ExistingLabel("My own label", null))
         val result = WhirlpoolBackfill(WhirlpoolAutoWriter(sink))
-            .run(listOf(remixTx()), collectionId)
+            .run(listOf(tx0Tx()), collectionId)
         assertEquals(1, result.handsOff)
         assertEquals(0, result.written)
         assertTrue(sink.writes.isEmpty())
@@ -135,7 +137,8 @@ class WhirlpoolBackfillTest {
         val result = WhirlpoolBackfill(WhirlpoolAutoWriter(sink))
             .run(listOf(remixTx(), tx0Tx(), badbankSpendTx()), collectionId)
         assertEquals(3, result.processed)
-        assertEquals(2, result.written)
+        assertEquals(1, result.written)
+        assertEquals(1, result.handsOff)
         assertEquals(1, result.unclassified)
     }
 }
