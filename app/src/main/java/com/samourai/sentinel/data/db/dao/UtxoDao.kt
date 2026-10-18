@@ -5,6 +5,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.samourai.sentinel.data.Tx
 import com.samourai.sentinel.data.Utxo
 
@@ -38,6 +39,15 @@ interface UtxoDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(utxo: Utxo)
 
+    /**
+     * #202: batch upsert for a sync round - the UtxoDao port of
+     * TxDao.insertAll (#201). REPLACE (not IGNORE) so re-fetched
+     * rows refresh in place: confirmations/value update on
+     * unchanged outpoints.
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(utxos: List<Utxo>)
+
     @Query("DELETE FROM utxos")
     suspend fun delete()
 
@@ -49,4 +59,32 @@ interface UtxoDao {
 
     @Query("DELETE FROM utxos WHERE collectionId=:collectionId")
     suspend fun deleteByCollection(collectionId: String)
+
+    /**
+     * #202: prune only rows that vanished from the fetched set,
+     * scoped to the syncing collection. The NOT IN list is the idx
+     * set ("txHash:outputN"), so spent outpoints disappear while
+     * rows of other collections are never touched.
+     */
+    @Query("DELETE FROM utxos WHERE collectionId=:collectionId AND idx NOT IN (:idxs)")
+    suspend fun deleteByCollectionNotIn(collectionId: String, idxs: List<String>)
+
+    /**
+     * #202: one transaction, one commit, ONE LiveData emission per
+     * sync round - the exact mirror of TxDao.upsertCollectionTx
+     * (#201). Replaces the caller-side pre-wipe + per-row insert
+     * loop, which emitted an empty list plus one partial list per
+     * row (the utxo flash - the tx-side twin of #201). Empty set =
+     * empty wallet: a wipe scoped to this collection is then
+     * correct.
+     */
+    @Transaction
+    suspend fun upsertCollectionUtxos(collectionId: String, utxos: List<Utxo>) {
+        if (utxos.isEmpty()) {
+            deleteByCollection(collectionId)
+        } else {
+            insertAll(utxos)
+            deleteByCollectionNotIn(collectionId, utxos.map { it.idx })
+        }
+    }
 }
