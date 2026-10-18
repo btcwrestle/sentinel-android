@@ -202,12 +202,9 @@ class TransactionsRepository {
             // #201: the tx pre-wipe is gone - TxDao.upsertCollectionTx
             // (called from saveTx below) reconciles inside ONE transaction,
             // so the tx table never passes through an empty state
-            // mid-sync. The utxo pre-wipe stays verbatim: saveUtxos'
-            // vanished-row reconcile is neutralized by it - tracked as
-            // a follow-up issue, out of scope here.
-            withContext(Dispatchers.IO) {
-                utxoDao.deleteByCollection(collectionId)
-            }
+            // mid-sync. #202: the utxo pre-wipe is gone too, same shape -
+            // UtxoDao.upsertCollectionUtxos (called from saveUtxos below)
+            // reconciles the utxo table inside ONE transaction.
 
             // #198: the whirlpool/badbank label engine used to run HERE,
             // inside the delete->insert window (deletes above, saveTx
@@ -419,26 +416,28 @@ class TransactionsRepository {
     }
 
 
-    private fun saveUtxos(utxos: ArrayList<Utxo>, collectionId: String) = apiScope.launch {
-        // #87: mid-erase (or a deleted collection) findById returns
-        // null - take the same early-skip fetchUTXOS already uses. Nothing
-        // to reconcile, and writing rows for a gone collection would
-        // resurrect data into a freshly wiped wallet.
+    // #202: the utxo-side twin of the #201 saveTx shape. Was an
+    // apiScope.launch wrapping three steps: a read-then-delete
+    // vanished-row reconcile (dead code as wired - both fetch paths
+    // pre-wiped the table before it ran, so it always saw an empty
+    // one), the UtxoMetaUtil blocked-list reconcile, and a per-row
+    // insert loop. The pre-wipes are gone (fetchFromServer and
+    // fetchUTXOS above) and the DB reconcile moved INTO
+    // UtxoDao.upsertCollectionUtxos - one transaction, one commit,
+    // ONE LiveData emission, never an empty intermediate state; the
+    // utxo table is consistent before the sync returns (the old
+    // fire-and-forget launch could still be inserting after the sync
+    // returned, and two overlapping rounds could interleave one
+    // round's inserts with the other's wipe).
+    // #87: mid-erase (or a deleted collection) findById returns
+    // null - take the same early-skip saveTx uses. Nothing to
+    // reconcile, and writing rows for a gone collection would
+    // resurrect data into a freshly wiped wallet.
+    private suspend fun saveUtxos(utxos: ArrayList<Utxo>, collectionId: String) {
         val collection = collectionRepository.findById(collectionId)
-            ?: return@launch
+            ?: return
         withContext(Dispatchers.IO) {
-            utxoDao.getUTXObyCollectionAsList(collectionId)
-                .forEach {
-                    val isExist =
-                        utxos.find { utxo -> (utxo.txHash == it.txHash && it.txOutputN == utxo.txOutputN) }
-                   //if utxos is not present in the new list it will be removed from the local db
-                    if(isExist == null){
-                        if (it.txOutputN != null && it.txHash != null) {
-                            utxoDao.delete(it.txHash!!, it.txOutputN!!)
-                        }
-                    }
-                }
-
+            utxoDao.upsertCollectionUtxos(collectionId, utxos)
             UtxoMetaUtil.getBlockedAssociatedWithPubKeyList(collection.pubs.map { it.pubKey }.toList())
                 .forEach {
                     val isExist =
@@ -448,9 +447,6 @@ class TransactionsRepository {
                         UtxoMetaUtil.remove(it.hash, it.txOutputN)
                     }
                 }
-            utxos.forEach {
-                utxoDao.insert(it)
-            }
         }
     }
 
@@ -506,10 +502,8 @@ class TransactionsRepository {
                 } catch (e: Exception) { Timber.e(e) }
             }
 
-            withContext(Dispatchers.IO) {
-                utxoDao.deleteByCollection(collectionId)
-            }
-
+            // #202: no pre-wipe - saveUtxos below reconciles inside
+            // UtxoDao.upsertCollectionUtxos, one transaction.
             saveUtxos(utxos, collectionId)
         } catch (e: ApiNotConfigured) {
             Timber.e(e)
