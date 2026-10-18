@@ -51,6 +51,17 @@ class TransactionsFragment : Fragment() {
     val df = DecimalFormat("#")
     private var tabChangeListener: OnTabChangedListener? = null
 
+    // #204: pager wiring state. The tab pager is wired ONCE (onViewCreated)
+    // and rebuilt ONLY when the pubkey set actually changes. The previous
+    // shape re-ran the full wiring on EVERY collectionsLiveData emission
+    // (once per pubkey per sync round): that tore down all tab lists
+    // mid-sync, stacked one TabLayoutMediator per emission - each re-attach
+    // re-selected tab 0, the "rolls back to All" bug - and stacked duplicate
+    // tab-selected listeners.
+    private var tabMediator: TabLayoutMediator? = null
+    private var pagerWired = false
+    private var lastPubsFingerprint: String? = null
+
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -77,6 +88,11 @@ class TransactionsFragment : Fragment() {
         setUpToolBar()
     }
 
+    /**
+     * #204: ONE-TIME wiring of the tab pager, run from onViewCreated. The
+     * per-emission entry point (initViewModel(PubKeyCollection)) guards on
+     * pagerWired so a re-delivery can never land here twice.
+     */
     private fun initViewModel() {
         transactionsViewModel.setCollection(collection)
 
@@ -84,7 +100,7 @@ class TransactionsFragment : Fragment() {
         binding.txViewPager.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.grey_homeActivity))
         binding.txViewPager.offscreenPageLimit = 5
 
-        TabLayoutMediator(binding.tabLayout, binding.txViewPager) { tab, position ->
+        tabMediator = TabLayoutMediator(binding.tabLayout, binding.txViewPager) { tab, position ->
             if (collection.isImportFromWallet) {
                 when (position) {
                     0 -> tab.text = "All"
@@ -100,13 +116,13 @@ class TransactionsFragment : Fragment() {
                 else
                     tab.text = collection.pubs[position - 1].label
             }
-        }.attach()
+        }.also { it.attach() }
 
 
         binding.tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab:
                                        TabLayout.Tab
-                                       ?) {
+            ) {
                 if (tabChangeListener != null)
                     tabChangeListener?.onTabChanged(tab?.position!!-1)
                 indexPubSelected.value = tab?.position!!
@@ -115,13 +131,13 @@ class TransactionsFragment : Fragment() {
 
             override fun onTabUnselected(tab:
                                          TabLayout.Tab
-                                         ?) {
+            ) {
                 println("Tab unselected: " + tab?.text)
             }
 
             override fun onTabReselected(tab:
                                          TabLayout.Tab
-                                         ?) {
+            ) {
                 println("Tab reselected: " + tab?.text)
             }
 
@@ -168,6 +184,9 @@ class TransactionsFragment : Fragment() {
                 (requireActivity() as AppCompatActivity)
                     .showFloatingSnackBar(binding.collectionBalanceBtc, "Error : $it")
         }
+
+        pagerWired = true
+        lastPubsFingerprint = pubsFingerprint(collection)
     }
 
     private fun goToUTXOActivity() {
@@ -289,14 +308,59 @@ class TransactionsFragment : Fragment() {
         setBalance(-1)
     }
 
+    /**
+     * #204: per-emission entry. The activity's collectionsLiveData observer
+     * delivers the live collection on EVERY emission - once per pubkey per
+     * sync round (CollectionRepository.update -> sync -> emit), plus
+     * background websocket refetches - and each delivery used to re-run the
+     * full pager wiring. Now: always swap the live pointer so fetch() and
+     * balance reads see the fresh object, but rebuild the pager ONLY when
+     * the pubkey set actually changed (count / order / labels / import
+     * flag). Balance-only refreshes leave the pager, tabs, lists and scroll
+     * untouched - no teardown, no mediator stacking, no snap back to "All".
+     */
     fun initViewModel(collection: PubKeyCollection) {
-        // check if the new instance added / removed pub keys
-        // if the size changed we need to fetch transactions
+        val fingerprint = pubsFingerprint(collection)
+        val pubsChanged = fingerprint != lastPubsFingerprint
         this.collection = collection
+        this.lastPubsFingerprint = fingerprint
         if (isAdded) {
-            initViewModel()
+            transactionsViewModel.setCollection(collection)
+            if (!pagerWired) {
+                // Emission arrived after attach but before onViewCreated.
+                initViewModel()
+            } else if (pubsChanged) {
+                rebuildPager()
+            }
             setUpToolBar()
         }
+    }
+
+    /**
+     * #204: per-emission alias for CollectionDetailsActivity's observer
+     * call site, so the hot path stays greppable against the one-time
+     * checkIntent entry (which keeps calling initViewModel directly).
+     */
+    fun onCollectionRefreshed(collection: PubKeyCollection) = initViewModel(collection)
+
+    /**
+     * #204: real pubkey-set change (add / remove / relabel / reorder).
+     * Follows the TabLayoutMediator contract (material 1.4.0-beta01,
+     * verified in-tree): detach() before swapping the pager adapter,
+     * attach() after - attach() re-captures the new adapter and
+     * repopulates the tab strip on its own. The user's selected tab is
+     * captured before the swap and restored after (clamped if the new
+     * set is smaller), so a refresh mid-edit no longer snaps to "All".
+     */
+    private fun rebuildPager() {
+        val currentTab = binding.txViewPager.currentItem
+        tabMediator?.detach()
+        binding.txViewPager.adapter = CollectionPubKeysViewpager(this.activity, collection)
+        val newItemCount = binding.txViewPager.adapter?.itemCount ?: 0
+        if (currentTab < newItemCount) {
+            binding.txViewPager.setCurrentItem(currentTab, false)
+        }
+        tabMediator?.attach()
     }
 
     override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
@@ -332,6 +396,23 @@ class TransactionsFragment : Fragment() {
 
     companion object {
         const val EDIT_REQUEST_ID = 11
+
+        /**
+         * #204: everything that determines the tab pager's SHAPE - tab
+         * count, order, and labels. Deliberately excludes balance,
+         * lastRefreshed, account_index and change_index: those mutate on
+         * every sync emission (they are the bug trigger), and none of them
+         * alter the tab strip.
+         */
+        internal fun pubsFingerprint(collection: PubKeyCollection): String {
+            val sb = StringBuilder()
+            sb.append(if (collection.isImportFromWallet) "W|" else "K|")
+            collection.pubs.forEach {
+                sb.append(it.pubKey).append(' ')
+                sb.append(it.label).append('\u0000')
+            }
+            return sb.toString()
+        }
     }
 
     private class CollectionPubKeysViewpager(
@@ -355,4 +436,3 @@ class TransactionsFragment : Fragment() {
         fun onTabChanged(position: Int)
     }
 }
-

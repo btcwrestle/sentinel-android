@@ -71,7 +71,12 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
             if (collection != null) {
                 receiveFragment.setCollection(collection!!)
                 sendFragment.setCollection(collection!!)
-                transactionsFragment.initViewModel(collection!!)
+                // #204: per-emission refresh. This observer fires on EVERY
+                // collectionsLiveData delivery (once per pubkey per sync
+                // round); the fragment now guards its own pager rebuild on
+                // a real pubkey-set change. The one-time entry point in
+                // checkIntent() below keeps calling initViewModel directly.
+                transactionsFragment.onCollectionRefreshed(collection!!)
             } else {
                 finish()
             }
@@ -298,4 +303,3 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         }
     }
 }
-
