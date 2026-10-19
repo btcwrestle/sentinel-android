@@ -88,6 +88,14 @@ android {
         abortOnError = false
         checkReleaseBuilds = false
     }
+    // #210: Robolectric needs the merged app resources + manifest on the
+    // classpath so the bottom-sheet recreation test can inflate real
+    // layouts (see BottomSheetRecreationTest).
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
