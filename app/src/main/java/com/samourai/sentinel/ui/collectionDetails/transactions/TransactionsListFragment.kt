@@ -113,13 +113,6 @@ class TransactionsListFragment(
         labelRepository.observeTxLabelMap().observe(this.viewLifecycleOwner) { map ->
             transactionAdapter.txLabels = map
         }
-
-        // #55: utxo-level label map ("txid:vout" -> label) for the row
-        // chips - same pattern as the tx map above: observe once, the
-        // adapter re-renders on change.
-        labelRepository.observeLabelMap().observe(this.viewLifecycleOwner) { map ->
-            transactionAdapter.utxoLabels = map
-        }
     }
 
 }

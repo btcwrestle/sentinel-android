@@ -8,9 +8,9 @@ import org.junit.Test
 /**
  * #55: the chip resolver's decision boundary, pinned JVM-side (pattern:
  * PubsFingerprintTest - plain JUnit, data classes only, no Robolectric).
- * The render sites (TransactionAdapter row chips, details-sheet chip
- * row) are thin views over chipsFor(); their correctness is the device
- * leg per house rules.
+ * The render site (details-sheet Output labels row) is a thin view
+ * over chipsFor(); #227 rolled back the row chips per the scope-first
+ * rule; correctness is the device leg per house rules.
  *
  * Key-format contract under test: "txid:vout" exactly as
  * LabelRepository.observeLabelMap builds it, txid lowercased, the
