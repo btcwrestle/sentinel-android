@@ -93,9 +93,10 @@ class DojoUtility {
     }
 
     fun clearDojo() {
+        // #208: deleteAll covers the primary payload AND its rotated .bak
+        // (which still contains the node API key) under the writers' lock.
         CoroutineScope(Dispatchers.IO).launch {
-            if (dojoStore.file.exists())
-                dojoStore.file.delete()
+            dojoStore.deleteAll()
         }
         dojoPayload = null
         // Clear the credentials too, so a later re-pair cannot accidentally

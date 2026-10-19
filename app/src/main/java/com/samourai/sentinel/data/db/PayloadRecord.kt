@@ -49,6 +49,26 @@ class PayloadRecord(private val location: String, val name: String) {
 
     private val tempFile = File("${this.location}${File.separatorChar}$name.tmp")
 
+    /**
+     * #208: deletes every on-disk copy of this payload - primary, rotated
+     * backup, and any staged temp file. clearDojo previously removed only
+     * the primary, leaving the .bak (which still holds the pairing payload
+     * and its node API key) on disk after a Dojo removal or network switch.
+     *
+     * Holds the same per-path lock writeToFile holds, so a delete cannot
+     * interleave with a concurrent write's rename-over. Returns true when
+     * nothing remains afterward; an absent file counts as gone - deleting
+     * a payload that never existed is a no-op success, not an error.
+     */
+    fun deleteAll(): Boolean {
+        lockFor(file).withLock {
+            file.delete()
+            backupFile.delete()
+            tempFile.delete()
+        }
+        return !file.exists() && !backupFile.exists() && !tempFile.exists()
+    }
+
     inline fun <reified T> write(value: T, replace: Boolean = false) {
         logThreadInfo("Record write")
         if (file.exists()) {

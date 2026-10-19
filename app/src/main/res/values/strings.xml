@@ -369,5 +369,15 @@
     <string name="dojo_pairing_details_unavailable">No Dojo pairing details available</string>
     <string name="no_api_key_found">No API key found</string>
     <string name="dojo_qr_render_failed">Could not render pairing QR code</string>
+    <string name="network_category">Network</string>
+    <string name="network_bitcoin_row_title">Bitcoin Network</string>
+    <string name="network_mainnet">Mainnet</string>
+    <string name="network_testnet">Testnet</string>
+    <string name="network_switch_to_testnet">Switch to Testnet</string>
+    <string name="network_switch_to_mainnet">Switch to Mainnet</string>
+    <string name="network_switch_confirm_title">Switch to %1$s?</string>
+    <string name="network_switch_confirm_message">Sentinel will switch to %1$s and restart. Your current Dojo pairing will be removed and you will pair a %1$s Dojo next. Your watch-only keys, labels and settings are kept.</string>
+    <string name="network_switch_confirm_positive">Switch</string>
+    <string name="network_set_by_keys">Set by your keys</string>
     <string name="dojo_unnamed">Unnamed Dojo</string>
 </resources>

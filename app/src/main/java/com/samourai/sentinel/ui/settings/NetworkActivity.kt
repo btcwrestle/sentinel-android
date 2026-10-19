@@ -1,6 +1,7 @@
 package com.samourai.sentinel.ui.settings
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
@@ -13,6 +14,7 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.samourai.sentinel.R
 import com.samourai.sentinel.api.ApiService
+import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
@@ -21,6 +23,7 @@ import com.samourai.sentinel.ui.SentinelActivity
 import com.samourai.sentinel.ui.dojo.DojoConfigureBottomSheet
 import com.samourai.sentinel.ui.dojo.DojoCredentialsBottomSheet
 import com.samourai.sentinel.ui.dojo.DojoUtility
+import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.PermissionResult
 import com.samourai.sentinel.ui.utils.permissionResultOf
@@ -44,6 +47,9 @@ class NetworkActivity : SentinelActivity() {
     var dojoDetailsButton: Button? = null
     var torConnectionIcon: ImageView? = null
     var dojoConnectionIcon: ImageView? = null
+    var networkStatusIcon: ImageView? = null
+    var networkStatus: TextView? = null
+    var networkSwitchBtn: Button? = null
     var activeColor = 0
     var disabledColor = 0
     var waiting = 0
@@ -78,6 +84,9 @@ class NetworkActivity : SentinelActivity() {
         torConnectionStatus = findViewById(R.id.network_tor_status)
         dojoConnectionIcon = findViewById(R.id.network_dojo_status_icon)
         dojoConnectionStatus = findViewById(R.id.network_dojo_status)
+        networkStatusIcon = findViewById(R.id.network_bitcoin_status_icon)
+        networkStatus = findViewById(R.id.network_bitcoin_status)
+        networkSwitchBtn = findViewById(R.id.networking_network_switch_btn)
         torRenewBtn?.setOnClickListener {
             // #161: no optimistic feedback here - tor's verbatim reply
             // (success or rate-limit notice) is the single source of
@@ -130,6 +139,8 @@ class NetworkActivity : SentinelActivity() {
             }
 
         }
+        networkSwitchBtn?.setOnClickListener { onNetworkSwitchTapped() }
+        setNetworkStatus()
         setDojoStatus()
     }
 
@@ -300,6 +311,90 @@ class NetworkActivity : SentinelActivity() {
             dojoConnectionIcon!!.setColorFilter(disabledColor)
             dojoDetailsButton?.visibility = View.GONE
         }
+    }
+
+    /**
+     * #208: renders the Bitcoin Network row from state. Mainnet reads
+     * green, Testnet reads warning-yellow - the same visual grammar as
+     * the Tor and Dojo rows. An established keychain pins the network:
+     * #42's derivation would revert a manual flag flip on the next
+     * launch, so the row states that instead of offering a switch that
+     * cannot stick.
+     */
+    private fun setNetworkStatus() {
+        val currentIsTestnet = prefsUtil.testnet == true
+        val name = getString(
+            if (currentIsTestnet) R.string.network_testnet else R.string.network_mainnet
+        )
+        networkStatusIcon?.setColorFilter(if (currentIsTestnet) waiting else activeColor)
+        when (val row = NetworkSwitch.rowState(
+            currentIsTestnet,
+            SentinelState.isNetworkEstablished()
+        )) {
+            is NetworkSwitch.Row.Switchable -> {
+                networkStatus?.text = name
+                networkSwitchBtn?.visibility = View.VISIBLE
+                networkSwitchBtn?.text = getString(
+                    if (row.targetIsTestnet) R.string.network_switch_to_testnet
+                    else R.string.network_switch_to_mainnet
+                )
+            }
+            is NetworkSwitch.Row.KeyPinned -> {
+                networkStatus?.text = name + " \u2014 " + getString(R.string.network_set_by_keys)
+                networkSwitchBtn?.visibility = View.GONE
+            }
+        }
+    }
+
+    /**
+     * #208: re-derives the row state at tap time - the keychain can have
+     * changed since render - and asks for confirmation with the full
+     * consequences spelled out: Dojo removal and a restart, watch-only
+     * keys/labels/settings kept. A key-pinned wallet never gets here
+     * with a visible button; the guard keeps a mid-flight state change
+     * from switching anyway.
+     */
+    private fun onNetworkSwitchTapped() {
+        val row = NetworkSwitch.rowState(
+            prefsUtil.testnet == true,
+            SentinelState.isNetworkEstablished()
+        )
+        if (row !is NetworkSwitch.Row.Switchable) {
+            setNetworkStatus()
+            return
+        }
+        val targetName = getString(
+            if (row.targetIsTestnet) R.string.network_testnet else R.string.network_mainnet
+        )
+        confirm(
+            label = getString(R.string.network_switch_confirm_title, targetName),
+            message = getString(R.string.network_switch_confirm_message, targetName),
+            positiveText = getString(R.string.network_switch_confirm_positive),
+            negativeText = "Cancel",
+            onConfirm = { confirmed ->
+                if (confirmed) performNetworkSwitch(row.targetIsTestnet)
+            }
+        )
+    }
+
+    /**
+     * #208: the confirmed switch. Order matters: flag first, then Dojo
+     * removal, then Tor stop, then the task relaunch - erase-all's recipe
+     * (MainSettingsFragment.clearWallet) minus the nuke. The process
+     * survives the relaunch, so the async pref write and the async
+     * payload delete both land - no sync-commit dance needed. enableTor
+     * is deliberately untouched: SentinelApplication.setUpTor re-starts
+     * Tor on the next launch whenever the user's own toggle is on.
+     */
+    private fun performNetworkSwitch(targetIsTestnet: Boolean) {
+        prefsUtil.testnet = targetIsTestnet
+        dojoUtility.clearDojo()
+        SentinelTorManager.stop()
+        startActivity(Intent(applicationContext, HomeActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        })
+        finish()
     }
 
     /**
