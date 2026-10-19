@@ -3,13 +3,10 @@ package com.samourai.sentinel.util;
 import android.content.Context;
 
 import com.samourai.sentinel.BuildConfig;
+import com.samourai.sentinel.api.TlsPolicy;
 
+import java.net.URI;
 import java.util.concurrent.TimeUnit;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 import okhttp3.FormBody;
 import okhttp3.MediaType;
@@ -24,7 +21,6 @@ public class WebUtil {
 
     private static WebUtil instance = null;
     private Context context = null;
-
 
     private WebUtil(Context context) {
         this.context = context;
@@ -44,6 +40,20 @@ public class WebUtil {
 
     private static final int DefaultRequestRetry = 2;
     private static final int DefaultRequestTimeout = 60000;
+
+    /**
+     * #229: parsed-host onion check. The old gate was URL.contains("onion"),
+     * a substring match, so "https://example.com/onion" also triggered the
+     * trust-all relaxation. Unparseable URL fails closed (false).
+     */
+    private static boolean isOnionUrl(String URL) {
+        try {
+            String host = URI.create(URL).getHost();
+            return host != null && host.toLowerCase().endsWith(".onion");
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     public String postURL(String URL, String urlParameters) throws Exception {
 
@@ -149,8 +159,10 @@ public class WebUtil {
         if (BuildConfig.DEBUG) {
             builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
         }
-        if (URL.contains("onion")) {
-            getHostNameVerifier(builder);
+        // #229: host-scoped policy instead of trust-all; clearnet HTTPS now
+        // keeps normal verification even in the Tor code path.
+        if (isOnionUrl(URL)) {
+            TlsPolicy.INSTANCE.install(builder);
         }
 
         Request request = new Request.Builder()
@@ -180,8 +192,9 @@ public class WebUtil {
                 .connectTimeout(90, TimeUnit.SECONDS)
                 .readTimeout(90, TimeUnit.SECONDS);
 
-        if (URL.contains("onion")) {
-            getHostNameVerifier(builder);
+        // #229: host-scoped policy instead of trust-all (same gate fix).
+        if (isOnionUrl(URL)) {
+            TlsPolicy.INSTANCE.install(builder);
             builder.connectTimeout(90, TimeUnit.SECONDS);
         }
 
@@ -210,8 +223,9 @@ public class WebUtil {
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
 //                .proxy(TorManager.getInstance(this.context).getProxy());
 
-        if (URL.contains("onion")) {
-            getHostNameVerifier(builder);
+        // #229: host-scoped policy instead of trust-all (same gate fix).
+        if (isOnionUrl(URL)) {
+            TlsPolicy.INSTANCE.install(builder);
             builder.connectTimeout(90, TimeUnit.SECONDS);
             builder.readTimeout(90, TimeUnit.SECONDS);
         }
@@ -233,42 +247,6 @@ public class WebUtil {
             return response.body().string();
 
         }
-
-    }
-
-
-    private void getHostNameVerifier(OkHttpClient.Builder
-                                             clientBuilder) throws
-            Exception {
-
-        // Create a trust manager that does not validate certificate chains
-        final TrustManager[] trustAllCerts = new TrustManager[]{
-                new X509TrustManager() {
-                    @Override
-                    public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {
-                    }
-
-                    @Override
-                    public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) {
-                    }
-
-                    @Override
-                    public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                        return new java.security.cert.X509Certificate[]{};
-                    }
-                }
-        };
-
-        // Install the all-trusting trust manager
-        final SSLContext sslContext = SSLContext.getInstance("SSL");
-        sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
-
-        // Create an ssl socket factory with our all-trusting manager
-        final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
-
-
-        clientBuilder.sslSocketFactory(sslSocketFactory, (X509TrustManager) trustAllCerts[0]);
-        clientBuilder.hostnameVerifier((hostname, session) -> true);
 
     }
 
