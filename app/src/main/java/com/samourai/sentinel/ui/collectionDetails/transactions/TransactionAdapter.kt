@@ -13,7 +13,6 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.paging.PagedListAdapter
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.chip.Chip
 import com.samourai.sentinel.R
 import com.samourai.sentinel.data.Tx
 import org.apache.commons.lang3.time.DateUtils.isSameDay
@@ -46,17 +45,6 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
             notifyDataSetChanged()
         }
 
-    /**
-     * "txid:vout" -> label, from LabelRepository.observeLabelMap(). Same
-     * lifecycle as txLabels: not part of the PagedList items, so a new
-     * map re-renders the rows.
-     */
-    var utxoLabels: Map<String, String> = emptyMap()
-        set(value) {
-            field = value
-            notifyDataSetChanged()
-        }
-
     init {
         this.setHasStableIds(false)
         simpleDateFormat.timeZone = TimeZone.getDefault()
@@ -70,7 +58,6 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
         val txTime: TextView = view.findViewById(R.id.tx_time)
         val txContainer: View = view.findViewById(R.id.txContainer)
         val txLabel: TextView = view.findViewById(R.id.tvTxLabel)
-        val utxoLabelChips: com.google.android.material.chip.ChipGroup = view.findViewById(R.id.tvUtxoLabelChips)
         private val dividerView: View = view.findViewById(R.id.dividerView)
         val section: TextView = view.findViewById(R.id.section_title)
 
@@ -140,29 +127,6 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
             }
         } else {
             holder.txLabel.visibility = View.GONE
-        }
-
-        // #55: utxo-level chips, resolved from the tx's own outputs by
-        // the pure TxUtxoLabels resolver. Street mode hides them, same
-        // rule as the tx label above; they compose with it, never
-        // replace it.
-        if (prefsUtil.streetMode == false) {
-            val chips = TxUtxoLabels.chipsFor(tx, utxoLabels)
-            if (chips.isEmpty()) {
-                holder.utxoLabelChips.visibility = View.GONE
-            } else {
-                holder.utxoLabelChips.removeAllViews()
-                chips.forEach { text ->
-                    val chip = Chip(holder.utxoLabelChips.context)
-                    chip.text = text
-                    chip.isClickable = false
-                    chip.isCheckable = false
-                    holder.utxoLabelChips.addView(chip)
-                }
-                holder.utxoLabelChips.visibility = View.VISIBLE
-            }
-        } else {
-            holder.utxoLabelChips.visibility = View.GONE
         }
 
         if (position != 0) {

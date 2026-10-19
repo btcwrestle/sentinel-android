@@ -79,7 +79,7 @@
             android:layout_marginBottom="16dp"
             android:textColor="@color/v3_textColorSecondary"
             android:textSize="12sp"
-            app:layout_constraintBottom_toTopOf="@+id/tvUtxoLabelChips"
+            app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="@+id/transactionDirection"
             app:layout_constraintHorizontal_bias="0.0"
             app:layout_constraintStart_toStartOf="@+id/transactionDirection"
@@ -101,21 +101,6 @@
             app:layout_constraintStart_toEndOf="@+id/transactionDirection"
             app:layout_constraintTop_toTopOf="@+id/tx_time"
             tools:text="postmix deposit" />
-
-        <com.google.android.material.chip.ChipGroup
-            android:id="@+id/tvUtxoLabelChips"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="32dp"
-            android:layout_marginEnd="8dp"
-            android:layout_marginBottom="16dp"
-            android:visibility="gone"
-            app:chipSpacingHorizontal="4dp"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toEndOf="@+id/transactionDirection"
-            app:layout_constraintTop_toBottomOf="@+id/tx_time"
-            app:singleLine="true" />
 
         <androidx.constraintlayout.widget.Group
             android:id="@+id/tx_note_group"

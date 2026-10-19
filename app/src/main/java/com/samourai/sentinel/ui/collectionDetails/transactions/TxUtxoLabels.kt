@@ -3,9 +3,9 @@ package com.samourai.sentinel.ui.collectionDetails.transactions
 import com.samourai.sentinel.data.Tx
 
 /**
- * #55: pure resolver for utxo-level label chips on tx surfaces.
+ * #55: pure resolver for utxo-level label chips (details sheet).
  *
- * Contract: given a row/detail [Tx] and the live map from
+ * Contract: given a details-sheet [Tx] and the live map from
  * [com.samourai.sentinel.data.repository.LabelRepository.observeLabelMap]
  * ("txid:vout" -> label, active network), return the distinct non-blank
  * labels attached to THIS tx's own outputs, in output order - exactly
@@ -22,12 +22,12 @@ import com.samourai.sentinel.data.Tx
  * ride alongside it. Nothing here writes or relabels anything.
  *
  * Dedup is deliberate: two outputs carrying the same label (both TX0
- * change outputs labeled "Bad Bank") read as ONE chip on a row - the
- * row answers "what sits on this tx", not "how many outputs match".
+ * change outputs labeled "Bad Bank") read as ONE chip in the sheet's
+ * group - "what sits on this tx", not "how many outputs match".
  *
  * Pure JVM, no Android imports (pattern: PubsFingerprintTest). Render
- * sites - TransactionAdapter rows and TransactionsDetailsBottomSheet -
- * stay dumb views over chipsFor().
+ * site - TransactionsDetailsBottomSheet only, per #227's scope-first
+ * rule; it stays a dumb view over chipsFor().
  */
 object TxUtxoLabels {
 
