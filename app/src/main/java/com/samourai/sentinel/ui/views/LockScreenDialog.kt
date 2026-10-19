@@ -31,7 +31,27 @@ import org.koin.java.KoinJavaComponent.inject
  *
  * @author Sarath
  */
-class LockScreenDialog(private val lockScreenMessage: String = "") : DialogFragment() {
+
+/**
+ * #210: the prompt text travels in `arguments` instead of a constructor
+ * field. A recreated dialog previously restored with a BLANK prompt
+ * ("Enter pin code" vanished with the instance); the text now survives
+ * every recreation. The pin-result callback stays a Tier-B field for
+ * this PR (a restored dialog's check button safely does nothing -
+ * onConfirm is nullable by design); durable pin flows are follow-up.
+ * FLAG_SECURE is already set on the host activity's window, so it
+ * survives recreation unchanged.
+ */
+class LockScreenDialog() : DialogFragment() {
+
+    private val lockScreenMessage: String
+        get() = arguments?.getString(ARG_MESSAGE) ?: ""
+
+    /** #210 bridge for the pre-#210 `LockScreenDialog(lockScreenMessage)` shape. */
+    constructor(lockScreenMessage: String) : this() {
+        arguments = (arguments ?: Bundle()).apply { putString(ARG_MESSAGE, lockScreenMessage) }
+    }
+
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
     private var userInput = StringBuilder()
     private var strPassphrase = ""
@@ -140,5 +160,9 @@ class LockScreenDialog(private val lockScreenMessage: String = "") : DialogFragm
         errorShake.duration = 420
         errorShake.interpolator = CycleInterpolator(4F)
         binding.pinEntryMaskLayout.startAnimation(errorShake)
+    }
+
+    companion object {
+        const val ARG_MESSAGE = "lock_screen_dialog_arg_message"
     }
 }
