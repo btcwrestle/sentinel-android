@@ -35,7 +35,51 @@ import com.samourai.sentinel.util.AppUtil
 import java.io.File
 import java.io.FileOutputStream
 
-class QRBottomSheetDialog(val qrData: String, val title: String? = "", val clipboardLabel: String? = "",  val secure: Boolean = false, val collection: PubKeyCollection? = null) : GenericBottomSheet(secure = secure) {
+/**
+ * #210: qrData / title / clipboardLabel travel in `arguments`. The
+ * non-Parcelable `collection` is decomposed at construction time into
+ * its Parcelable `ArrayList<PubKeyModel>` plus an `importFromWallet`
+ * flag - the two things this sheet actually reads from it - so a
+ * restored sheet keeps its QR payload, its title, its clipboard label,
+ * its arrow navigation and FLAG_SECURE (base-class argument). The
+ * legacy constructor shape is kept as a bridge so CollectionEditActivity
+ * and BroadcastFromComposeTx compile unchanged.
+ */
+class QRBottomSheetDialog() : GenericBottomSheet() {
+
+    private val qrData: String
+        get() = arguments?.getString(ARG_QR_DATA) ?: ""
+    private val title: String?
+        get() = arguments?.getString(ARG_TITLE)
+    private val clipboardLabel: String?
+        get() = arguments?.getString(ARG_CLIPBOARD_LABEL)
+    private val pubs: List<PubKeyModel>
+        get() = arguments?.getParcelableArrayList<PubKeyModel>(ARG_PUBS) ?: arrayListOf()
+    private val importFromWallet: Boolean
+        get() = arguments?.getBoolean(ARG_IMPORT_FROM_WALLET, false) == true
+
+    /**
+     * #210 bridge for the pre-#210 primary constructor: same parameter
+     * shape, converts everything into arguments form at construction.
+     */
+    constructor(
+        qrData: String,
+        title: String? = "",
+        clipboardLabel: String? = "",
+        secure: Boolean = false,
+        collection: PubKeyCollection? = null
+    ) : this() {
+        arguments = (arguments ?: Bundle()).apply {
+            putString(ARG_QR_DATA, qrData)
+            putString(ARG_TITLE, title)
+            putString(ARG_CLIPBOARD_LABEL, clipboardLabel)
+            putBoolean(GenericBottomSheet.ARG_SECURE, secure)
+            collection?.let {
+                putParcelableArrayList(ARG_PUBS, ArrayList(it.pubs))
+                putBoolean(ARG_IMPORT_FROM_WALLET, it.isImportFromWallet)
+            }
+        }
+    }
 
     override fun getTheme(): Int = R.style.AppTheme_BottomSheet_Theme
 
@@ -65,7 +109,7 @@ class QRBottomSheetDialog(val qrData: String, val title: String? = "", val clipb
 
         dialog?.window?.navigationBarColor = ContextCompat.getColor(requireContext(), R.color.grey_homeActivity)
 
-        if (collection != null && collection.isImportFromWallet) {
+        if (importFromWallet) {
             val layoutParams = qRImage.layoutParams as ConstraintLayout.LayoutParams
             val newMarginEnd = (80 * resources.displayMetrics.density).toInt()
             layoutParams.marginEnd = newMarginEnd
@@ -76,7 +120,7 @@ class QRBottomSheetDialog(val qrData: String, val title: String? = "", val clipb
         }
 
         title?.let {
-            if (collection != null && collection.isImportFromWallet && it.equals("Deposit"))
+            if (importFromWallet && it.equals("Deposit"))
                 qrToolbar.title = "Deposit BIP84"
             else
                 qrToolbar.title = it
@@ -179,11 +223,11 @@ class QRBottomSheetDialog(val qrData: String, val title: String? = "", val clipb
     }
 
     private fun getPubKeyModelByLabel(label: String): PubKeyModel {
-        collection?.pubs?.forEach {
+        pubs.forEach {
             if (it.label == label)
                 return it
         }
-        return collection!!.pubs[0]
+        return pubs[0]
     }
 
     fun setQR(view: View, qrData: String) {
@@ -205,5 +249,11 @@ class QRBottomSheetDialog(val qrData: String, val title: String? = "", val clipb
         qRImage.setImageBitmap(bitmap)
     }
 
-
+    companion object {
+        const val ARG_QR_DATA = "qr_bottom_sheet_arg_qr_data"
+        const val ARG_TITLE = "qr_bottom_sheet_arg_title"
+        const val ARG_CLIPBOARD_LABEL = "qr_bottom_sheet_arg_clipboard_label"
+        const val ARG_PUBS = "qr_bottom_sheet_arg_pubs"
+        const val ARG_IMPORT_FROM_WALLET = "qr_bottom_sheet_arg_import_from_wallet"
+    }
 }

@@ -5,15 +5,13 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.text.InputFilter
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
-import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
+import com.google.gson.Gson
 import com.samourai.sentinel.R
 import com.samourai.sentinel.api.ApiService
 import com.samourai.sentinel.api.ApiService.ApiNotConfigured
@@ -40,6 +38,7 @@ import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.util.*
 
+
 /**
  * sentinel-android
  *
@@ -48,9 +47,42 @@ import java.util.*
  */
 
 
-class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = false) : GenericBottomSheet(secure = secure) {
+/**
+ * #210: recreation-safe shape. Tx is not Parcelable, so it travels in
+ * `arguments` as its Gson JSON form (the same serialization the Room
+ * converters already use for its input/output lists) and is parsed once,
+ * lazily, then cached for the sheet's lifetime. The street-mode `secure`
+ * flag rides the base-class argument. The legacy (tx, secure) constructor
+ * is kept as a bridge so TransactionsListFragment compiles unchanged.
+ */
+class TransactionsDetailsBottomSheet() : GenericBottomSheet() {
 
     data class TxFeeData(val fee: Long?, val feeRate: Long?, val size: Long?)
+
+    private var txCache: Tx? = null
+    private val tx: Tx
+        get() {
+            txCache?.let { return it }
+            val parsed = Gson().fromJson(
+                requireArguments().getString(ARG_TX_JSON),
+                Tx::class.java
+            )
+            txCache = parsed
+            return parsed
+        }
+
+    /** #210: street-mode flag, read from arguments so it survives recreation. */
+    private val secure: Boolean
+        get() = arguments?.getBoolean(GenericBottomSheet.ARG_SECURE, false) == true
+
+    /** #210 bridge for the pre-#210 `TransactionsDetailsBottomSheet(tx, secure)` shape. */
+    constructor(tx: Tx, secure: Boolean = false) : this() {
+        arguments = (arguments ?: Bundle()).apply {
+            putString(ARG_TX_JSON, Gson().toJson(tx))
+            putBoolean(GenericBottomSheet.ARG_SECURE, secure)
+        }
+        txCache = tx
+    }
 
     private val apiService: ApiService by inject(ApiService::class.java)
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
@@ -95,7 +127,7 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
         // off / not yet computed) hides the row — never a guess. Secure
         // mode (street mode) hides the entropy row too.
         // #105: kill switch. While ENTROPY_FEATURE_ENABLED is false the
-        // row is GONE unconditionally - no DAO read on sheet open.
+        // row is GONE unconditionally- no DAO read on sheet open.
         if (secure || !ENTROPY_FEATURE_ENABLED) {
             binding.txDetailsEntropyRow.visibility = View.GONE
         } else {
@@ -159,6 +191,14 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
                 binding.txDetailsLabel.alpha = 0.5f
             }
         }
+        // #210: durable result listener for the label editor - registered
+        // on every onViewCreated, so a label sheet that survives a
+        // recreation still saves. Blank input deletes the record
+        // (BIP329: empty = remove), exactly as before.
+        childFragmentManager.setFragmentResultListener(REQUEST_KEY_TX_LABEL, viewLifecycleOwner) { _, bundle ->
+            val text = bundle.getString(InputBottomSheet.RESULT_INPUT).orEmpty()
+            apiScope.launch { labelRepository.setTxLabel(tx.hash.split("-")[0], text) }
+        }
         binding.txDetailsLabel.setOnClickListener { showLabelEditor() }
         binding.txDetailsLabel.setOnLongClickListener {
             copyToClipBoard(binding.txDetailsLabel)
@@ -220,25 +260,20 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
     }
 
     private fun showLabelEditor() {
-        val txid = tx.hash.split("-")[0]
-        val editor = InputBottomSheet("Transaction label", onViewReady = { bottomSheet ->
-            val view = bottomSheet.view
-            val input = view?.findViewById<TextInputEditText>(R.id.bottomSheetInputField)
-            // alertWithInput's default maxLen (34) is address-length; labels
-            // need more room.
-            input?.filters = arrayOf(InputFilter.LengthFilter(64))
-            input?.setText(currentLabel ?: "")
-            view?.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn)?.apply {
-                text = "Save"
-                setOnClickListener {
-                    val text = input?.text?.toString().orEmpty()
-                    // Blank save deletes the record (BIP329: empty = remove)
-                    apiScope.launch { labelRepository.setTxLabel(txid, text) }
-                    bottomSheet.dismiss()
-                }
-            }
-        })
-        editor.isCancelable = true
+        // #210: recreation-safe label editor. The old construction wired a
+        // captured lambda through InputBottomSheet's onViewReady; the
+        // editor sheet now carries its own presentation state in
+        // arguments and posts the typed text to REQUEST_KEY_TX_LABEL,
+        // received by the durable listener in onViewCreated. maxLen 64
+        // kept - the helper default (34) is address-length; labels need
+        // more room.
+        val editor = InputBottomSheet.newInstance(
+            label = "Transaction label",
+            buttonLabel = "Save",
+            value = currentLabel ?: "",
+            maxLen = 64,
+            requestKey = REQUEST_KEY_TX_LABEL
+        )
         editor.show(childFragmentManager, editor.tag)
     }
 
@@ -349,5 +384,8 @@ class TransactionsDetailsBottomSheet(private var tx: Tx, val secure: Boolean = f
         super.onDestroy()
     }
 
-
+    companion object {
+        const val ARG_TX_JSON = "tx_details_bottom_sheet_arg_tx_json"
+        const val REQUEST_KEY_TX_LABEL = "tx_details_bottom_sheet_request_key_label"
+    }
 }

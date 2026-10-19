@@ -37,10 +37,22 @@ import java.net.SocketTimeoutException
  * Only ever shown after the caller has put the user through
  * [DojoConfigureBottomSheet]'s privacy warning dialog - this sheet itself assumes
  * that consent has already been given.
+ *
+ * #210: no primary-constructor parameters anymore - the required lambda made
+ * this class non-recreatable (Fragment$InstantiationException on process death
+ * or a ui-mode change while the list was showing). The one construction site
+ * (DojoConfigureBottomSheet, via childFragmentManager) keeps compiling through
+ * the legacy bridge constructor, and a selection now resolves the host sheet at
+ * click time - the #181 event-time pattern - so a restored list still pairs.
  */
-class CommunityDojoListBottomSheet(
-    private val onDojoSelected: (String) -> Unit
-) : GenericBottomSheet() {
+class CommunityDojoListBottomSheet() : GenericBottomSheet() {
+
+    /** #210 bridge for the pre-#210 `CommunityDojoListBottomSheet(onDojoSelected)` shape. */
+    private var legacyOnDojoSelected: ((String) -> Unit)? = null
+
+    constructor(onDojoSelected: (String) -> Unit) : this() {
+        legacyOnDojoSelected = onDojoSelected
+    }
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
 
@@ -81,7 +93,18 @@ class CommunityDojoListBottomSheet(
                 prefsUtil.dojoDisplayName = node.name?.takeIf { it.isNotBlank() }
                 prefsUtil.dojoDisplayFlag = node.flagEmoji
                 prefsUtil.dojoDisplayUrl = node.payload?.pairing?.url
-                onDojoSelected(json)
+                // #210: resolve the host sheet at click time - the old
+                // constructor lambda died with the instance on every
+                // recreation. The configure sheet's existing #181 entry point
+                // takes it from here (validate -> payload -> connect page,
+                // its own toast on invalid); the legacy lambda remains as the
+                // fallback for any host that is not the configure sheet.
+                val host = parentFragment as? DojoConfigureBottomSheet
+                if (host != null) {
+                    host.onScanPayload(json)
+                } else {
+                    legacyOnDojoSelected?.invoke(json)
+                }
                 dismiss()
             }
         },
