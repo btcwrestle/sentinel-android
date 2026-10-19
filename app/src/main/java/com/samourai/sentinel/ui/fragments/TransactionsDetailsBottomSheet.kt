@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.gson.Gson
 import com.samourai.sentinel.R
@@ -25,6 +26,7 @@ import com.samourai.sentinel.data.entropy.EXTERNAL_ANALYSIS_URL_PREFIX
 import com.samourai.sentinel.data.entropy.EntropyBand
 import com.samourai.sentinel.data.entropy.EntropyBands
 import com.samourai.sentinel.databinding.ContentTransactionsDetailsBinding
+import com.samourai.sentinel.ui.collectionDetails.transactions.TxUtxoLabels
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import com.samourai.sentinel.ui.views.InputBottomSheet
@@ -203,6 +205,33 @@ class TransactionsDetailsBottomSheet() : GenericBottomSheet() {
         binding.txDetailsLabel.setOnLongClickListener {
             copyToClipBoard(binding.txDetailsLabel)
             true
+        }
+
+        // #55: per-output label chips (e.g. "Bad Bank"), resolved from
+        // utxo_labels by the same pure resolver the tx rows use. The
+        // observer registers in onViewCreated, so it re-registers on
+        // every recreation (the #210 shape) and Room re-delivers the
+        // map. Street mode hides the row, same rule as the tx label;
+        // empty resolution keeps it GONE (its layout default).
+        if (secure) {
+            binding.txDetailsUtxoLabelsRow.visibility = View.GONE
+        } else {
+            labelRepository.observeLabelMap().observe(viewLifecycleOwner) { map ->
+                val chips = TxUtxoLabels.chipsFor(tx, map)
+                if (chips.isEmpty()) {
+                    binding.txDetailsUtxoLabelsRow.visibility = View.GONE
+                } else {
+                    binding.txDetailsUtxoLabelsChips.removeAllViews()
+                    chips.forEach { text ->
+                        val chip = Chip(binding.txDetailsUtxoLabelsChips.context)
+                        chip.text = text
+                        chip.isClickable = false
+                        chip.isCheckable = false
+                        binding.txDetailsUtxoLabelsChips.addView(chip)
+                    }
+                    binding.txDetailsUtxoLabelsRow.visibility = View.VISIBLE
+                }
+            }
         }
 
         binding.txDetailsBlockId.setOnClickListener { copyToClipBoard(binding.txDetailsBlockId) }
