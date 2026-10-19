@@ -46,7 +46,7 @@ import com.samourai.sentinel.ui.utils.RecyclerViewItemDividerDecorator
 import com.samourai.sentinel.ui.utils.SlideInItemAnimator
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
 import com.samourai.sentinel.ui.views.BalanceHelpDialog
-import com.samourai.sentinel.ui.views.confirm
+import com.samourai.sentinel.ui.views.ConfirmBottomSheet
 import com.samourai.sentinel.util.AppUtil
 import com.samourai.sentinel.util.BalanceDisplayFormatter
 import com.samourai.sentinel.util.BalanceDisplayMode
@@ -89,6 +89,20 @@ class HomeActivity : SentinelActivity() {
         setSupportActionBar(binding.toolbarHome)
 
         title = ""
+
+        // #210: durable listener for the first-run network choice. The
+        // sheet delivers its answer through the Fragment Result API, and
+        // this registration re-runs on every create - so the sheet that
+        // Android restores after a recreation (process death, ui-mode or
+        // font change; activities are portrait-locked, so rotation is not
+        // the trigger here) still completes first-run setup when the user
+        // taps Mainnet/Testnet.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_FIRST_RUN_NETWORK,
+            this
+        ) { _, bundle ->
+            onFirstRunNetworkChoice(bundle.getBoolean(ConfirmBottomSheet.RESULT_CONFIRMED))
+        }
 
         binding.toolbarIcon.setOnClickListener {
             showToolOptions(it)
@@ -202,10 +216,10 @@ class HomeActivity : SentinelActivity() {
         fetch(model)
 
         if (SentinelState.isTorRequired()) {
-            SentinelTorManager.getTorStateLiveData().observe(this, {
+            SentinelTorManager.getTorStateLiveData().observe(this, ({
                 if (it.state == EnumTorState.ON)
                     WebSocketService.start(applicationContext)
-            })
+            }))
         } else {
             WebSocketService.start(applicationContext)
         }
@@ -472,20 +486,37 @@ class HomeActivity : SentinelActivity() {
 
     private fun setUp() {
         if (prefsUtil.firstRun == true && AppUtil.getInstance(applicationContext).isSideLoaded) {
-            this.confirm(label = "Choose network",
+            // #210: the network choice sheet is built from arguments via the
+            // factory and answers through a STABLE request key, so the flow
+            // survives recreation end to end. Dedupe: a recreation re-runs
+            // setUp() while the restored sheet is already in the
+            // FragmentManager under this tag - showing a second copy would
+            // stack two identical sheets.
+            if (supportFragmentManager.findFragmentByTag(TAG_FIRST_RUN_NETWORK_SHEET) == null) {
+                ConfirmBottomSheet.newInstance(
+                    label = "Choose network",
                     positiveText = "Mainnet",
                     negativeText = "Testnet",
                     isCancelable = false,
-                    onConfirm = { confirm ->
-                        prefsUtil.firstRun = false
-                        if (!confirm) {
-                            prefsUtil.testnet = true
-                        }
-                        showServerConfig()
-                    })
+                    requestKey = REQUEST_KEY_FIRST_RUN_NETWORK
+                ).show(supportFragmentManager, TAG_FIRST_RUN_NETWORK_SHEET)
+            }
         } else {
             showServerConfig()
         }
+    }
+
+    /**
+     * #210: state-derived outcome of the first-run network choice -
+     * deliberately free of captured context, so the durable listener can
+     * call it from whichever activity instance happens to be alive.
+     */
+    private fun onFirstRunNetworkChoice(mainnet: Boolean) {
+        prefsUtil.firstRun = false
+        if (!mainnet) {
+            prefsUtil.testnet = true
+        }
+        showServerConfig()
     }
 
     private fun showServerConfig() {
@@ -568,7 +599,7 @@ class HomeActivity : SentinelActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         // NOTE: grantResults can be EMPTY when the dialog is cancelled - never index it directly.
         when (requestCode) {
-            Companion.CAMERA_PERMISSION -> {
+            SentinelActivity.Companion.CAMERA_PERMISSION -> {
                 when (permissionResultOf(grantResults)) {
                     PermissionResult.GRANTED -> Unit
                     PermissionResult.DENIED ->
@@ -579,7 +610,7 @@ class HomeActivity : SentinelActivity() {
                 if (connectingDojo) showDojoSetUpBottomSheet() else showPubKeyBottomSheet()
             }
 
-            Companion.NOTIF_PERMISSION -> {
+            SentinelActivity.Companion.NOTIF_PERMISSION -> {
                 when (permissionResultOf(grantResults)) {
                     PermissionResult.GRANTED ->
                         Toast.makeText(this, "Notification permissions granted.", Toast.LENGTH_SHORT).show()
@@ -653,5 +684,14 @@ class HomeActivity : SentinelActivity() {
             webSocketHandler.connect()
         } catch (ex: Exception) {
         }
+    }
+
+    companion object {
+        // #210: stable identity for the first-run network-choice sheet and
+        // its result - a stable TAG enables the recreation dedupe in
+        // setUp(); a stable REQUEST_KEY enables the durable listener
+        // registered in onCreate.
+        const val TAG_FIRST_RUN_NETWORK_SHEET = "first_run_network_choice_sheet"
+        const val REQUEST_KEY_FIRST_RUN_NETWORK = "first_run_network_choice_result"
     }
 }
