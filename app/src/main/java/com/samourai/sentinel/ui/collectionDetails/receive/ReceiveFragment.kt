@@ -81,6 +81,10 @@ class ReceiveFragment : Fragment() {
     private lateinit var advancedButton: LinearLayout
     private lateinit var tvPath: TextView
     private var pubKeyIndex = 0
+    // #244: dropdown index that arrived before this fragment was added (a
+    // key tab tapped on the transactions screen before Receive opened).
+    // Applied at the end of onCreateView; -1 = nothing pending.
+    private var pendingDropDownIndex: Int = -1
     private var pubsShownInDropdown: List<PubKeyModel> = listOf()
     private lateinit var pubKeyDropDown: AutoCompleteTextView
     private lateinit var generalDropdown: TextInputLayout
@@ -195,6 +199,13 @@ class ReceiveFragment : Fragment() {
 
         btcEditText.addTextChangedListener(BTCWatcher)
         satEditText.addTextChangedListener(satWatcher)
+
+        // #244: apply a dropdown index stashed before this view existed.
+        if (pendingDropDownIndex != -1) {
+            val pending = pendingDropDownIndex
+            pendingDropDownIndex = -1
+            setDropDownPub(pending)
+        }
 
         return root
     }
@@ -597,7 +608,15 @@ class ReceiveFragment : Fragment() {
     }
 
     fun setDropDownPub(index: Int) {
-        if (index <= 0 || !isAdded) {
+        // #244: stash instead of recursing - setDropDownPub(1) with isAdded
+        // still false re-entered this guard until the stack died. Mirrors
+        // SendFragment.setDropDownPub's indexPubSelector stash; the index
+        // <= 0 -> 1 fallback stays, but only for an ADDED fragment.
+        if (!isAdded || view == null) {
+            pendingDropDownIndex = index
+            return
+        }
+        if (index <= 0) {
             setDropDownPub(1)
             return
         }

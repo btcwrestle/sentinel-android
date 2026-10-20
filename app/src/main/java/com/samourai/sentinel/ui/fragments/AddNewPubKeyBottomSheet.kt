@@ -102,12 +102,30 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
             validateXPUB(it)
         }
 
-        chooseCollectionFragment.setOnSelectListener {
+        chooseCollectionFragment.setOnSelectListener { selectedCollection ->
+            // #243: check the duplicate HERE, before the intent - opening
+            // CollectionEditActivity with a key it will reject used to land
+            // the user on an empty key list where a save could wipe the
+            // collection. Same getPubKey call, same message, one screen
+            // earlier; the edit screen keeps its own check as the backstop.
+            if (selectedCollection != null &&
+                pubKeyModel?.pubKey?.let { key -> selectedCollection.getPubKey(key) } != null
+            ) {
+                if (context != null) {
+                    Toast.makeText(
+                        context,
+                        "Public key already exists in this collection",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                this.dismiss()
+                return@setOnSelectListener
+            }
             startActivity(Intent(context, CollectionEditActivity::class.java).apply {
                 this.putExtra("pubKey", pubKeyModel)
-                if (it != null) {
-                    this.putExtra("editIndex", collectionRepository.findById(it.id)?.pubs?.size!!)
-                    this.putExtra("collection", it.id)
+                if (selectedCollection != null) {
+                    this.putExtra("editIndex", collectionRepository.findById(selectedCollection.id)?.pubs?.size!!)
+                    this.putExtra("collection", selectedCollection.id)
                 }
             })
             this.dismiss()

@@ -155,6 +155,15 @@ class CollectionEditActivity : SentinelActivity() {
                             text = "Public key already exists in this collection",
                             duration = Snackbar.LENGTH_LONG
                         )
+                        // #243: this early return used to leave the VM's key
+                        // list unset - the screen rendered empty, a straight
+                        // save was a silent no-op, and adding any key then
+                        // saving REPLACED the collection's existing keys
+                        // (repository.update published the scratch list).
+                        // Load the existing keys like the no-key branch
+                        // below, so the list stays on screen and a save
+                        // keeps every existing key.
+                        viewModel.setPubKeys(model.pubs)
                         return
                     }
                     if (intent.extras!!.containsKey("editIndex")) {
