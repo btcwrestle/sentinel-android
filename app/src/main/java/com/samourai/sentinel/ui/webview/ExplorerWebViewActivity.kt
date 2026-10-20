@@ -98,8 +98,13 @@ class ExplorerWebViewActivity : AppCompatActivity() {
             // InetSocketAddress's leading slash (and "SOCKS:/null" on the
             // boot=5 window). Build the rule from the parsed fields.
             val address = proxy.address() as? InetSocketAddress ?: return
+            // #252 regression fix: .hostName resolves. Android drops the
+            // constructor's host string once it resolves, so the getter
+            // falls through to a reverse-DNS lookup - a network call on
+            // the main thread, NetworkOnMainThreadException at launch.
+            // hostString never resolves and exists since API 24 (= minSdk).
             val proxyConfig = ProxyConfig.Builder()
-                .addProxyRule("socks://${address.hostName}:${address.port}")
+                .addProxyRule("socks://${address.hostString}:${address.port}")
                 .build()
             ProxyController.getInstance().setProxyOverride(proxyConfig, {
                 load()
