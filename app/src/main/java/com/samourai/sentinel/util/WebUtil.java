@@ -4,7 +4,9 @@ import android.content.Context;
 
 import com.samourai.sentinel.BuildConfig;
 import com.samourai.sentinel.api.TlsPolicy;
+import com.samourai.sentinel.tor.SentinelTorManager;
 
+import java.net.Proxy;
 import java.net.URI;
 import java.util.concurrent.TimeUnit;
 
@@ -68,6 +70,11 @@ public class WebUtil {
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
 
+        // #240: policy on every builder, per the issue's acceptance - the
+        // per-connection decision inside TlsPolicy keeps clearnet strict;
+        // .onion would get the scoped relaxation.
+        TlsPolicy.INSTANCE.install(builder);
+
         if (BuildConfig.DEBUG) {
             builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
         }
@@ -95,6 +102,10 @@ public class WebUtil {
         }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
+        // #240: policy on every builder (see postURL above). The 60-HOUR
+        // timeouts below are the inherited upstream shape - preserved
+        // verbatim, flagged in the PR body as a follow-up candidate.
+        TlsPolicy.INSTANCE.install(builder);
         builder.connectTimeout(60,TimeUnit.HOURS);
         builder.readTimeout(60,TimeUnit.HOURS);
         builder.readTimeout(60,TimeUnit.HOURS);
@@ -129,6 +140,9 @@ public class WebUtil {
                 .retryOnConnectionFailure(true)
                 .readTimeout(90, TimeUnit.SECONDS);
 
+        // #240: policy on every builder (see postURL above).
+        TlsPolicy.INSTANCE.install(builder);
+
         if (BuildConfig.DEBUG) {
             builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
         }
@@ -150,9 +164,17 @@ public class WebUtil {
 
     private String tor_getURL(String URL) throws Exception {
 
+        // #240: this builder's Tor routing was commented out against the
+        // pre-#135 TorManager API - every Tor-mode GET left DIRECT, the
+        // same leak class #233 closed for the pairing client. Fail
+        // closed: nothing proxy-less leaves a Tor-routed arm.
+        Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
+        if (torProxy == null) {
+            throw new IllegalStateException("Tor-routed GET with no live SOCKS proxy (#240)");
+        }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-//                .proxy(TorManager.getInstance(this.context).getProxy())
+                .proxy(torProxy)
                 .connectTimeout(90, TimeUnit.SECONDS)
                 .readTimeout(90, TimeUnit.SECONDS);
 
@@ -187,15 +209,20 @@ public class WebUtil {
         RequestBody body = RequestBody.create(JSON, args.toString());
 
 
+        // #240: proxy restored (see tor_getURL) - fail closed, never direct.
+        Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
+        if (torProxy == null) {
+            throw new IllegalStateException("Tor-routed POST with no live SOCKS proxy (#240)");
+        }
+
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-//                .proxy(TorManager.getInstance(this.context).getProxy())
+                .proxy(torProxy)
                 .connectTimeout(90, TimeUnit.SECONDS)
                 .readTimeout(90, TimeUnit.SECONDS);
 
         // #229: host-scoped policy instead of trust-all (same gate fix).
         if (isOnionUrl(URL)) {
             TlsPolicy.INSTANCE.install(builder);
-            builder.connectTimeout(90, TimeUnit.SECONDS);
         }
 
         if (BuildConfig.DEBUG) {
@@ -220,8 +247,14 @@ public class WebUtil {
     public String tor_postURL(String URL, FormBody args) throws Exception {
 
 
+        // #240: proxy restored (see tor_getURL) - fail closed, never direct.
+        Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
+        if (torProxy == null) {
+            throw new IllegalStateException("Tor-routed POST with no live SOCKS proxy (#240)");
+        }
+
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
-//                .proxy(TorManager.getInstance(this.context).getProxy());
+        builder.proxy(torProxy);
 
         // #229: host-scoped policy instead of trust-all (same gate fix).
         if (isOnionUrl(URL)) {
@@ -232,7 +265,6 @@ public class WebUtil {
 
         if (BuildConfig.DEBUG) {
             builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
-            builder.connectTimeout(90, TimeUnit.SECONDS);
         }
 
         Request request = new Request.Builder()
