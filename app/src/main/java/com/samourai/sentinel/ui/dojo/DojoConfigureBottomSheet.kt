@@ -7,6 +7,7 @@ import android.content.DialogInterface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -30,6 +31,7 @@ import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.PrefsUtil
+import com.samourai.sentinel.ui.utils.shouldAdmitScan
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import com.samourai.sentinel.util.apiScope
 import kotlinx.coroutines.Dispatchers
@@ -656,15 +658,22 @@ class ScanFragment : Fragment() {
 
     private var mCodeScanner: QRScanner? = null
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java);
+    // #232: the shared invalid-payload policy's state - the payload and
+    // clock stamp of the last ADMITTED decode (valid or not): the same QR
+    // held in frame and the library's same-frame double-fire stay under
+    // one window.
+    private var lastDecodePayload: String? = null
+    private var lastDecodeAtMs = 0L
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.content_scan_layout, container, false);
     }
 
-    fun resetCamera() {
-        this.mCodeScanner?.stopScanner()
-        this.mCodeScanner?.startScanner()
-    }
+    // #232: resetCamera() is gone with the loop it generated - the old
+    // decode path stopped the scanner first, then resetCamera()'s instant
+    // restart made every re-fire of an invalid QR a stop/decode/reset
+    // cycle (#232's tight toast loop). The decode listener below stops
+    // the camera only for a payload the sheet accepted.
 
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -675,12 +684,22 @@ class ScanFragment : Fragment() {
         // #181: decode results and the paste button resolve the sheet
         // at event time; the old listener fields died with the
         // pre-built instances they were registered on.
-        mCodeScanner?.setQRDecodeListener {
-            lifecycleScope.launch {
+        mCodeScanner?.setQRDecodeListener { decoded ->
+            // #232: the shared invalid-payload policy, applied at the
+            // scanner: a repeat of the last admitted payload inside the
+            // window - the same QR still in frame, or the library's
+            // same-frame double-fire - is dropped before it reaches the
+            // sheet, so the invalid toast lands once per window instead
+            // of in a loop. The camera only stops for a payload the
+            // sheet ACCEPTED; an invalid one keeps it running.
+            val now = SystemClock.elapsedRealtime()
+            if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+                return@setQRDecodeListener
+            }
+            lastDecodePayload = decoded
+            lastDecodeAtMs = now
+            if ((parentFragment as? DojoConfigureBottomSheet)?.onScanPayload(decoded) == true) {
                 mCodeScanner?.stopScanner()
-                if ((parentFragment as? DojoConfigureBottomSheet)?.onScanPayload(it) != true) {
-                    resetCamera()
-                }
             }
         }
 
