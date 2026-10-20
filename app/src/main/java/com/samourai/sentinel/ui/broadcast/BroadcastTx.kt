@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.method.ScrollingMovementMethod
 import android.view.LayoutInflater
 import android.view.View
@@ -30,6 +31,7 @@ import com.samourai.sentinel.ui.settings.ImportBackUpActivity
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.PermissionResult
 import com.samourai.sentinel.ui.utils.permissionResultOf
+import com.samourai.sentinel.ui.utils.shouldAdmitScan
 import com.samourai.sentinel.ui.views.SuccessfulBottomSheet
 import com.samourai.wallet.psbt.PSBT
 import com.sparrowwallet.hummingbird.registry.CryptoPSBT
@@ -96,6 +98,14 @@ class BroadcastTx : SentinelActivity() {
     private val model: BroadcastVm by viewModels()
     private var hash = ""
     private lateinit var binding: LayoutBroadcastBottomSheetBinding
+
+    // #247/#232: the shared scan-gate state, same names as the #245
+    // surfaces - payload + clock stamp of the last ADMITTED decode
+    // (valid or not): a repeat inside the window - the same QR still in
+    // frame, the library's same-frame double-fire - is dropped before
+    // it reaches validate().
+    private var lastDecodePayload: String? = null
+    private var lastDecodeAtMs = 0L
 
     // #145: the file-import launch had no handler - a de-laundered escape
     // (FileNotFoundException/IOException) would reach the process-killing
@@ -196,9 +206,23 @@ class BroadcastTx : SentinelActivity() {
     private fun scanTx() {
         val camera = ScanTxFragment()
         camera.show(supportFragmentManager, "scanner_tag")
-        camera.setOnScanListener {
-            model.viewModelScope.launch(Dispatchers.Default) {
-                validate(it, true)
+        camera.setOnScanListener { decoded ->
+            // #247: gate at the consumer like the #245 surfaces - a repeat
+            // of the last admitted payload inside the window never
+            // re-enters validation.
+            val now = SystemClock.elapsedRealtime()
+            if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+                return@setOnScanListener
+            }
+            lastDecodePayload = decoded
+            lastDecodeAtMs = now
+            // #247: the whole decode rides the main looper - the old
+            // launch(Dispatchers.Default) ran camera.dismiss() (a
+            // BottomSheetDialogFragment) on the Default worker.
+            // validate()'s own UI writes already hop to Main; the decode
+            // itself is small-string parsing, fine here.
+            model.viewModelScope.launch(Dispatchers.Main) {
+                validate(decoded, true)
                 camera.dismiss()
             }
         }

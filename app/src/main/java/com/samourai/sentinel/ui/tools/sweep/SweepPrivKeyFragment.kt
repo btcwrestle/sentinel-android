@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -53,6 +54,7 @@ import com.samourai.sentinel.ui.adapters.PubkeysAdapter
 import com.samourai.sentinel.ui.fragments.AddNewPubKeyBottomSheet
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.RecyclerViewItemDividerDecorator
+import com.samourai.sentinel.ui.utils.shouldAdmitScan
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import com.samourai.sentinel.ui.views.SuccessfulBottomSheet
 import com.samourai.sentinel.util.MonetaryUtil
@@ -256,6 +258,13 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
     private var onPreviewButtonCall: (scanData: String) -> Unit = {}
 
+    // #248/#232: the shared scan-gate state, same names as the #245
+    // surfaces - payload + clock stamp of the last ADMITTED decode
+    // (valid or not): a repeat inside the window never reaches the
+    // private-key field.
+    private var lastDecodePayload: String? = null
+    private var lastDecodeAtMs = 0L
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.scan_private_tool, container, false)
     }
@@ -291,14 +300,29 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
             else {
                 val camera = ScanPrivKeyFragment()
                 camera.show(requireFragmentManager(), "scanner_tag")
-                camera.setOnScanListener {
-                    if (isPrivateKey(it))
+                camera.setOnScanListener { decoded ->
+                    // #248: gate at the consumer, same shape as the #245
+                    // surfaces - a repeat of the last admitted payload
+                    // inside the window (the same QR still in frame, the
+                    // library's same-frame double-fire) is dropped before
+                    // it reaches the field.
+                    val now = SystemClock.elapsedRealtime()
+                    if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+                        return@setOnScanListener
+                    }
+                    lastDecodePayload = decoded
+                    lastDecodeAtMs = now
+                    if (isPrivateKey(decoded)) {
+                        // #248: validate BEFORE the field write - garbage
+                        // used to land verbatim in the private-key field
+                        // with only the button alpha as feedback.
                         startSweepBtn.alpha = 1f
-                    else
+                        textPrivKey.editText!!.setText(decoded)
+                        camera.dismiss()
+                    } else {
                         startSweepBtn.alpha = 0.6f
-
-                    textPrivKey.editText!!.setText(it)
-                    camera.dismiss()
+                        Toast.makeText(context, "Invalid private key", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
