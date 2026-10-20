@@ -18,6 +18,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.viewpager2.adapter.FragmentStateAdapter
+import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.invertedx.hummingbird.QRScanner
@@ -65,6 +66,15 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var _binding: FragmentBottomsheetViewPagerBinding? = null
     private val binding get() = _binding!!
 
+    // #231: the connect start latch. maybeStartConnect() is reachable
+    // from two fires - the pager's page-selected callback and the
+    // connect page's view-creation entry point - and this latch keeps
+    // the pairing attempt once per sheet lifetime whichever lands.
+    private var connectStarted = false
+
+    // #231: registered in setUpViewPager, unregistered in onDestroyView.
+    private var pagerCallback: ViewPager2.OnPageChangeCallback? = null
+
     override fun onCreateView(
             inflater: LayoutInflater,
             container: ViewGroup?,
@@ -89,10 +99,11 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         // the childFragmentManager, so after any recreation those
         // fields held objects the pager never showed - dead wiring,
         // and no crash to report it.
-        // #165: the connect trigger still rides the connect page's own
-        // onViewCreated - one frame AFTER setCurrentItem(2), never
-        // before - and the page's latch keeps the fire once per
-        // fragment lifetime even if the view is recreated.
+        // #231: the connect trigger now rides pager page SELECTION
+        // (setUpViewPager registers the callback); the connect page's
+        // view-creation call is kept only as the restore path's race
+        // cover - maybeStartConnect() gates both fires on selection
+        // and payload.
         //validate payload that is passed
         payloadPassed?.let {
             if (dojoUtil.validate(it)) {
@@ -105,6 +116,13 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 Toast.makeText(requireContext(), getString(R.string.invalid_payload), Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    override fun onDestroyView() {
+        // #231: the page-selected callback dies with the pager's view.
+        pagerCallback?.let { binding.pager.unregisterOnPageChangeCallback(it) }
+        pagerCallback = null
+        super.onDestroyView()
     }
 
     // ---- #181 page-event entry points ----
@@ -148,8 +166,37 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         return false
     }
 
-    /** Connect page's view is ready (#165 latch) - begin Tor + pairing. */
+    /**
+     * #231: the connect page's view exists. The gate below decides
+     * whether that means anything - an offscreen bind during the pager
+     * height walk has a view too, and must trigger nothing.
+     */
     fun onConnectViewReady() {
+        maybeStartConnect()
+    }
+
+    /**
+     * #231: the connect gate - both fires (the pager's page-selected
+     * callback and the connect page's view-creation entry point) land
+     * here. Fires at most once per sheet lifetime, and only when page
+     * 2 is actually SELECTED and a validated payload is in hand. A
+     * blank payload routes back to the scan page: fail closed - no
+     * banner, no network call. This is the piece that breaks the
+     * re-pairing lockout: with Tor left ON from a failed attempt,
+     * opening the sheet bound page 2 offscreen, and the old
+     * view-creation trigger fired an empty-payload connect on the
+     * spot.
+     */
+    private fun maybeStartConnect() {
+        if (connectStarted) return
+        if (binding.pager.currentItem != 2) return
+        if (payload.isBlank()) {
+            // #231: a restore that lands on page 2 has lost the
+            // in-memory payload - the scan page, not an empty POST.
+            binding.pager.setCurrentItem(1, true)
+            return
+        }
+        connectStarted = true
         startTorAndConnect()
     }
 
@@ -342,6 +389,22 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         }
         binding.pager.isUserInputEnabled = false
 
+        // #231: the connect trigger rides user-visible page SELECTION.
+        // The height walk below (item 0 -> 1 -> 0) binds page 2
+        // offscreen as item 1's neighbor, and the #165 view-creation
+        // trigger fired from that bind while the user was still on
+        // the instructions page - with Tor already ON from a failed
+        // attempt, that was the re-pairing lockout.
+        val callback = object : ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                if (position == 2) {
+                    maybeStartConnect()
+                }
+            }
+        }
+        pagerCallback = callback
+        binding.pager.registerOnPageChangeCallback(callback)
+
         //Fix for making BottomSheet same height across all the fragments
         binding.pager.visibility = View.GONE
         binding.pager.currentItem = 1
@@ -397,14 +460,12 @@ class DojoConnectFragment : Fragment() {
     private lateinit var progressTor: ProgressBar
     private lateinit var progressDojo: ProgressBar
 
-    // #165: the connect trigger fires from this fragment's own
-    // onViewCreated - the earliest moment the lateinit views above are
-    // guaranteed initialized - and the latch keeps the fire once per
-    // fragment lifetime even if the view is recreated. #181: the sheet
-    // is resolved at event time instead of holding a callback field,
-    // so a restored instance fires into the live sheet, not into a
-    // stale wiring target.
-    private var connectTriggered = false
+    // #231: the page still reports its view's existence so a restore
+    // that recreates page 2 as the selected page can connect even if
+    // the pager's page-selected dispatch has already passed it by.
+    // The sheet's maybeStartConnect() gates this fire on selection
+    // and payload, so the offscreen bind at sheet-open - the #231
+    // lockout path - is a silent no-op here.
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         val view = inflater.inflate(R.layout.bottomsheet_dojo_connection, container, false)
@@ -419,13 +480,14 @@ class DojoConnectFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        if (!connectTriggered) {
-            connectTriggered = true
-            (parentFragment as? DojoConfigureBottomSheet)?.onConnectViewReady()
-        }
+        (parentFragment as? DojoConfigureBottomSheet)?.onConnectViewReady()
     }
 
     fun showTorProgress() {
+        // #231: a selection-driven start can land while a restored
+        // page's view is not created yet - the lateinit fields are
+        // only safe behind this gate.
+        if (view == null) return
         progressTor.visibility = View.VISIBLE
         checkImageTor.visibility = View.INVISIBLE
         progressTor.animate()
@@ -436,6 +498,8 @@ class DojoConnectFragment : Fragment() {
 
     @Synchronized
     fun showTorProgressSuccess() : Boolean {
+        // #231: same view gate as showTorProgress().
+        if (view == null) return false
         if (checkImageTor.visibility != View.VISIBLE) {
             progressTor.visibility = View.INVISIBLE
             checkImageTor.visibility = View.VISIBLE
@@ -445,11 +509,15 @@ class DojoConnectFragment : Fragment() {
     }
 
     fun showDojoProgress() {
+        // #231: same view gate as showTorProgress().
+        if (view == null) return
         progressDojo.visibility = View.VISIBLE
         checkImageDojo.visibility = View.INVISIBLE
     }
 
     fun showDojoProgressSuccess() {
+        // #231: same view gate as showTorProgress().
+        if (view == null) return
         progressDojo.visibility = View.INVISIBLE
         checkImageDojo.visibility = View.VISIBLE
     }
