@@ -209,18 +209,13 @@ class QRScanner : FrameLayout, DefaultLifecycleObserver {
     @SuppressLint("SetTextI18n")
     private fun setScanResult(it: Result) {
         val string = it.text
-        _scope.launch(Dispatchers.Main) {
-            if (_type == QrDetectType.QR_ONLY) {
-                _decodeQrCallback.invoke(string)
-            }
-            if (_type == QrDetectType.AUTO) {
-                if (!string.lowercase().startsWith("ur:") && _decoder.expectedPartCount == 0) {
-                    _decodeQrCallback.invoke(string)
-                    return@launch
-                }
-            }
-            return@launch
-        }
+        // #246: ONE dispatch point per decoded frame. This coroutine used to
+        // mirror the arm below: QR_ONLY fired here AND below, and AUTO fired
+        // every plain QR here AND again below through the receivePart
+        // fallthrough - so each decoded frame reached the app listener
+        // twice. The arm below is now the single dispatch: QR_ONLY fires
+        // once on Main; AUTO routes a plain QR through its single
+        // receivePart fallthrough; UR frames keep the decoder machinery.
         _scope.launch {
             try {
                 if (_type == QrDetectType.QR_ONLY) {
