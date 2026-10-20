@@ -380,4 +380,17 @@
     <string name="network_switch_confirm_positive">Switch</string>
     <string name="network_set_by_keys">Set by your keys</string>
     <string name="dojo_unnamed">Unnamed Dojo</string>
+
+    <!--
+      #234: the pairing acknowledgment gate. A successful /auth/login no
+      longer auto-advances: the user confirms what was paired before the
+      commit lands and the xpub registration burst can start. Marked
+      translatable="false" to match the project's existing pattern of
+      English fallbacks for newer strings (see community_dojo_* above).
+    -->
+    <string name="dojo_pairing_confirm_title" translatable="false">Connect this Dojo?</string>
+    <string name="dojo_pairing_confirm_message" translatable="false">Sentinel is about to pair with this Dojo - all wallet traffic will flow to this node:</string>
+    <string name="dojo_pairing_confirm_accept" translatable="false">Pair</string>
+    <string name="dojo_pairing_confirm_decline" translatable="false">Don\'t pair</string>
+    <string name="dojo_pairing_declined" translatable="false">Pairing discarded</string>
 </resources>

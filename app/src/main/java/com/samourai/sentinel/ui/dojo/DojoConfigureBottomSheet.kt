@@ -116,6 +116,88 @@ fun buildPairingClient(torProxy: Proxy): OkHttpClient {
     return builder.build()
 }
 
+// ---- #234: the pairing acknowledgment, made pure ----
+//
+// The success arm of setDojoPost used to commit the pairing inline
+// (prefs, tokens, payload store) and auto-advance: dismissAllOrToast
+// fired the listener 500 ms later and NetworkActivity started the xpub
+// registration burst - no user gate anywhere between the 200 and the
+// burst. Pairing is a trust decision (all wallet traffic flows to that
+// node from then on), so the commit now waits for an explicit tap, and
+// the gate below is the whole decision table. It is also the seam
+// #250's network guard rides: a cross-network payload is another
+// decision that belongs before the first write, not after it.
+
+/**
+ * #234: what the sheet may do around the pairing acknowledgment.
+ * Top-level so the negative tests can pin the double-tap and
+ * tap-after-decline windows without loading any Android machinery.
+ */
+enum class PairingAckDecision { SHOW_CONFIRMATION, COMMIT_AND_DISMISS, DISCARD_AND_DISMISS, NOOP }
+
+/**
+ * #234: pure transition table for the pairing acknowledgment.
+ * Success arms SHOW_CONFIRMATION exactly once - a re-fire landing
+ * while the dialog is up is a NOOP, so there is one dialog and one
+ * decision per pairing. CONFIRM commits and dismisses exactly once;
+ * DECLINE discards and dismisses exactly once. Either terminal tap
+ * spends the gate: the dialog dismisses on the first tap, so any
+ * second tap - and any stray success that lands after the user has
+ * decided - resolves to NOOP. The user's decision, once made, stands.
+ * Synchronized because the arm arrives on the OkHttp dispatcher
+ * thread while the taps arrive on main.
+ */
+class PairingAckGate {
+    private var awaitingConfirmation = false
+    private var spent = false
+
+    @Synchronized
+    fun onPairingSuccess(): PairingAckDecision = when {
+        spent || awaitingConfirmation -> PairingAckDecision.NOOP
+        else -> {
+            awaitingConfirmation = true
+            PairingAckDecision.SHOW_CONFIRMATION
+        }
+    }
+
+    @Synchronized
+    fun onUserConfirmed(): PairingAckDecision = when {
+        awaitingConfirmation && !spent -> {
+            spent = true
+            PairingAckDecision.COMMIT_AND_DISMISS
+        }
+        else -> PairingAckDecision.NOOP
+    }
+
+    @Synchronized
+    fun onUserDeclined(): PairingAckDecision = when {
+        awaitingConfirmation && !spent -> {
+            spent = true
+            PairingAckDecision.DISCARD_AND_DISMISS
+        }
+        else -> PairingAckDecision.NOOP
+    }
+}
+
+/**
+ * #234: the confirmation dialog's summary lines, derived from the
+ * payload. The apikey is deliberately absent - it grants access to
+ * the node (see DojoUtility.getPairing's FLAG_SECURE note). The
+ * pairing type is invariant post-validate ("dojo.api" or the payload
+ * never got this far), so the lines show what actually varies: the
+ * URL, the declared version, and the sibling explorer when present.
+ */
+fun pairingConfirmationLines(pairing: DojoPairing): List<String> {
+    val lines = mutableListOf<String>()
+    pairing.pairing?.url?.takeIf { it.isNotBlank() }?.let { lines.add(it) }
+    pairing.pairing?.version?.takeIf { it.isNotBlank() }?.let { lines.add("Dojo $it") }
+    pairing.explorer?.url?.takeIf { it.isNotBlank() }?.let { url ->
+        val type = pairing.explorer?.type?.takeIf { it.isNotBlank() } ?: "explorer"
+        lines.add("Explorer: $type - $url")
+    }
+    return lines
+}
+
 class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var payloadPassed: String? = null;
     private var dojoConfigurationListener: DojoConfigurationListener? = null
@@ -138,6 +220,15 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var listenerFired = false
 
     private var payload: String = ""
+
+    // #234: the acknowledgment gate and the success arm's commit
+    // inputs. Nothing commits until onUserConfirmed() resolves to
+    // COMMIT_AND_DISMISS; decline never entered the commit, so there
+    // is nothing to unwind. The mainHandler.post on the success arm
+    // publishes these writes to the main thread before any read.
+    private val pairingAckGate = PairingAckGate()
+    private var pendingPairing: DojoPairing? = null
+    private var pendingAuthBody: JSONObject? = null
 
     private val dojoUtil: DojoUtility by KoinJavaComponent.inject(DojoUtility::class.java);
 
@@ -383,18 +474,16 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                         dismissAllOrToast(false)
                     }
                     else if (response.isSuccessful) {
-                        val json = JSONObject(body)
-                        dojoUtil.setDojoPayload(payload)
-                        prefsUtil.apiEndPointTor = pairing.pairing.url
-                        prefsUtil.apiEndPoint = pairing.pairing.url
-                        prefsUtil.dojoExplorerUrl = pairing.explorer?.url
-                        prefsUtil.dojoExplorerType = pairing.explorer?.type
-                        dojoUtil.setAuthToken(json.toString())
-                        apiScope.launch {
-                            dojoUtil.writePayload(pairing);
-                            withContext(Dispatchers.Main) {
-                                dismissAllOrToast(true)
-                            }
+                        // #234: success arms the acknowledgment gate -
+                        // nothing commits until the user taps. The gate
+                        // takes SHOW_CONFIRMATION once; any re-fire that
+                        // lands here while the dialog is already up
+                        // resolves to NOOP. The commit body itself moved,
+                        // verbatim, into onPairingConfirmTapped().
+                        if (pairingAckGate.onPairingSuccess() == PairingAckDecision.SHOW_CONFIRMATION) {
+                            pendingPairing = pairing
+                            pendingAuthBody = JSONObject(body)
+                            mainHandler.post { showPairingConfirmation() }
                         }
                     }  else {
                         dismissAllOrToast(false)
@@ -429,6 +518,87 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 if (context != null)
                     Toast.makeText(context, getString(R.string.dojo_connect_error, e.toString()), Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    /**
+     * #234: the acknowledgment dialog - what was paired, derived from
+     * the payload via pairingConfirmationLines (URL, declared version,
+     * sibling explorer), never the apikey (see DojoUtility.getPairing's
+     * FLAG_SECURE note). Non-cancelable by design: an outside tap
+     * silently discarding a pairing the user waited a full Tor
+     * bootstrap for would be the auto-advance bug inverted; both
+     * buttons resolve it. The connect page gets its success check
+     * behind the dialog so the state is visible while the user
+     * decides.
+     */
+    private fun showPairingConfirmation() {
+        val pairing = pendingPairing ?: return
+        if (context == null) return
+        connectPage()?.showDojoProgressSuccess()
+        val lines = pairingConfirmationLines(pairing)
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.dojo_pairing_confirm_title))
+            .setMessage(
+                getString(R.string.dojo_pairing_confirm_message) +
+                        "\n\n" + lines.joinToString("\n")
+            )
+            .setCancelable(false)
+            .setPositiveButton(getString(R.string.dojo_pairing_confirm_accept)) { _, _ ->
+                onPairingConfirmTapped()
+            }
+            .setNegativeButton(getString(R.string.dojo_pairing_confirm_decline)) { _, _ ->
+                onPairingDeclineTapped()
+            }
+            .show()
+    }
+
+    /**
+     * #234: Confirm tapped - the commit the old success arm made
+     * inline, now behind the explicit tap: payload, endpoints, tokens,
+     * payload store, then the unchanged #159 dismissal seam
+     * (showDojoProgressSuccess, 500 ms, listener at most once). The
+     * gate spends itself on the first tap, so a double-tap that lands
+     * before the dialog window closes resolves to NOOP and cannot run
+     * this body twice.
+     */
+    private fun onPairingConfirmTapped() {
+        if (pairingAckGate.onUserConfirmed() != PairingAckDecision.COMMIT_AND_DISMISS) return
+        val pairing = pendingPairing ?: return
+        val authBody = pendingAuthBody ?: return
+        pendingPairing = null
+        pendingAuthBody = null
+        val node = pairing.pairing ?: return
+        dojoUtil.setDojoPayload(payload)
+        prefsUtil.apiEndPointTor = node.url
+        prefsUtil.apiEndPoint = node.url
+        prefsUtil.dojoExplorerUrl = pairing.explorer?.url
+        prefsUtil.dojoExplorerType = pairing.explorer?.type
+        dojoUtil.setAuthToken(authBody.toString())
+        apiScope.launch {
+            dojoUtil.writePayload(pairing);
+            withContext(Dispatchers.Main) {
+                dismissAllOrToast(true)
+            }
+        }
+    }
+
+    /**
+     * #234: Decline tapped - discard and dismiss. The gate sits before
+     * the first write, so nothing was ever committed: endpoints unset,
+     * tokens unwritten, payload store untouched - there is nothing to
+     * unwind. The listener never fires: the holders see a declined
+     * pairing exactly the way they see a failed one (#159), and the
+     * xpub registration burst never starts.
+     */
+    private fun onPairingDeclineTapped() {
+        if (pairingAckGate.onUserDeclined() != PairingAckDecision.DISCARD_AND_DISMISS) return
+        pendingPairing = null
+        pendingAuthBody = null
+        mainHandler.post {
+            dismiss()
+            if (context != null)
+                Toast.makeText(context, getString(R.string.dojo_pairing_declined), Toast.LENGTH_SHORT).show()
         }
     }
 
