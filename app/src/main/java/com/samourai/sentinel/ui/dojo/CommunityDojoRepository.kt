@@ -1,5 +1,6 @@
 package com.samourai.sentinel.ui.dojo
 
+import com.samourai.sentinel.api.TlsPolicy
 import com.samourai.sentinel.api.okHttp.await
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.tor.SentinelTorManager
@@ -26,15 +27,23 @@ object CommunityDojoRepository {
         val proxy = awaitProxy(maxWaitMs)
             ?: throw IllegalStateException("Tor is not connected")
 
-        val client = OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .proxy(proxy)
-            // Dojo Bay probes every listed node over Tor before answering, so the
-            // request can take a while to build a response - same 120s allowance
-            // used elsewhere in the app for onion requests (see ApiService).
-            .connectTimeout(120, TimeUnit.SECONDS)
+            // #242: the fetch client was Tor-gated but installed no
+            // TlsPolicy - an https-onion directory source with a
+            // self-signed cert was structurally unfetchable, and clearnet
+            // verification was the default by accident rather than by
+            // policy. Install-only per the #233 boundary rule: the
+            // decision is per connection, so the current http-onion
+            // source (no TLS negotiated) is unaffected.
+        TlsPolicy.install(builder)
+        // Dojo Bay probes every listed node over Tor before answering, so the
+        // request can take a while to build a response - same 120s allowance
+        // used elsewhere in the app for onion requests (see ApiService).
+        builder.connectTimeout(120, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .callTimeout(120, TimeUnit.SECONDS)
-            .build()
+        val client = builder.build()
 
         val request = Request.Builder()
             .url(DojoBayConstants.DIRECTORY_JSON_URL)
