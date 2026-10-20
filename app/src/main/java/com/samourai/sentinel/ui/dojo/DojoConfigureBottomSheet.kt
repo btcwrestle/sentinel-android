@@ -23,6 +23,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.invertedx.hummingbird.QRScanner
 import com.samourai.sentinel.R
+import com.samourai.sentinel.api.TlsPolicy
 import com.samourai.sentinel.databinding.FragmentBottomsheetViewPagerBinding
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.tor.EnumTorState
@@ -33,6 +34,7 @@ import com.samourai.sentinel.ui.views.GenericBottomSheet
 import com.samourai.sentinel.util.apiScope
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -44,12 +46,86 @@ import okhttp3.Response
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent
 import java.io.IOException
+import java.net.Proxy
+import java.util.concurrent.TimeUnit
+
+// ---- #233: the pairing network path, made pure ----
+//
+// The deleted line in setDojo() was:
+//   OkHttpClient.Builder().proxy(SentinelTorManager.getProxy()).build()
+// getProxy() returns null until the SOCKS listener is published, and ON
+// alone is published at boot=5, before the listener exists (#135).
+// OkHttp treats proxy(null) as the DEFAULT route: DIRECT - so the
+// pairing POST (/auth/login, apikey in the body) left via the device's
+// normal network while the UI said Tor. The three arms below are the
+// sheet-side mirror of the gates that already protect
+// ApiService.buildClient (:419) and WebSocketHandler.connect() (:187):
+// never build a proxy-less client, never cache readiness.
+
+// #233: bounded wait for the SOCKS listener, mirroring HomeViewModel's
+// TOR_READY_TIMEOUT_MS (covers the measured ~50 s cold start with
+// margin). On timeout the pairing fails closed - no proxy-less POST,
+// ever.
+private const val TOR_READY_TIMEOUT_MS = 90_000L
+
+/**
+ * #233: what setDojo() may do with the network, decided at call time.
+ * Top-level so the negative test can pin the ON-but-not-ready window
+ * without loading any Android machinery.
+ */
+enum class PairingTorDecision { POST_NOW, DEFER, FAIL_CLOSED }
+
+/**
+ * #233: pure decision for the pairing call path. ON-but-not-ready
+// DEFERs - that is the exact window the old code POSTed direct in.
+ * OFF/STOPPING is a dead daemon: retrying it is spin, so the sheet
+ * fails closed (toast + dismiss, no re-enqueue; the Tor watchdog owns
+ * restarting the daemon).
+ */
+fun pairingTorDecision(
+    state: EnumTorState,
+    boot: Int,
+    proxy: Proxy?,
+): PairingTorDecision = when {
+    state == EnumTorState.ON && boot == 100 && proxy != null ->
+        PairingTorDecision.POST_NOW
+    state == EnumTorState.ON || state == EnumTorState.STARTING ->
+        PairingTorDecision.DEFER
+    else -> PairingTorDecision.FAIL_CLOSED
+}
+
+/**
+ * #233: the pairing client. Takes a NON-NULL SOCKS proxy at the
+ * signature - the direct-POST route is gone from the type; only a
+ * POST_NOW decision can reach this. Installs the #229 host-scoped TLS
+ * policy (https-onion Dojos with self-signed certs were structurally
+ * unpairable through the old one-off client) and mirrors the Tor-mode
+ * timeouts of ApiService's ON arm: OkHttp's default 10 s callTimeout
+ * kills an onion circuit build that can legitimately take minutes.
+ */
+fun buildPairingClient(torProxy: Proxy): OkHttpClient {
+    val builder = OkHttpClient.Builder()
+    TlsPolicy.install(builder)
+    builder.callTimeout(0, TimeUnit.MILLISECONDS)
+    builder.readTimeout(180, TimeUnit.SECONDS)
+    builder.writeTimeout(180, TimeUnit.SECONDS)
+    builder.connectTimeout(180, TimeUnit.SECONDS)
+    builder.proxy(torProxy)
+    return builder.build()
+}
 
 class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var payloadPassed: String? = null;
     private var dojoConfigurationListener: DojoConfigurationListener? = null
     private val prefsUtil: PrefsUtil by KoinJavaComponent.inject(PrefsUtil::class.java);
     private var numRetries = 0
+
+    // #233: single-flight for the bounded Tor wait. setDojo() re-enters
+    // from the Tor observer and the #176 retry timer while Tor is still
+    // bootstrapping; without this latch every not-ready entry would
+    // stack its own awaitTorReady and the POST would fire once per
+    // waiter at readiness.
+    private var torDeferJob: Job? = null
 
     // #159: the dismissal seam. The listener fires at most once per
     // sheet lifetime, only from the success arm - the contract is
@@ -94,11 +170,10 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         // click/scan/latch wiring (see the page classes below) and
         // calls the entry points grouped under
         // "#181 page-event entry points". The old design registered
-        // listeners on pre-built field instances here; a
-        // FragmentStateAdapter restore re-creates pages by tag from
-        // the childFragmentManager, so after any recreation those
-        // fields held objects the pager never showed - dead wiring,
-        // and no crash to report it.
+        // listeners on pre-built field instances here; a FragmentStateAdapter
+        // restore re-creates pages by tag from the childFragmentManager,
+        // so after any recreation those fields held objects the pager
+        // never showed - dead wiring, and no crash to report it.
         // #231: the connect trigger now rides pager page SELECTION
         // (setUpViewPager registers the callback); the connect page's
         // view-creation call is kept only as the restore path's race
@@ -227,12 +302,66 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         }
     }
 
+    /**
+     * #233: the pairing gate. Every entry - connect latch, Tor
+     * observer, #176 retry timer - re-decides at CALL TIME, because the
+     * readiness inputs move under the sheet (ON@boot=5 -> listener ->
+     * boot=100). The gate is the whole fix: the client is built only on
+     * the POST_NOW arm, so it is never CONSTRUCTED in the
+     * ON-but-not-ready state, let alone fired.
+     */
     private fun setDojo() {
+        when (pairingTorDecision(
+            SentinelTorManager.getTorState().state,
+            SentinelTorManager.getTorState().progressIndicator,
+            SentinelTorManager.getProxy(),
+        )) {
+            PairingTorDecision.POST_NOW -> setDojoPost()
+            PairingTorDecision.DEFER -> setDojoDeferUntilTorReady()
+            PairingTorDecision.FAIL_CLOSED -> setDojoFailClosed()
+        }
+    }
+
+    /**
+     * #233: bounded wait for the SOCKS listener. Single-flight: a
+     * second not-ready entry must not stack a second await.
+     * lifecycleScope: dismissing the sheet cancels the wait, so no
+     * orphan POST can land after teardown. On timeout or a dead
+     * daemon: the final fail arm - the Tor watchdog owns restarting
+     * the daemon, the sheet does not spin.
+     */
+    private fun setDojoDeferUntilTorReady() {
+        if (torDeferJob?.isActive == true) return
+        torDeferJob = lifecycleScope.launch {
+            val ready = SentinelTorManager.awaitTorReady(TOR_READY_TIMEOUT_MS)
+            if (ready) setDojoPost()
+            else dismissAllOrToast(false)
+        }
+    }
+
+    /**
+     * #233: OFF/STOPPING (or the daemon died mid-flight). Not
+     * retryable from the sheet - cancel any pending wait and take the
+     * #159-style fail arm.
+     */
+    private fun setDojoFailClosed() {
+        torDeferJob?.cancel()
+        torDeferJob = null
+        dismissAllOrToast(false)
+    }
+
+    private fun setDojoPost() {
         connectPage()?.showDojoProgress()
         try {
             val pairing = fromJSON<DojoPairing>(payload)
                 ?: throw  Exception("Invalid payload")
-            val client = OkHttpClient.Builder().proxy(SentinelTorManager.getProxy()).build()
+            // #233: re-read at call time. The gate said POST_NOW, so
+            // the proxy was live a moment ago; if the world moved
+            // anyway, fail closed - never proxy(null), which is
+            // OkHttp's DEFAULT route, i.e. DIRECT.
+            val torProxy = SentinelTorManager.getProxy()
+                ?: throw IllegalStateException("pairing path reached with no live SOCKS proxy (#233)")
+            val client = buildPairingClient(torProxy)
 
             val requestBody = FormBody.Builder()
                 .add("apikey", pairing.pairing?.apikey.toString())
@@ -392,8 +521,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         // #231: the connect trigger rides user-visible page SELECTION.
         // The height walk below (item 0 -> 1 -> 0) binds page 2
         // offscreen as item 1's neighbor, and the #165 view-creation
-        // trigger fired from that bind while the user was still on
-        // the instructions page - with Tor already ON from a failed
+        // trigger fired from that bind while the user was still on the
+        // instructions page - with Tor already ON from a failed
         // attempt, that was the re-pairing lockout.
         val callback = object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
@@ -559,6 +688,7 @@ class ScanFragment : Fragment() {
             (parentFragment as? DojoConfigureBottomSheet)?.onManualPasteClicked()
         }
 
+
     }
 
 
@@ -568,5 +698,6 @@ class ScanFragment : Fragment() {
             mCodeScanner?.startScanner()
         }
     }
+
 
 }
