@@ -33,6 +33,7 @@ import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.tools.sweep.SweepPrivKeyFragment
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.RecyclerViewItemDividerDecorator
+import com.samourai.sentinel.ui.utils.shouldAdmitScan
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import com.samourai.sentinel.ui.views.alertWithInput
@@ -44,10 +45,7 @@ import com.sparrowwallet.hummingbird.URDecoder
 import com.sparrowwallet.hummingbird.registry.CryptoAccount
 import com.sparrowwallet.hummingbird.registry.pathcomponent.IndexPathComponent
 import com.sparrowwallet.hummingbird.registry.RegistryType
-import kotlinx.coroutines.Dispatchers
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import android.os.SystemClock
 import org.bitcoinj.crypto.ChildNumber
 import org.bouncycastle.util.encoders.Hex
 import org.json.JSONObject
@@ -92,8 +90,12 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
         setUpViewPager()
 
         scanPubKeyFragment.setOnScanListener {
-            validate(it)
+            // #232: same order, new contract - validate() decides whether
+            // the decode was consumed; the raw scan lands in pubKeyString
+            // either way (pre-existing overwrite: validateXPUB re-reads it).
+            val handled = validate(it)
             pubKeyString = it
+            handled
         }
 
         selectAddressTypeFragment.setOnSelectListener {
@@ -160,7 +162,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
 
     }
 
-    private fun validate(code: String) {
+    private fun validate(code: String): Boolean {
         val payload = FormatsUtil.extractPublicKey(code)
         val type = FormatsUtil.getPubKeyType(payload)
         if (FormatsUtil.isValidBitcoinAddress(payload.trim()) || FormatsUtil.isValidXpub(payload)) {
@@ -168,13 +170,13 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                 if (context != null)
                     Toast.makeText(context, "Can't track Testnet public keys in Mainnet", Toast.LENGTH_LONG).show()
                 this.dismiss()
-                return
+                return true
             }
             if (SentinelState.isNetworkEstablished() && !isPublicKeyTesnet(payload) && SentinelState.isTestNet()) {
                 if (context != null)
                     Toast.makeText(context, "Can't track Mainnet public keys in Testnet", Toast.LENGTH_LONG).show()
                 this.dismiss()
-                return
+                return true
             }
         }
         when {
@@ -192,7 +194,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                     newPubKeyListener?.let { it(pubKey) }
                     this.dismiss()
                     newPubKeyListener = null
-                    return
+                    return true
                 } else {
                     pubKeyModel = PubKeyModel(pubKey = payload, type = AddressTypes.ADDRESS, label = "Untitled", fingerPrint = scanPubKeyFragment.getFingerprint())
                     // Skip type selection screen since payload is an address
@@ -220,9 +222,19 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                 }
             }
             else -> {
+                // #232: the dead-end arm - the only unconsumed decode. The
+                // toast lands here, once per admitted decode (the gate in
+                // ScanPubKeyFragment owns the re-decode window); the
+                // scanner's dispatch keeps the camera running, so this arm
+                // never strands it under a live sheet.
                 Toast.makeText(context, "Invalid public key or payload", Toast.LENGTH_LONG).show()
+                return false
             }
         }
+        // Every other arm dismisses the sheet or advances the pager; the
+        // decode is consumed in all of them (the not-added guards too - a
+        // detached sheet is tearing down, restarting its scanner is pointless).
+        return true
     }
 
     private fun isPublicKeyTesnet(payload: String): Boolean {
@@ -271,8 +283,14 @@ class ScanPubKeyFragment : Fragment() {
 
     private lateinit var  mCodeScanner: QRScanner;
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
-    private var onScan: (scanData: String) -> Unit = {}
+    private var onScan: (scanData: String) -> Boolean = { false }
     private var urPayloadDecoder: ((URDecoder.Result) -> String?)? = null
+    // #232: the shared invalid-payload policy's state - the payload and
+    // clock stamp of the last ADMITTED decode (valid or not): the same QR
+    // held in frame and the library's same-frame double-fire stay under
+    // one window.
+    private var lastDecodePayload: String? = null
+    private var lastDecodeAtMs = 0L
     private var pasteVisible: Boolean = true
     private var fingerprintHex: String? = null
 
@@ -280,7 +298,7 @@ class ScanPubKeyFragment : Fragment() {
         return inflater.inflate(R.layout.content_scan_layout, container, false)
     }
 
-    fun setOnScanListener(callback: (scanData: String) -> Unit) {
+    fun setOnScanListener(callback: (scanData: String) -> Boolean) {
         this.onScan = callback
     }
 
@@ -290,7 +308,12 @@ class ScanPubKeyFragment : Fragment() {
 
     fun resumeScan() {
         if (AndroidUtil.isPermissionGranted(Manifest.permission.CAMERA, appContext)) {
-            mCodeScanner?.startScanner()
+            // #232: guarded - startScanner() unbinds and rebinds even when
+            // the scanner already runs, so an unnecessary resume would
+            // blink the preview; only a stopped scanner restarts.
+            if (mCodeScanner?.isScannerRunning() != true) {
+                mCodeScanner?.startScanner()
+            }
         }
     }
 
@@ -304,6 +327,35 @@ class ScanPubKeyFragment : Fragment() {
         return fingerprintHex
     }
 
+    // #232: the shared invalid-payload policy, applied at the scanner. A
+    // repeat of the last admitted payload inside the window - the same QR
+    // held in frame, or the library's same-frame double-fire (setScanResult
+    // can invoke the QR callback twice per decoded frame) - never reaches
+    // the consumer.
+    private fun admitThroughGate(decoded: String): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+            return false
+        }
+        lastDecodePayload = decoded
+        lastDecodeAtMs = now
+        return true
+    }
+
+    // #232: the decode dispatch behind the gate. The old QR listener
+    // stopped the scanner BEFORE the consumer decided: valid payloads
+    // dismissed the sheet or advanced the pager, but the invalid
+    // dead-end arm only toasted, so the camera died under a live sheet
+    // (#232's frozen New-button preview). The stop moves behind the
+    // decision: consumed decodes stop the scanner, everything else
+    // keeps it running - no decode path can strand it.
+    private fun dispatch(decoded: String) {
+        if (!admitThroughGate(decoded)) return
+        if (onScan(decoded)) {
+            mCodeScanner.stopScanner()
+        }
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         view.findViewById<Button>(R.id.pastePubKey).text = "Paste"
         view.findViewById<Button>(R.id.pastePubKey).visibility =
@@ -312,51 +364,62 @@ class ScanPubKeyFragment : Fragment() {
         mCodeScanner.setLifeCycleOwner(this)
 
         val clipboard = context?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        mCodeScanner.setQRDecodeListener {
-            lifecycleScope.launch {
-                mCodeScanner.stopScanner()
-                onScan(it)
-            }
+        mCodeScanner.setQRDecodeListener { decoded ->
+            // #232: gate then dispatch - see dispatch() below.
+            dispatch(decoded)
         }
 
         mCodeScanner.setURDecodeListener { result ->
-            mCodeScanner.stopScanner()
+            // #232: no upfront stopScanner anymore - the invalid-UR arms
+            // only showed their dialogs and left the camera stopped after
+            // Ok, freezing the preview behind the dialog (#232's UR-dialog
+            // sibling of the frozen New-button scanner). The camera keeps
+            // running behind every dialog and every unconsumed decode;
+            // only a consumed decode stops it (dispatch()). The library
+            // re-invokes this listener per frame while a completed UR QR
+            // sits in frame, so every arm passes the gate - keyed on the
+            // payload each arm would hand onward, or the arm's error
+            // identity for the dialogs.
             result.fold(
                 onSuccess = {
                     val decoded = urPayloadDecoder?.invoke(it)
                     if (decoded != null) {
-                        onScan(decoded)
+                        dispatch(decoded)
                     }
                     else if (urPayloadDecoder != null) {
-                        MaterialAlertDialogBuilder(requireContext())
-                            .setTitle("Error decoding payload")
-                            .setPositiveButton("Ok") { dialog, which ->
-                                dialog.dismiss()
-                            }.show()
+                        if (admitThroughGate("ur-error-decoded-payload")) {
+                            MaterialAlertDialogBuilder(requireContext())
+                                .setTitle("Error decoding payload")
+                                .setPositiveButton("Ok") { dialog, which ->
+                                    dialog.dismiss()
+                                }.show()
+                        }
                     }
                     else {
                         val xpub = getXpubFromUR(it)
                         if (xpub != null) {
-                            onScan(xpub)
+                            dispatch(xpub)
                         }
                         else {
-                            MaterialAlertDialogBuilder(requireContext())
-                                .setTitle("Error decoding public key")
-                                .setPositiveButton("Ok") { dialog, which ->
-                                    dialog.dismiss()
-                                }.show()
-                            mCodeScanner.stopScanner()
+                            if (admitThroughGate("ur-error-public-key")) {
+                                MaterialAlertDialogBuilder(requireContext())
+                                    .setTitle("Error decoding public key")
+                                    .setPositiveButton("Ok") { dialog, which ->
+                                        dialog.dismiss()
+                                    }.show()
+                            }
                         }
                     }
                 },
                 onFailure = {
-                    MaterialAlertDialogBuilder(requireContext())
-                        .setTitle("Error decoding UR")
-                        .setMessage("Exception: ${it.message}")
-                        .setPositiveButton("Ok") { dialog, which ->
-                            dialog.dismiss()
-                        }.show()
-                    mCodeScanner.stopScanner()
+                    if (admitThroughGate("ur-error-${it.message}")) {
+                        MaterialAlertDialogBuilder(requireContext())
+                            .setTitle("Error decoding UR")
+                            .setMessage("Exception: ${it.message}")
+                            .setPositiveButton("Ok") { dialog, which ->
+                                dialog.dismiss()
+                            }.show()
+                    }
                 }
             )
         }

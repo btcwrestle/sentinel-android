@@ -31,10 +31,15 @@ class ImportLabelsScanBottomSheet : BottomSheetDialogFragment() {
         super.onViewCreated(view, savedInstanceState)
         scanFragment.setPasteVisible(false)
         scanFragment.setOnScanListener { payload ->
+            // #232: same pure action logic, new contract - the scanner's
+            // dispatch stops the camera when a decode is consumed, so the
+            // resumeScan() calls the unconsumed arms needed (the scanner
+            // never stopped) die with the upfront stop.
             when (val action = labelScanAction(payload)) {
                 is LabelScanAction.Import -> {
                     onLabelsDecoded?.invoke(action.jsonl)
                     dismiss()
+                    true
                 }
                 LabelScanAction.NotifyBbqrUnsupported -> {
                     Toast.makeText(
@@ -42,9 +47,9 @@ class ImportLabelsScanBottomSheet : BottomSheetDialogFragment() {
                         "BBQR label export not yet supported",
                         Toast.LENGTH_SHORT
                     ).show()
-                    scanFragment.resumeScan()
+                    false
                 }
-                LabelScanAction.IgnoreAndResume -> scanFragment.resumeScan()
+                LabelScanAction.IgnoreAndResume -> false
             }
         }
         scanFragment.setURPayloadDecoder(::labelsFromUR)
