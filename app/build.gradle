@@ -11,7 +11,7 @@ android {
     flavorDimensions "versionCode"
     defaultConfig {
         applicationId "com.samourai.sentinel"
-        minSdkVersion 23
+        minSdkVersion 24
         targetSdkVersion 33
         versionCode 55
         versionName '5.1.2'
@@ -52,7 +52,7 @@ android {
     }
     productFlavors {
         production {
-            minSdkVersion 23
+            minSdkVersion 24
             applicationId 'com.samourai.sentinel'
             targetSdkVersion 33
             versionCode 55

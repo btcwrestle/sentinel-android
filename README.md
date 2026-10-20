@@ -39,6 +39,7 @@ common root; upstream holds nothing we lack.
 | Dependency bumps one-family-per-PR (okhttp, coroutines, hummingbird) | done (#28, #29, #30) |
 | Build deprecation sweep + CI modernization (checkout v5, setup-java v5, ubuntu-26) | done (#33, #59) |
 | minSdk 21 -> 23 (Android 5.0/5.1 dropped) | done (#60) |
+| minSdk 23 -> 24 (Android 6.0 dropped) | done (#236) |
 | Tag-triggered release pipeline (APK + SHA-256) | done (#39, #63, #65, #67) |
 | Ordered catch arms for escape-class errors (ApiNotConfigured et al.) | done, partial (#103, #125, #131) |
 | Live tx-facts row retired; Confirmation renamed Confirmations | done (#119, #127) |
@@ -125,7 +126,7 @@ build-staging-apk artifacts, or build it:
     ./gradlew :app:assembleStagingDebug
 
 Requires a JDK 25+ compatible toolchain (Room runs via KSP; kapt is gone).
-minSdk is 23 (Android 6.0+).
+minSdk is 24 (Android 7.0+).
 
 ## Disclaimer
 
