@@ -7,9 +7,11 @@ import com.samourai.sentinel.data.db.entity.TxEntropy
 import com.samourai.sentinel.data.prevOut
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import timber.log.Timber
 import kotlin.math.log2
 
 /**
@@ -318,5 +320,94 @@ class TxEntropyIngestTest {
         assertNull(cache.rows[unresolvableTxid])
         assertNull(cache.rows[fetchFailedTxid])
         assertNull(cache.rows[failedTxid])
+    }
+
+    /**
+     * #264/#96 pin harness: a bare Timber.Tree capturing what the
+     * forest actually delivers, without touching android.util.Log
+     * (no Robolectric needed). Source-verified against Timber
+     * 4.7.1: the ONLY subclass seam is the abstract
+     * log(int, String?, String, Throwable?) - message @NotNull,
+     * tag/throwable @Nullable - and Tree.prepareLog is PRIVATE,
+     * appending the throwable's stack (message += "\n" + stack)
+     * before log() runs. The app-authored portion of a captured
+     * line is therefore everything before the first newline, and
+     * that is what assertMasked judges. The appended stack can
+     * carry a txid inside an exception message (FakeCache's does,
+     * deliberately kept realistic) - the #264 boundary class,
+     * out of this pin's scope by design.
+     */
+    private class CaptureTree : Timber.Tree() {
+        val lines = mutableListOf<String>()
+        override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+            lines += message
+        }
+    }
+
+    /**
+     * #264/#96: judges the app-authored portion of each captured
+     * line - the part before the newline that Timber 4.7.1's
+     * private prepareLog() appends the throwable's stack after
+     * (source-verified). The marker must be present - masking
+     * never silences - and the txid must not render unmasked.
+     */
+    private fun assertMasked(tree: CaptureTree, txid: String, marker: String) {
+        assertTrue(
+            "the containment arm must still log - never silence",
+            tree.lines.any { it.contains(marker) },
+        )
+        tree.lines.forEach { line ->
+            val appAuthored = line.substringBefore('\n')
+            assertFalse("app-authored line must not carry the txid: $appAuthored", appAuthored.contains(txid))
+            if (appAuthored.contains("txid=")) {
+                assertTrue("txid must render masked: $appAuthored", appAuthored.contains("txid=REDACTED"))
+            }
+        }
+    }
+
+    /**
+     * #264/#96: the engine-crash containment arm keeps its diagnostic
+     * line but renders no txid. The txid never carried diagnostic value
+     * here - the throwable identifies the failure, the local DB the row.
+     */
+    @Test
+    fun engineFailureLogMasksTheTxid() {
+        val txid = "0a".repeat(32)
+        val full = fullFiveByFive(txid)
+        val fetcher: suspend (String) -> Tx? = { full }
+        val cache = FakeCache()
+        val ingest = TxEntropyIngest(
+            cache, fetcher, ExplodingService(setOf(full.hash)),
+        )
+        val tree = CaptureTree()
+        Timber.plant(tree)
+        try {
+            runBlocking { ingest.ingestTxids(listOf(txid)) }
+        } finally {
+            Timber.uproot(tree)
+        }
+        assertMasked(tree, txid, "boltzmann engine failed")
+        assertTrue("engine failure must row the txid as tooComplex", cache.rows[txid]?.tooComplex == true)
+    }
+
+    /**
+     * #264/#96: the per-txid catch-all (cache/fetch/insert failures)
+     * masks the same correlator.
+     */
+    @Test
+    fun catchAllFailureLogMasksTheTxid() {
+        val txid = "0b".repeat(32)
+        val full = fullFiveByFive(txid)
+        val fetcher: suspend (String) -> Tx? = { full }
+        val cache = FakeCache(failInsertFor = setOf(txid))
+        val ingest = TxEntropyIngest(cache, fetcher)
+        val tree = CaptureTree()
+        Timber.plant(tree)
+        try {
+            runBlocking { ingest.ingestTxids(listOf(txid)) }
+        } finally {
+            Timber.uproot(tree)
+        }
+        assertMasked(tree, txid, "entropy ingest failed")
     }
 }

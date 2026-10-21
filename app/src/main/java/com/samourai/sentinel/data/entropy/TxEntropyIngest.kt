@@ -58,7 +58,8 @@ import timber.log.Timber
  * TxosAggregator.findDtrmLinks via the bailout's null) -
  * CancellationException is rethrown (cancellation is not
  * engine failure), anything else from analyze() logs with
- * the txid and writes the TooComplex arm's exact row shape,
+ * the txid masked (#264) and writes the TooComplex arm's
+ * exact row shape,
  * so the txid becomes a row and stops re-fetching forever.
  */
 class TxEntropyIngest(
@@ -166,9 +167,12 @@ class TxEntropyIngest(
                     } catch (t: Throwable) {
                         // The vendored engine's failure class (the
                         // 45-txid NPE exhibit): contained here, never
-                        // in the engine. Log with the txid; the
-                        // TooComplex arm rows it - stops re-fetching.
-                        Timber.e(t, "boltzmann engine failed txid=$bareTxid")
+                        // in the engine. Log masked (#264/#96): a
+                        // wallet txid is chain-analysis correlator
+                        // material, and the throwable + local DB
+                        // already identify the row. The TooComplex
+                        // arm rows it - stops re-fetching.
+                        Timber.e(t, "boltzmann engine failed txid=REDACTED")
                         engineFailedRow = true
                         BoltzmannTxAnalysis.TooComplex
                     }
@@ -211,7 +215,12 @@ class TxEntropyIngest(
             }
                 .onFailure {
                     failed++
-                    Timber.e(it, "boltzmann entropy ingest failed txid=$bareTxid")
+                    // #264/#96: masked - same correlator class as the
+                    // engine arm above. (The throwable's stack rides
+                    // this line too; an exception message embedding a
+                    // txid is the onion-class boundary decision,
+                    // tracked in #264.)
+                    Timber.e(it, "boltzmann entropy ingest failed txid=REDACTED")
                 }
         }
         return Result(analyzed, unresolvable, fetchFailed, engineFailed, failed)
