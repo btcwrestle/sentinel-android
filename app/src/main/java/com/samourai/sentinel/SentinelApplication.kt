@@ -25,6 +25,8 @@ import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.webview.ExplorerRepository
+import com.samourai.sentinel.util.LogRedaction
+import com.samourai.sentinel.util.MaskingDebugTree
 import com.samourai.sentinel.util.MonetaryUtil
 import com.samourai.sentinel.util.apiScope
 import com.samourai.sentinel.util.dataBaseScope
@@ -34,7 +36,6 @@ import org.koin.core.context.startKoin
 import org.koin.dsl.module
 import org.koin.java.KoinJavaComponent
 import timber.log.Timber
-import timber.log.Timber.DebugTree
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -54,7 +55,11 @@ class SentinelApplication : Application() {
 
 
         if (BuildConfig.DEBUG) {
-            Timber.plant(DebugTree())
+            // #264/#96: the onion-host class never appears in app-authored
+            // text - it rides exception messages that Timber 4.7.1's private
+            // prepareLog appends before log() runs, so the only seam that
+            // covers every call site at once is the planted Tree.
+            Timber.plant(MaskingDebugTree())
         } else {
             val cacheDir = File(this.applicationContext.cacheDir.toURI())
             if (!cacheDir.exists()) {
@@ -153,7 +158,10 @@ class SentinelApplication : Application() {
                     file.appendText(
                             "\n-Logged at: ${System.currentTimeMillis()}-\n" +
                                     "" +
-                                    " ${t.stackTraceToString()}"
+                                    // #264/#96: the stack carries onion hostnames inside
+                                    // exception messages - redact before the write, so the
+                                    // shareErrorLog export is masked by construction.
+                                    " ${LogRedaction.redact(t.stackTraceToString())}"
                     )
                 } catch (ex: Exception) {
                     throw CancellationException(ex.message)
