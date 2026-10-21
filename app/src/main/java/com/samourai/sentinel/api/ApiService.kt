@@ -396,8 +396,14 @@ open class ApiService {
             excludeAuthenticator: Boolean = false,
         ): OkHttpClient {
             val builder = OkHttpClient.Builder()
+            // #258/#96: debug HTTP logging is off. HEADERS printed every
+            // request line to logcat: the Dojo onion URL and the "at"
+            // access-token query parameter - the same leak class as the
+            // readPayload() pairing log. A masked HTTP logger (onion host
+            // + token redaction) is tracked in the #96 follow-up; until
+            // then, debug builds log nothing from the wire.
             if (BuildConfig.DEBUG) {
-                builder.addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.HEADERS))
+                builder.addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.NONE))
             }
             builder.callTimeout(60, TimeUnit.SECONDS)
             builder.readTimeout(90, TimeUnit.SECONDS)

@@ -10,7 +10,6 @@ import kotlinx.coroutines.*
 import okhttp3.Response
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
-import timber.log.Timber
 
 /**
  * sentinel-android
@@ -84,9 +83,13 @@ class DojoUtility {
     }
 
     private fun readPayload(): DojoPairing? {
+        // #258: no log here. Debug builds printed the whole pairing
+        // (apikey + onion URL) on every read; the data classes also
+        // redact their toString() now (see DojoPairing.kt), so no
+        // future log line can leak them by accident. One store read,
+        // one return - the old line parsed the payload twice.
         return if (dojoStore.file.exists()) {
-            Timber.d("${dbHandler.getDojoStore().read<DojoPairing>()}")
-            return dbHandler.getDojoStore().read<DojoPairing>()
+            dbHandler.getDojoStore().read<DojoPairing>()
         } else {
             null
         }
