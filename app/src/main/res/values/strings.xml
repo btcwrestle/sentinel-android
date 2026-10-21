@@ -393,4 +393,19 @@
     <string name="dojo_pairing_confirm_accept" translatable="false">Pair</string>
     <string name="dojo_pairing_confirm_decline" translatable="false">Don\'t pair</string>
     <string name="dojo_pairing_declined" translatable="false">Pairing discarded</string>
+
+    <!--
+      #256: pre-pair dialog row labels and post-pair receipt copy. The
+      verbose "Explorer: ..." phrasing dies with pairingConfirmationLines;
+      OK and dojo_unnamed are reused, not duplicated. Marked
+      translatable="false" to match the project's existing pattern of
+      English fallbacks for newer strings (see dojo_pairing_confirm_*
+      above).
+    -->
+    <string name="dojo_pairing_row_jurisdiction" translatable="false">Jurisdiction</string>
+    <string name="dojo_pairing_row_url" translatable="false">Dojo URL</string>
+    <string name="dojo_pairing_row_version" translatable="false">Dojo version</string>
+    <string name="dojo_pairing_row_explorer" translatable="false">Explorer</string>
+    <string name="dojo_pairing_success_title" translatable="false">Dojo paired</string>
+    <string name="dojo_pairing_success_message" translatable="false">Sentinel is now paired with</string>
 </resources>

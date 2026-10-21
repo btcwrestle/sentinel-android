@@ -60,6 +60,11 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
     var dojoDisplayName by stringPref(defaultValue = null)
     var dojoDisplayFlag by stringPref(defaultValue = null)
     var dojoDisplayUrl by stringPref(defaultValue = null)
+    // #256: jurisdiction declared by the directory for this node -
+    // display-only, snapshotted beside the trio above, cleared with the
+    // pairing (DojoUtility.clearDojo); rides export()/import()
+    // reflection like the rest.
+    var dojoDisplayJurisdiction by stringPref(defaultValue = null)
     // #119 Route A / #122: sibling explorer declared by the paired
     // Dojo's pairing payload (optional; absent = no self rung).
     // Snapshot written at the pairing capture sites, restored by
