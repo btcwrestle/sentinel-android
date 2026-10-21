@@ -110,6 +110,9 @@ class DojoUtility {
         prefsUtil.dojoDisplayName = null
         prefsUtil.dojoDisplayFlag = null
         prefsUtil.dojoDisplayUrl = null
+        // #256: jurisdiction is directory display metadata like the
+        // trio above - it dies with the pairing, never rides a re-pair.
+        prefsUtil.dojoDisplayJurisdiction = null
         prefsUtil.dojoExplorerUrl = null
         prefsUtil.dojoExplorerType = null
     }

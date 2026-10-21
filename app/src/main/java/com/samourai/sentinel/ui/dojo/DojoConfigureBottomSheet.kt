@@ -179,23 +179,115 @@ class PairingAckGate {
     }
 }
 
+// ---- #256: the pairing dialogs' display data, made pure ----
+//
+// The pre-pair confirmation and the post-pair receipt both render
+// from small pure functions over the payload + the directory
+// snapshot, so the dialog content stays testable without Android
+// machinery - the same shape as the #233/#234 layers above.
+
 /**
- * #234: the confirmation dialog's summary lines, derived from the
- * payload. The apikey is deliberately absent - it grants access to
- * the node (see DojoUtility.getPairing's FLAG_SECURE note). The
- * pairing type is invariant post-validate ("dojo.api" or the payload
- * never got this far), so the lines show what actually varies: the
- * URL, the declared version, and the sibling explorer when present.
+ * #256: the directory display snapshot the pairing dialogs read -
+ * written by the community list's select callback before the payload
+ * reaches this sheet, cleared by clearDojo() with its siblings. A
+ * snapshot renders only under the url-match guards below, so a stale
+ * directory label can never ride a manual QR pairing.
  */
-fun pairingConfirmationLines(pairing: DojoPairing): List<String> {
-    val lines = mutableListOf<String>()
-    pairing.pairing?.url?.takeIf { it.isNotBlank() }?.let { lines.add(it) }
-    pairing.pairing?.version?.takeIf { it.isNotBlank() }?.let { lines.add("Dojo $it") }
-    pairing.explorer?.url?.takeIf { it.isNotBlank() }?.let { url ->
-        val type = pairing.explorer?.type?.takeIf { it.isNotBlank() } ?: "explorer"
-        lines.add("Explorer: $type - $url")
+data class DojoDisplaySnapshot(
+    val url: String?,
+    val name: String?,
+    val flag: String?,
+    val jurisdiction: String?,
+)
+
+/**
+ * #256: the directory header for the pre-pair dialog. The name
+ * renders raw (nullable); the unnamed fallback is the binder's -
+ * a resource lookup, not logic.
+ */
+data class DojoDirectoryHeader(
+    val flag: String?,
+    val name: String?,
+)
+
+/**
+ * #256: the renderDirectoryHeader guard (DojoCredentialsBottomSheet),
+ * made pure: the snapshot renders only when its URL matches the
+ * payload's pairing URL and it carries a name or a flag. Null means
+ * no header - manual pairing, re-pair elsewhere, or a payload
+ * without directory metadata; absent means absent, never a
+ * placeholder.
+ */
+fun directoryHeader(
+    snapshot: DojoDisplaySnapshot?,
+    pairingUrl: String?,
+): DojoDirectoryHeader? {
+    if (pairingUrl == null) return null
+    val snap = snapshot ?: return null
+    if (snap.url != pairingUrl) return null
+    val name = snap.name?.takeIf { it.isNotBlank() }
+    val flag = snap.flag?.takeIf { it.isNotBlank() }
+    if (name == null && flag == null) return null
+    return DojoDirectoryHeader(flag, name)
+}
+
+/**
+ * #256: the pre-pair dialog's row values, payload + snapshot in. A
+ * row renders only when its value exists - absent means absent,
+ * never a placeholder. The URL row is the one guarantee (validate);
+ * the explorer row carries only the URL, the type string stays out
+ * (display/label-only per the DojoPairing census); jurisdiction is
+ * directory metadata and rides the same url-match guard as the
+ * header. The apikey is deliberately absent - it grants access to
+ * the node (see DojoUtility.getPairing's FLAG_SECURE note).
+ */
+data class PairingDetailRows(
+    val jurisdiction: String?,
+    val url: String?,
+    val version: String?,
+    val explorer: String?,
+)
+
+fun pairingDetailRows(
+    pairing: DojoPairing,
+    snapshot: DojoDisplaySnapshot?,
+): PairingDetailRows {
+    val pairingUrl = pairing.pairing?.url?.takeIf { it.isNotBlank() }
+    val jurisdiction = snapshot
+        ?.takeIf { pairingUrl != null && it.url == pairingUrl }
+        ?.jurisdiction?.takeIf { it.isNotBlank() }
+    return PairingDetailRows(
+        jurisdiction = jurisdiction,
+        url = pairingUrl,
+        version = pairing.pairing?.version?.takeIf { it.isNotBlank() },
+        explorer = pairing.explorer?.url?.takeIf { it.isNotBlank() },
+    )
+}
+
+/**
+ * #256: the receipt's ONE identity line - a fixed ladder, never
+ * blank, never a placeholder glyph:
+ *   1. directory pairing (snapshot url matches the paired url):
+ *      flag + name, the name falling back to the passed unnamed
+ *      label when the directory lists none;
+ *   2. manual/QR pairing: the Dojo URL - the node's only identity
+ *      in the payload;
+ *   3. a blank URL cannot happen past validate, but the ladder
+ *      still ends non-blank.
+ */
+fun pairingIdentityLine(
+    pairingUrl: String?,
+    snapshot: DojoDisplaySnapshot?,
+    unnamed: String,
+): String {
+    val url = pairingUrl?.takeIf { it.isNotBlank() }
+    val snap = snapshot?.takeIf { url != null && it.url == url }
+    if (snap != null) {
+        val flag = snap.flag?.takeIf { it.isNotBlank() }
+        val name = snap.name?.takeIf { it.isNotBlank() } ?: unnamed
+        return listOfNotNull(flag, name).joinToString(" ")
     }
-    return lines
+    return url ?: unnamed
 }
 
 class DojoConfigureBottomSheet : GenericBottomSheet() {
@@ -522,13 +614,18 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     /**
-     * #234: the acknowledgment dialog - what was paired, derived from
-     * the payload via pairingConfirmationLines (URL, declared version,
-     * sibling explorer), never the apikey (see DojoUtility.getPairing's
-     * FLAG_SECURE note). Non-cancelable by design: an outside tap
-     * silently discarding a pairing the user waited a full Tor
-     * bootstrap for would be the auto-advance bug inverted; both
-     * buttons resolve it. The connect page gets its success check
+     * #256: the pre-pair confirmation - a labeled-row view
+     * (dialog_dojo_pairing_details) instead of one long same-color
+     * string. The directory header and the Jurisdiction row render
+     * only for a matching directory snapshot; URL/Dojo
+     * version/Explorer rows render only when the payload carries
+     * them - absent means absent, never a placeholder. Title,
+     * lead-in and Pair/Don't-pair stay on the builder; the #234
+     * semantics are untouched. Non-cancelable by design: an outside
+     * tap silently discarding a pairing the user waited a full Tor
+     * bootstrap for would be the auto-advance bug inverted. The
+     * apikey never renders (see DojoUtility.getPairing's
+     * FLAG_SECURE note). The connect page keeps its success check
      * behind the dialog so the state is visible while the user
      * decides.
      */
@@ -536,13 +633,31 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         val pairing = pendingPairing ?: return
         if (context == null) return
         connectPage()?.showDojoProgressSuccess()
-        val lines = pairingConfirmationLines(pairing)
+        val snapshot = readDisplaySnapshot()
+        val rows = pairingDetailRows(pairing, snapshot)
+        val view = layoutInflater.inflate(R.layout.dialog_dojo_pairing_details, null)
+        val header = directoryHeader(snapshot, pairing.pairing?.url)
+        val headerRow = view.findViewById<View>(R.id.dojoPairingDirectoryHeader)
+        if (header != null) {
+            view.findViewById<TextView>(R.id.dojoPairingDirectoryName).text =
+                header.name ?: getString(R.string.dojo_unnamed)
+            val flagView = view.findViewById<TextView>(R.id.dojoPairingDirectoryFlag)
+            if (header.flag != null) {
+                flagView.text = header.flag
+                flagView.visibility = View.VISIBLE
+            } else {
+                flagView.visibility = View.GONE
+            }
+            headerRow.visibility = View.VISIBLE
+        }
+        bindDetailRow(view, R.id.dojoPairingJurisdictionRow, R.id.dojoPairingJurisdictionValue, rows.jurisdiction)
+        bindDetailRow(view, R.id.dojoPairingUrlRow, R.id.dojoPairingUrlValue, rows.url)
+        bindDetailRow(view, R.id.dojoPairingVersionRow, R.id.dojoPairingVersionValue, rows.version)
+        bindDetailRow(view, R.id.dojoPairingExplorerRow, R.id.dojoPairingExplorerValue, rows.explorer)
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(getString(R.string.dojo_pairing_confirm_title))
-            .setMessage(
-                getString(R.string.dojo_pairing_confirm_message) +
-                        "\n\n" + lines.joinToString("\n")
-            )
+            .setMessage(getString(R.string.dojo_pairing_confirm_message))
+            .setView(view)
             .setCancelable(false)
             .setPositiveButton(getString(R.string.dojo_pairing_confirm_accept)) { _, _ ->
                 onPairingConfirmTapped()
@@ -554,13 +669,42 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     /**
-     * #234: Confirm tapped - the commit the old success arm made
-     * inline, now behind the explicit tap: payload, endpoints, tokens,
-     * payload store, then the unchanged #159 dismissal seam
-     * (showDojoProgressSuccess, 500 ms, listener at most once). The
-     * gate spends itself on the first tap, so a double-tap that lands
-     * before the dialog window closes resolves to NOOP and cannot run
-     * this body twice.
+     * #256: the directory snapshot, read from the prefs the
+     * community list's select callback writes before the payload
+     * reaches this sheet (dojoDisplayUrl/Name/Flag and the new
+     * dojoDisplayJurisdiction); clearDojo() clears them with its
+     * siblings.
+     */
+    private fun readDisplaySnapshot(): DojoDisplaySnapshot =
+        DojoDisplaySnapshot(
+            prefsUtil.dojoDisplayUrl,
+            prefsUtil.dojoDisplayName,
+            prefsUtil.dojoDisplayFlag,
+            prefsUtil.dojoDisplayJurisdiction,
+        )
+
+    // #256: a detail row renders only when it carries real data -
+    // absent means absent, never a placeholder.
+    private fun bindDetailRow(view: View, rowId: Int, valueId: Int, value: String?) {
+        if (value == null) {
+            view.findViewById<View>(rowId).visibility = View.GONE
+        } else {
+            view.findViewById<TextView>(valueId).text = value
+            view.findViewById<View>(rowId).visibility = View.VISIBLE
+        }
+    }
+
+    /**
+     * #256: Confirm tapped - the commit the old success arm made
+     * inline, behind the explicit tap since #234: payload,
+     * endpoints, tokens, payload store, all unchanged. What #256
+     * changes is the after: instead of the sheet silently
+     * dismissing, the receipt shows and the #159 dismissal seam moves
+     * behind its OK - the xpub registration burst starts when the
+     * user has acknowledged, not the instant the write lands. The
+     * gate spends itself on the first tap, so a double-tap that
+     * lands before the dialog window closes resolves to NOOP and
+     * cannot run this body twice.
      */
     private fun onPairingConfirmTapped() {
         if (pairingAckGate.onUserConfirmed() != PairingAckDecision.COMMIT_AND_DISMISS) return
@@ -578,9 +722,48 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         apiScope.launch {
             dojoUtil.writePayload(pairing);
             withContext(Dispatchers.Main) {
-                dismissAllOrToast(true)
+                showPairingReceipt(node.url)
             }
         }
+    }
+
+    /**
+     * #256: the receipt - a plain dialog, no custom layout:
+     * "Sentinel is now paired with" plus ONE identity line (the pure
+     * ladder in pairingIdentityLine: directory pairing -> flag +
+     * name with the unnamed fallback; manual -> the URL; never
+     * blank) and a single OK. It confirms, it does not re-list - the
+     * pre-pair dialog just showed the rows and the user tapped Pair.
+     * Non-cancelable: an outside tap would strand the burst; OK is
+     * the only way out, and it fires the unchanged #159 dismissal
+     * seam (showDojoProgressSuccess, 500 ms, listener at most once).
+     * The green Dojo tick renders behind the dialog. If the sheet's
+     * context is already gone the receipt cannot show and the seam
+     * fires directly - the pairing is live, the burst must not
+     * strand on a dead window.
+     */
+    private fun showPairingReceipt(pairingUrl: String?) {
+        if (context == null) {
+            dismissAllOrToast(true)
+            return
+        }
+        connectPage()?.showDojoProgressSuccess()
+        val identity = pairingIdentityLine(
+            pairingUrl,
+            readDisplaySnapshot(),
+            getString(R.string.dojo_unnamed),
+        )
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.dojo_pairing_success_title))
+            .setMessage(
+                getString(R.string.dojo_pairing_success_message) +
+                        "\n\n" + identity
+            )
+            .setCancelable(false)
+            .setPositiveButton(getString(R.string.ok)) { _, _ ->
+                dismissAllOrToast(true)
+            }
+            .show()
     }
 
     /**

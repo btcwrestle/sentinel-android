@@ -2,6 +2,7 @@ package com.samourai.sentinel.ui.dojo
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -17,6 +18,12 @@ import org.junit.Test
  * Fixture domains are RFC 2606 reserved .example hosts: the CI remnant
  * guard (#68) greps app/src for samourai.(io|com) substrings, and any
  * realistic-looking host carrying that suffix fails the build.
+ *
+ * #256: the suite also pins the pairing dialogs' display data - the
+ * pre-pair detail rows (payload + directory snapshot; absent means
+ * absent, never a placeholder) and the post-pair receipt's identity
+ * ladder (directory flag + name, manual URL, never blank). Pure
+ * functions, no Android machinery.
  */
 class PairingAckGateTest {
 
@@ -83,6 +90,18 @@ class PairingAckGateTest {
     }
 
     @Test
+    fun `a stray success after confirm is a no-op`() {
+        val gate = PairingAckGate()
+        gate.onPairingSuccess()
+        gate.onUserConfirmed()
+        // An in-flight re-fire answering 200 after the commit has run
+        // and the receipt flow has begun: the decision stands, nothing
+        // re-arms - not behind the pre-pair dialog, not behind the
+        // receipt.
+        assertEquals(PairingAckDecision.NOOP, gate.onPairingSuccess())
+    }
+
+    @Test
     fun `taps before any success are no-ops`() {
         val gate = PairingAckGate()
         assertEquals(PairingAckDecision.NOOP, gate.onUserConfirmed())
@@ -90,14 +109,15 @@ class PairingAckGateTest {
     }
 
     //
-    // Leg 3: the confirmation summary - payload-derived, apikey-free.
+    // Leg 3 (#256): the dialogs' display data - detail rows, header
+    // guard, identity ladder. Fixtures are RFC 2606 .example hosts.
     //
 
-    private val fullPayload = DojoPairing(
+    private val communityPairing = DojoPairing(
         pairing = Pairing(
             apikey = "secret-api-key",
             type = "dojo.api",
-            url = "http://dojo.example",
+            url = "http://community.example",
             version = "1.19.1",
         ),
         explorer = Explorer(
@@ -106,40 +126,139 @@ class PairingAckGateTest {
         ),
     )
 
+    private val communitySnapshot = DojoDisplaySnapshot(
+        url = "http://community.example",
+        name = "Directory Dojo",
+        flag = "SG",
+        jurisdiction = "Singapore",
+    )
+
+    private val manualPairing = DojoPairing(
+        pairing = Pairing(url = "http://manual.example"),
+        explorer = null,
+    )
+
     @Test
-    fun `summary shows url version and explorer`() {
+    fun `detail rows carry directory metadata for a community pairing`() {
         assertEquals(
-            listOf(
-                "http://dojo.example",
-                "Dojo 1.19.1",
-                "Explorer: btc_rpc_explorer - http://explorer.example",
+            DojoDirectoryHeader(flag = "SG", name = "Directory Dojo"),
+            directoryHeader(communitySnapshot, communityPairing.pairing?.url),
+        )
+        assertEquals(
+            PairingDetailRows(
+                jurisdiction = "Singapore",
+                url = "http://community.example",
+                version = "1.19.1",
+                explorer = "http://explorer.example",
             ),
-            pairingConfirmationLines(fullPayload),
+            pairingDetailRows(communityPairing, communitySnapshot),
         )
     }
 
     @Test
-    fun `summary drops blanks and never contains the apikey`() {
+    fun `detail rows omit directory metadata for a manual pairing`() {
+        // The payload carries none of it; absent means absent, never a
+        // placeholder row.
+        assertNull(directoryHeader(null, manualPairing.pairing?.url))
+        assertEquals(
+            PairingDetailRows(
+                jurisdiction = null,
+                url = "http://manual.example",
+                version = null,
+                explorer = null,
+            ),
+            pairingDetailRows(manualPairing, null),
+        )
+    }
+
+    @Test
+    fun `a stale snapshot never renders`() {
+        // Directory metadata snapshotted for a different node: the
+        // url-match guard keeps it out of every dialog - a stale
+        // directory label can never ride this pairing.
+        val stale = communitySnapshot.copy(url = "http://elsewhere.example")
+        assertNull(directoryHeader(stale, communityPairing.pairing?.url))
+        assertNull(pairingDetailRows(communityPairing, stale).jurisdiction)
+        assertEquals(
+            "http://community.example",
+            pairingIdentityLine(communityPairing.pairing?.url, stale, "Unnamed Dojo"),
+        )
+    }
+
+    @Test
+    fun `detail rows drop absent optional payload rows`() {
         val bare = DojoPairing(
             pairing = Pairing(url = "http://onlyurl.example"),
             explorer = null,
         )
-        assertEquals(listOf("http://onlyurl.example"), pairingConfirmationLines(bare))
-        val untypedExplorer = DojoPairing(
-            pairing = Pairing(url = "http://onlyurl.example"),
-            explorer = Explorer(type = "", url = "http://expl.example"),
-        )
+        val rows = pairingDetailRows(bare, null)
+        // The URL row is the one guarantee (validate); version,
+        // explorer and jurisdiction are absent, not blank-rendered.
+        assertEquals("http://onlyurl.example", rows.url)
+        assertNull(rows.version)
+        assertNull(rows.explorer)
+        assertNull(rows.jurisdiction)
+    }
+
+    @Test
+    fun `identity ladder resolves community nameless manual and never blank`() {
+        // 1. Directory pairing: flag + name.
         assertEquals(
-            listOf(
-                "http://onlyurl.example",
-                "Explorer: explorer - http://expl.example",
-            ),
-            pairingConfirmationLines(untypedExplorer),
+            "SG Directory Dojo",
+            pairingIdentityLine("http://community.example", communitySnapshot, "Unnamed Dojo"),
         )
-        // The apikey grants access to the node; it must never reach the
-        // dialog (see DojoUtility.getPairing's FLAG_SECURE note).
-        pairingConfirmationLines(fullPayload).forEach { line ->
-            assertFalse(line.contains("secret-api-key"))
+        // 1b. Directory pairing, nameless node: flag + the unnamed
+        // fallback (R.string.dojo_unnamed at runtime).
+        assertEquals(
+            "SG Unnamed Dojo",
+            pairingIdentityLine(
+                "http://community.example",
+                communitySnapshot.copy(name = null),
+                "Unnamed Dojo",
+            ),
+        )
+        // 2. Manual/QR pairing: the URL - the node's only identity in
+        // the payload.
+        assertEquals(
+            "http://manual.example",
+            pairingIdentityLine("http://manual.example", null, "Unnamed Dojo"),
+        )
+        // 3. Never blank: no URL, no snapshot - the fallback lands.
+        assertEquals(
+            "Unnamed Dojo",
+            pairingIdentityLine(null, null, "Unnamed Dojo"),
+        )
+    }
+
+    @Test
+    fun `blank snapshot fields are dropped, never rendered`() {
+        // Blank is null's twin under the takeIf filters: the guards
+        // drop it, no row or glyph renders for it.
+        val blanks = DojoDisplaySnapshot(
+            url = "http://community.example",
+            name = " ",
+            flag = "",
+            jurisdiction = "  ",
+        )
+        assertNull(directoryHeader(blanks, "http://community.example"))
+        assertNull(pairingDetailRows(communityPairing, blanks).jurisdiction)
+        assertEquals(
+            "Unnamed Dojo",
+            pairingIdentityLine("http://community.example", blanks, "Unnamed Dojo"),
+        )
+    }
+
+    @Test
+    fun `the apikey never reaches any dialog data`() {
+        // It grants access to the node (see DojoUtility.getPairing's
+        // FLAG_SECURE note); rows, header and identity carry none of
+        // it. Pinned so a future field addition fails loudly.
+        val rows = pairingDetailRows(communityPairing, communitySnapshot)
+        listOf(rows.jurisdiction, rows.url, rows.version, rows.explorer).forEach { value ->
+            assertFalse(value?.contains("secret-api-key") == true)
         }
+        val header = directoryHeader(communitySnapshot, communityPairing.pairing?.url)
+        assertFalse(header?.flag?.contains("secret-api-key") == true)
+        assertFalse(header?.name?.contains("secret-api-key") == true)
     }
 }
