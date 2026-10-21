@@ -365,7 +365,6 @@
     <string name="invalid_pairing_payload">Invalid pairing payload</string>
     <string name="invalid_payload">Invalid payload</string>
     <string name="dojo_connect_error">Error: %1$s</string>
-    <string name="dojo_connect_failed">Unable to connect to Dojo. Please try again</string>
     <string name="dojo_pairing_details_unavailable">No Dojo pairing details available</string>
     <string name="no_api_key_found">No API key found</string>
     <string name="dojo_qr_render_failed">Could not render pairing QR code</string>
@@ -393,6 +392,18 @@
     <string name="dojo_pairing_confirm_accept" translatable="false">Pair</string>
     <string name="dojo_pairing_confirm_decline" translatable="false">Don\'t pair</string>
     <string name="dojo_pairing_declined" translatable="false">Pairing discarded</string>
+
+    <!--
+      #261: the deliberate post-consent failure toast. Pair can now fail
+      AFTER the user tapped Pair (stale key, node down, Tor timeout) - a
+      window that did not exist when the gate sat after the 200. Wording
+      says exactly what the state is: nothing committed, no wallet data
+      out. Replaces dojo_connect_failed (removed: its only caller was
+      this sheet's generic fail toast). Marked translatable="false" to
+      match the project's existing pattern of English fallbacks for
+      newer strings (see dojo_pairing_confirm_* above).
+    -->
+    <string name="dojo_pairing_failed" translatable="false">Pairing failed. Nothing was paired and no wallet data was sent</string>
 
     <!--
       #256: pre-pair dialog row labels and post-pair receipt copy. The
