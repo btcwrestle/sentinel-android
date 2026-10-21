@@ -6,14 +6,16 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * #234: pins the pairing acknowledgment gate. The old success arm
- * committed the pairing inline (prefs, tokens, payload store) and
- * auto-advanced: the listener fired 500 ms later and NetworkActivity
- * started the xpub registration burst with no user gate anywhere.
- *
- * These legs are the old bug inverted: a path from pairing success to
- * listener-fire that does not pass through onUserConfirmed(), or a
- * double-tap window that runs the commit twice, fails this suite.
+ * #234/#261: pins the pairing decision gate. The old success arm of
+ * setDojoPost committed the pairing inline and auto-advanced; #234 put
+ * the commit behind an explicit tap - but the tap still came AFTER the
+ * /auth/login POST, so the apikey left the device and the attempt sat
+ * in the Dojo's logs before the user decided anything. #261 inverts
+ * the order: selection arms the confirmation dialog with ZERO network
+ * contact, decline is zero contact, and Pair spends the gate on the
+ * connect - the first network byte of the flow. One dialog, one
+ * decision, one POST per sheet; every racing or repeat event is a
+ * no-op.
  *
  * Fixture domains are RFC 2606 reserved .example hosts: the CI remnant
  * guard (#68) greps app/src for samourai.(io|com) substrings, and any
@@ -28,37 +30,40 @@ import org.junit.Test
 class PairingAckGateTest {
 
     //
-    // Leg 1: success arms the gate exactly once.
+    // Leg 1 (#261): selection arms the gate exactly once - the dialog
+    // opens before any network contact, once per sheet.
     //
 
     @Test
-    fun `pairing success arms the confirmation once and a re-fire is a no-op`() {
+    fun `selection arms the confirmation once and a re-selection is a no-op`() {
         val gate = PairingAckGate()
-        assertEquals(PairingAckDecision.SHOW_CONFIRMATION, gate.onPairingSuccess())
-        // Any re-fire landing while the dialog is already up: one
-        // dialog, one decision.
-        assertEquals(PairingAckDecision.NOOP, gate.onPairingSuccess())
+        assertEquals(PairingAckDecision.SHOW_CONFIRMATION, gate.onPairingSelected())
+        // Any re-selection landing while the dialog is up: one
+        // dialog, one decision, one sheet.
+        assertEquals(PairingAckDecision.NOOP, gate.onPairingSelected())
     }
 
     //
     // Leg 2: each terminal tap resolves exactly once; every racing or
-    // repeat tap is a no-op.
+    // repeat tap is a no-op. Pair spends the gate on the connect (the
+    // first network contact of the flow); decline spends it with zero
+    // contact.
     //
 
     @Test
-    fun `confirm commits and dismisses exactly once`() {
+    fun `confirm starts the connect exactly once`() {
         val gate = PairingAckGate()
-        gate.onPairingSuccess()
-        assertEquals(PairingAckDecision.COMMIT_AND_DISMISS, gate.onUserConfirmed())
+        gate.onPairingSelected()
+        assertEquals(PairingAckDecision.START_CONNECT, gate.onUserConfirmed())
         // The dialog dismisses on the first tap; a double-tap that
-        // lands before the window closes must not run the commit twice.
+        // lands before the window closes must not fire a second POST.
         assertEquals(PairingAckDecision.NOOP, gate.onUserConfirmed())
     }
 
     @Test
     fun `decline discards and dismisses exactly once`() {
         val gate = PairingAckGate()
-        gate.onPairingSuccess()
+        gate.onPairingSelected()
         assertEquals(PairingAckDecision.DISCARD_AND_DISMISS, gate.onUserDeclined())
         assertEquals(PairingAckDecision.NOOP, gate.onUserDeclined())
     }
@@ -66,7 +71,7 @@ class PairingAckGateTest {
     @Test
     fun `decline after confirm is a no-op`() {
         val gate = PairingAckGate()
-        gate.onPairingSuccess()
+        gate.onPairingSelected()
         gate.onUserConfirmed()
         assertEquals(PairingAckDecision.NOOP, gate.onUserDeclined())
     }
@@ -74,35 +79,28 @@ class PairingAckGateTest {
     @Test
     fun `confirm after decline is a no-op`() {
         val gate = PairingAckGate()
-        gate.onPairingSuccess()
+        gate.onPairingSelected()
         gate.onUserDeclined()
         assertEquals(PairingAckDecision.NOOP, gate.onUserConfirmed())
     }
 
     @Test
-    fun `a stray success after the user declined never re-arms`() {
+    fun `a stray re-selection after the decision never re-arms`() {
         val gate = PairingAckGate()
-        gate.onPairingSuccess()
-        gate.onUserDeclined()
-        // An in-flight retry POST answering 200 after the decline:
-        // the user's decision stands, nothing arms again.
-        assertEquals(PairingAckDecision.NOOP, gate.onPairingSuccess())
-    }
-
-    @Test
-    fun `a stray success after confirm is a no-op`() {
-        val gate = PairingAckGate()
-        gate.onPairingSuccess()
+        gate.onPairingSelected()
         gate.onUserConfirmed()
-        // An in-flight re-fire answering 200 after the commit has run
-        // and the receipt flow has begun: the decision stands, nothing
-        // re-arms - not behind the pre-pair dialog, not behind the
-        // receipt.
-        assertEquals(PairingAckDecision.NOOP, gate.onPairingSuccess())
+        // A second selection fire after Pair: spent is spent, nothing
+        // arms again - not behind the POST, not behind the receipt.
+        assertEquals(PairingAckDecision.NOOP, gate.onPairingSelected())
+        val declinedGate = PairingAckGate()
+        declinedGate.onPairingSelected()
+        declinedGate.onUserDeclined()
+        // Same law on the decline arm: the Dojo never hears a whisper.
+        assertEquals(PairingAckDecision.NOOP, declinedGate.onPairingSelected())
     }
 
     @Test
-    fun `taps before any success are no-ops`() {
+    fun `taps before any selection are no-ops`() {
         val gate = PairingAckGate()
         assertEquals(PairingAckDecision.NOOP, gate.onUserConfirmed())
         assertEquals(PairingAckDecision.NOOP, gate.onUserDeclined())

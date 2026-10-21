@@ -116,43 +116,56 @@ fun buildPairingClient(torProxy: Proxy): OkHttpClient {
     return builder.build()
 }
 
-// ---- #234: the pairing acknowledgment, made pure ----
+// ---- #234/#261: the pairing decision, made pure ----
 //
-// The success arm of setDojoPost used to commit the pairing inline
-// (prefs, tokens, payload store) and auto-advance: dismissAllOrToast
-// fired the listener 500 ms later and NetworkActivity started the xpub
-// registration burst - no user gate anywhere between the 200 and the
-// burst. Pairing is a trust decision (all wallet traffic flows to that
-// node from then on), so the commit now waits for an explicit tap, and
-// the gate below is the whole decision table. It is also the seam
-// #250's network guard rides: a cross-network payload is another
-// decision that belongs before the first write, not after it.
+// (#234) The success arm of setDojoPost used to commit the pairing
+// inline (prefs, tokens, payload store) and auto-advance:
+// dismissAllOrToast fired the listener 500 ms later and NetworkActivity
+// started the xpub registration burst - no user gate anywhere between
+// the 200 and the burst. Pairing is a trust decision (all wallet
+// traffic flows to that node from then on), so the commit waits for an
+// explicit tap, and the gate below is the whole decision table. It is
+// also the seam #250's network guard rides: a cross-network payload is
+// another decision that belongs before the first write, not after it.
+//
+// (#261) The tap still came too late: the /auth/login POST - apikey in
+// the body - left the device BEFORE the dialog, so the Dojo logged the
+// attempt and held the access credential before the user decided
+// anything. The table below inverts the order: SELECTION arms the
+// dialog (validate passed - there is nothing to wait for), decline is
+// zero contact, and Pair is the first network byte of the flow. The
+// commit stays double-gated - the explicit tap, then the 200
+// (commitPairing) - so the receipt confirms an attempt the user
+// consented to, not a decision trailing an exchange that already
+// succeeded.
 
 /**
- * #234: what the sheet may do around the pairing acknowledgment.
- * Top-level so the negative tests can pin the double-tap and
- * tap-after-decline windows without loading any Android machinery.
+ * #234/#261: what the sheet may do around the pairing decision.
+ * Top-level so the negative tests can pin the double-tap,
+ * tap-after-decline and re-selection windows without loading any
+ * Android machinery.
  */
-enum class PairingAckDecision { SHOW_CONFIRMATION, COMMIT_AND_DISMISS, DISCARD_AND_DISMISS, NOOP }
+enum class PairingAckDecision { SHOW_CONFIRMATION, START_CONNECT, DISCARD_AND_DISMISS, NOOP }
 
 /**
- * #234: pure transition table for the pairing acknowledgment.
- * Success arms SHOW_CONFIRMATION exactly once - a re-fire landing
- * while the dialog is up is a NOOP, so there is one dialog and one
- * decision per pairing. CONFIRM commits and dismisses exactly once;
- * DECLINE discards and dismisses exactly once. Either terminal tap
- * spends the gate: the dialog dismisses on the first tap, so any
- * second tap - and any stray success that lands after the user has
- * decided - resolves to NOOP. The user's decision, once made, stands.
- * Synchronized because the arm arrives on the OkHttp dispatcher
- * thread while the taps arrive on main.
+ * #234/#261: pure transition table for the pairing decision.
+ * SELECTION arms SHOW_CONFIRMATION exactly once - a re-selection
+ * landing while the dialog is up is a NOOP, so there is one dialog and
+ * one decision per sheet. Pair spends the gate on START_CONNECT - the
+ * first network contact of the flow - and decline spends it on
+ * DISCARD_AND_DISMISS with zero contact. Either terminal tap spends the
+ * gate: the dialog dismisses on the first tap, so any second tap
+ * resolves to NOOP. The user's decision, once made, stands. Every entry
+ * arrives on main today (selection, dialog taps); @Synchronized stays
+ * as defense for any future off-main arm, mirroring the sheet's
+ * mainHandler idiom.
  */
 class PairingAckGate {
     private var awaitingConfirmation = false
     private var spent = false
 
     @Synchronized
-    fun onPairingSuccess(): PairingAckDecision = when {
+    fun onPairingSelected(): PairingAckDecision = when {
         spent || awaitingConfirmation -> PairingAckDecision.NOOP
         else -> {
             awaitingConfirmation = true
@@ -164,7 +177,7 @@ class PairingAckGate {
     fun onUserConfirmed(): PairingAckDecision = when {
         awaitingConfirmation && !spent -> {
             spent = true
-            PairingAckDecision.COMMIT_AND_DISMISS
+            PairingAckDecision.START_CONNECT
         }
         else -> PairingAckDecision.NOOP
     }
@@ -294,13 +307,11 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var payloadPassed: String? = null;
     private var dojoConfigurationListener: DojoConfigurationListener? = null
     private val prefsUtil: PrefsUtil by KoinJavaComponent.inject(PrefsUtil::class.java);
-    private var numRetries = 0
 
-    // #233: single-flight for the bounded Tor wait. setDojo() re-enters
-    // from the Tor observer and the #176 retry timer while Tor is still
-    // bootstrapping; without this latch every not-ready entry would
-    // stack its own awaitTorReady and the POST would fire once per
-    // waiter at readiness.
+    // #233: single-flight for the bounded Tor wait. #261 narrowed the
+    // entries to the Pair tap alone (the gate spends it exactly once),
+    // so the latch is defense now - kept because a stacked await is
+    // still a stacked POST at readiness.
     private var torDeferJob: Job? = null
 
     // #159: the dismissal seam. The listener fires at most once per
@@ -313,14 +324,12 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
 
     private var payload: String = ""
 
-    // #234: the acknowledgment gate and the success arm's commit
-    // inputs. Nothing commits until onUserConfirmed() resolves to
-    // COMMIT_AND_DISMISS; decline never entered the commit, so there
-    // is nothing to unwind. The mainHandler.post on the success arm
-    // publishes these writes to the main thread before any read.
+    // #234/#261: the decision gate. #261 moved it before the first
+    // network contact: selection arms the dialog, the taps spend it.
+    // The pendingPairing/pendingAuthBody staging fields died with the
+    // old order - the dialog parses the payload directly, and the
+    // response rides mainHandler into commitPairing() by closure.
     private val pairingAckGate = PairingAckGate()
-    private var pendingPairing: DojoPairing? = null
-    private var pendingAuthBody: JSONObject? = null
 
     private val dojoUtil: DojoUtility by KoinJavaComponent.inject(DojoUtility::class.java);
 
@@ -345,15 +354,6 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private var torSuccessShown = false
     private var dojoProgressShown = false
     private var dojoSuccessShown = false
-
-    // #260: the Tor-ON handoff latch. The old observer gated
-    // setDojo() on the tor checkmark RENDER succeeding - a Tor-ON
-    // landing inside the same view-creation window dropped the
-    // pairing START, not just the paint. The handoff now runs
-    // exactly once per sheet lifetime, view or no view; the
-    // checkmark renders from torSuccessShown, and an ON re-fire
-    // still cannot stack a second POST.
-    private var torHandoffDone = false
 
     // #231: registered in setUpViewPager, unregistered in onDestroyView.
     private var pagerCallback: ViewPager2.OnPageChangeCallback? = null
@@ -483,7 +483,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             return
         }
         connectStarted = true
-        startTorAndConnect()
+        startTorAndPresentPairing()
     }
 
     /**
@@ -511,13 +511,27 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
         if (dojoSuccessShown) page.showDojoProgressSuccess()
     }
 
-    private fun startTorAndConnect() {
+    /**
+     * #261: Tor lifecycle + the decision, in that order. The pairing
+     * dialog opens BEFORE any network contact - the Dojo never learns
+     * the attempt existed until the user taps Pair. Tor bootstrap is
+     * not Dojo contact (circuit building touches the Tor network,
+     * never the node), so the daemon still starts at selection: the
+     * bootstrap overlaps the user reading the dialog, and the #260
+     * latch renders the Tor spinner behind it across the
+     * view-creation race. The observer below is indicator-only - the
+     * POST start lives behind the Pair tap now, so the old handoff
+     * latch (torHandoffDone) died with the arm it guarded.
+     */
+    private fun startTorAndPresentPairing() {
+        if (pairingAckGate.onPairingSelected() == PairingAckDecision.SHOW_CONFIRMATION) {
+            showPairingConfirmation()
+        }
         if (SentinelTorManager.getTorState().state == EnumTorState.ON) {
             // #260: latched, not single-shot - the tor checkmark
             // renders even if the page's view is still mid-creation.
             torSuccessShown = true
             renderConnectPageState()
-            setDojo()
         } else {
             setUpTor()
             // #170: pairing start, no stomp on the user's toggle.
@@ -527,30 +541,28 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             renderConnectPageState()
             SentinelTorManager.getTorStateLiveData().observe(this) {
                 if (it.state == EnumTorState.ON) {
-                    // #260: the handoff runs exactly once per sheet
-                    // lifetime - the old render gate doubled as the
-                    // ON re-fire guard and as a dropped-start window
-                    // (view mid-creation: the pairing never started).
-                    // The latch owns the single-flight; the checkmark
-                    // renders from torSuccessShown.
-                    if (!torHandoffDone) {
-                        torHandoffDone = true
-                        torSuccessShown = true
-                        renderConnectPageState()
-                        setDojo()
-                    }
+                    // #261: indicator-only. The old observer gated
+                    // setDo() on the checkmark rendering - a Tor-ON
+                    // landing inside the view-creation window dropped
+                    // the pairing START (#260's harsher cold-Tor
+                    // variant) - and single-flighted it with a handoff
+                    // latch. With the POST behind Pair there is nothing
+                    // to start here, and the #260 latch carries the
+                    // render across the race.
+                    torSuccessShown = true
+                    renderConnectPageState()
                 }
             }
         }
     }
 
     /**
-     * #233: the pairing gate. Every entry - connect latch, Tor
-     * observer, #176 retry timer - re-decides at CALL TIME, because the
-     * readiness inputs move under the sheet (ON@boot=5 -> listener ->
-     * boot=100). The gate is the whole fix: the client is built only on
-     * the POST_NOW arm, so it is never CONSTRUCTED in the
-     * ON-but-not-ready state, let alone fired.
+     * #233: the pairing gate. #261: entered from the Pair tap alone -
+     * strictly post-consent, the first network byte of the flow. It
+     * re-decides at CALL TIME because the readiness inputs move under
+     * the sheet (ON@boot=5 -> listener -> boot=100): the client is
+     * built only on the POST_NOW arm, so it is never CONSTRUCTED in
+     * the ON-but-not-ready state, let alone fired.
      */
     private fun setDojo() {
         when (pairingTorDecision(
@@ -624,20 +636,20 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                     val body = response.body?.string() ?: "{}"
                     if (response.code == 401 || (response.isSuccessful && !body.contains("authorizations"))) {
                         Log.d("DojoConfiguration", "Unauthorized: wrong API key")
+                        // #261: newly reachable AFTER consent - the
+                        // deliberate wording lives in dismissAllOrToast.
                         dismissAllOrToast(false)
                     }
                     else if (response.isSuccessful) {
-                        // #234: success arms the acknowledgment gate -
-                        // nothing commits until the user taps. The gate
-                        // takes SHOW_CONFIRMATION once; any re-fire that
-                        // lands here while the dialog is already up
-                        // resolves to NOOP. The commit body itself moved,
-                        // verbatim, into onPairingConfirmTapped().
-                        if (pairingAckGate.onPairingSuccess() == PairingAckDecision.SHOW_CONFIRMATION) {
-                            pendingPairing = pairing
-                            pendingAuthBody = JSONObject(body)
-                            mainHandler.post { showPairingConfirmation() }
-                        }
+                        // #261: consent is already spent - the Pair tap
+                        // preceded this response - so a 200 commits
+                        // directly. The gate has nothing left to decide
+                        // here (its old arm was the dialog, which now
+                        // opens on selection); the pairing and the auth
+                        // body ride the mainHandler closure into
+                        // commitPairing(), the exact commit body #234
+                        // gated and #256 receipted.
+                        mainHandler.post { commitPairing(pairing, JSONObject(body)) }
                     }  else {
                         dismissAllOrToast(false)
                     }
@@ -646,16 +658,14 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 override fun onFailure(call: Call, e: IOException) {
                     // e.message can be null; `!!` here crashed inside the failure handler.
                     // #176: this arm decides nothing on the OkHttp dispatcher
-                    // thread anymore. Both failure kinds take the #159 capped
-                    // retry arm - resolve-host included, which used to sleep
-                    // 5s right here and re-enter setDojo() off-main, uncapped,
-                    // for as long as the proxy lived. The numRetries cap in
-                    // dismissAllOrToast bounds it now: three timer-driven
-                    // retries on the main looper, then toast-and-dismiss.
-                    // setDojo() is entered from main only (connect latch, Tor
-                    // observer, retry timer).
+                    // thread anymore - everything routes through the main
+                    // looper. The old uncapped sleep-and-re-POST spin (5 s
+                    // on this very thread) was first capped by the
+                    // numRetries timer arm; #261 removes the auto-retry
+                    // entirely: a retry starts a fresh decision in a fresh
+                    // sheet, never a re-POST behind a spent gate.
                     mainHandler.post {
-                        dismissAllOrToast(false, true)
+                        dismissAllOrToast(false)
                     }
                 }
             })
@@ -681,20 +691,32 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
      * only for a matching directory snapshot; URL/Dojo
      * version/Explorer rows render only when the payload carries
      * them - absent means absent, never a placeholder. Title,
-     * lead-in and Pair/Don't-pair stay on the builder; the #234
-     * semantics are untouched. Non-cancelable by design: an outside
-     * tap silently discarding a pairing the user waited a full Tor
-     * bootstrap for would be the auto-advance bug inverted. The
-     * apikey never renders (see DojoUtility.getPairing's
-     * FLAG_SECURE note). The connect page keeps its success check
-     * behind the dialog so the state is visible while the user
-     * decides.
+     * lead-in and Pair/Don't-pair stay on the builder. Non-cancelable
+     * by design: an outside tap would be a silent decline, and the
+     * explicit buttons own the decision. The apikey never renders
+     * (see DojoUtility.getPairing's FLAG_SECURE note). #261: the
+     * dialog opens BEFORE any network contact - directly on
+     * selection - so the success checkmark that used to render behind
+     * it (the dialog meant "authenticated") is gone: nothing has
+     * succeeded yet, and the tick lands behind the receipt, where it
+     * tells the truth.
      */
     private fun showPairingConfirmation() {
-        val pairing = pendingPairing ?: return
         if (context == null) return
-        dojoSuccessShown = true
-        renderConnectPageState()
+        // #261: parse straight from the payload - no 200 preceded this
+        // dialog anymore. validate() gated every entry path on this very
+        // string (fromJSON is deterministic), so the null arm is pure
+        // defense: pre-contact, dismiss, invalid-payload toast, zero
+        // network bytes.
+        val pairing = fromJSON<DojoPairing>(payload)
+        if (pairing == null) {
+            mainHandler.post {
+                dismiss()
+                if (context != null)
+                    Toast.makeText(context, getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         val snapshot = readDisplaySnapshot()
         val rows = pairingDetailRows(pairing, snapshot)
         val view = layoutInflater.inflate(R.layout.dialog_dojo_pairing_details, null)
@@ -757,23 +779,35 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     /**
-     * #256: Confirm tapped - the commit the old success arm made
-     * inline, behind the explicit tap since #234: payload,
-     * endpoints, tokens, payload store, all unchanged. What #256
-     * changes is the after: instead of the sheet silently
-     * dismissing, the receipt shows and the #159 dismissal seam moves
-     * behind its OK - the xpub registration burst starts when the
-     * user has acknowledged, not the instant the write lands. The
-     * gate spends itself on the first tap, so a double-tap that
-     * lands before the dialog window closes resolves to NOOP and
-     * cannot run this body twice.
+     * #261: Pair tapped - the consent is spent and the connect
+     * starts. The gate resolves to START_CONNECT exactly once; any
+     * double-tap that lands before the dialog window closes is a
+     * NOOP. The "Connecting to Dojo" wheel latches up from this tap
+     * (#260), covering the DEFER wait too if Tor is still
+     * bootstrapping, and setDo() runs - the POST decision, the first
+     * network contact of the flow, strictly after the decision. The
+     * commit waits for the 200: commitPairing(), off the response.
      */
     private fun onPairingConfirmTapped() {
-        if (pairingAckGate.onUserConfirmed() != PairingAckDecision.COMMIT_AND_DISMISS) return
-        val pairing = pendingPairing ?: return
-        val authBody = pendingAuthBody ?: return
-        pendingPairing = null
-        pendingAuthBody = null
+        if (pairingAckGate.onUserConfirmed() != PairingAckDecision.START_CONNECT) return
+        dojoProgressShown = true
+        renderConnectPageState()
+        setDojo()
+    }
+
+    /**
+     * #261: the commit - verbatim the body #234 put behind the
+     * explicit tap and #256 put behind the receipt, now behind the
+     * 200 as well: payload, endpoints, tokens, payload store, then
+     * the receipt with its OK-gated dismissal seam. Consent is
+     * already spent (Pair) and the gate with it, so a successful
+     * response commits directly - reached from the response handler
+     * through mainHandler, which publishes these writes to main
+     * before any read. The receipt confirms an attempt the user
+     * consented to, not a decision trailing an exchange that
+     * already succeeded.
+     */
+    private fun commitPairing(pairing: DojoPairing, authBody: JSONObject) {
         val node = pairing.pairing ?: return
         dojoUtil.setDojoPayload(payload)
         prefsUtil.apiEndPointTor = node.url
@@ -830,17 +864,18 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     /**
-     * #234: Decline tapped - discard and dismiss. The gate sits before
-     * the first write, so nothing was ever committed: endpoints unset,
-     * tokens unwritten, payload store untouched - there is nothing to
-     * unwind. The listener never fires: the holders see a declined
-     * pairing exactly the way they see a failed one (#159), and the
-     * xpub registration burst never starts.
+     * #234/#261: Decline tapped - discard and dismiss, before any
+     * contact. The gate sits before the first network byte, so
+     * decline leaves zero trace: no /auth/login in the Dojo's logs,
+     * no apikey off the device, endpoints unset, tokens unwritten,
+     * payload store untouched - there is nothing to unwind (the old
+     * pending-nulls died with the staging fields). The listener never
+     * fires: the holders see a declined pairing exactly the way they
+     * see a failed one (#159), and the xpub registration burst never
+     * starts.
      */
     private fun onPairingDeclineTapped() {
         if (pairingAckGate.onUserDeclined() != PairingAckDecision.DISCARD_AND_DISMISS) return
-        pendingPairing = null
-        pendingAuthBody = null
         mainHandler.post {
             dismiss()
             if (context != null)
@@ -853,10 +888,16 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
      * listener-firing arm, and it fires at most once per sheet lifetime
      * - the latch holds against any residual multi-fire. Failure toasts
      * and dismisses without firing: a failed pairing must not present
-     * itself as a live one to the holders. Retries re-enqueue off a
-     * main-looper timer instead of sleeping on an OkHttp thread.
+     * itself as a live one to the holders. #261: every failure arm is
+     * post-consent now (the POST only runs behind Pair), so the toast
+     * is the deliberate wording - the user tapped Pair, the Dojo
+     * refused or never answered: nothing was paired, no wallet data
+     * out (dojo_pairing_failed; the generic dojo_connect_failed had
+     * this sheet as its only caller and died with the old order). The
+     * #176 auto-retry arm dies too: a retry starts a fresh decision in
+     * a fresh sheet, never a re-POST behind a spent gate.
      */
-    fun dismissAllOrToast(wasResponseSuccessful: Boolean, retry: Boolean = false) {
+    fun dismissAllOrToast(wasResponseSuccessful: Boolean) {
         if (wasResponseSuccessful) {
             dojoSuccessShown = true
             renderConnectPageState()
@@ -868,15 +909,11 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 dismiss()
             }, 500)
         }
-        else if (retry && numRetries <= 2) {
-            numRetries += 1
-            mainHandler.postDelayed({ setDojo() }, 5000)
-        }
         else {
             mainHandler.post {
                 dismiss()
                 if (context != null)
-                    Toast.makeText(context, getString(R.string.dojo_connect_failed), Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, getString(R.string.dojo_pairing_failed), Toast.LENGTH_LONG).show()
             }
         }
     }
