@@ -333,6 +333,28 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     // the pairing attempt once per sheet lifetime whichever lands.
     private var connectStarted = false
 
+    // #260: the connect page's render state, latched by the sheet. A
+    // page-selected fire can beat the adapter's transaction for page
+    // 2 - connectPage() then finds no fragment, or a fragment whose
+    // view is not created, and the old single-shot show*() call was
+    // dropped with nothing left to re-trigger it: no spinner, no
+    // state change, for the whole pairing POST on warm Tor (#260).
+    // Every show*() site below latches state and re-renders; the
+    // render no longer depends on who wins the view-creation race.
+    private var torProgressShown = false
+    private var torSuccessShown = false
+    private var dojoProgressShown = false
+    private var dojoSuccessShown = false
+
+    // #260: the Tor-ON handoff latch. The old observer gated
+    // setDojo() on the tor checkmark RENDER succeeding - a Tor-ON
+    // landing inside the same view-creation window dropped the
+    // pairing START, not just the paint. The handoff now runs
+    // exactly once per sheet lifetime, view or no view; the
+    // checkmark renders from torSuccessShown, and an ON re-fire
+    // still cannot stack a second POST.
+    private var torHandoffDone = false
+
     // #231: registered in setUpViewPager, unregistered in onDestroyView.
     private var pagerCallback: ViewPager2.OnPageChangeCallback? = null
 
@@ -433,6 +455,10 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
      */
     fun onConnectViewReady() {
         maybeStartConnect()
+        // #260: the view exists now - render whatever the race
+        // dropped. Idempotent: re-applying latched state changes
+        // nothing where the calls already landed.
+        renderConnectPageState()
     }
 
     /**
@@ -468,18 +494,49 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private fun connectPage(): DojoConnectFragment? =
         childFragmentManager.fragments.filterIsInstance<DojoConnectFragment>().firstOrNull()
 
+    /**
+     * #260: apply the latched render state to the live connect page,
+     * if there is one. Called by every former show*() site (state set
+     * first) and by onConnectViewReady() when the page's view arrives
+     * late. The page's own view == null gates still hold: a fragment
+     * added but not yet created no-ops here and is caught by the
+     * view-ready re-render. Success renders after progress in each
+     * pair, so the checkmark wins when both are latched.
+     */
+    private fun renderConnectPageState() {
+        val page = connectPage() ?: return
+        if (torProgressShown) page.showTorProgress()
+        if (torSuccessShown) page.showTorProgressSuccess()
+        if (dojoProgressShown) page.showDojoProgress()
+        if (dojoSuccessShown) page.showDojoProgressSuccess()
+    }
+
     private fun startTorAndConnect() {
         if (SentinelTorManager.getTorState().state == EnumTorState.ON) {
-            connectPage()?.showTorProgressSuccess()
+            // #260: latched, not single-shot - the tor checkmark
+            // renders even if the page's view is still mid-creation.
+            torSuccessShown = true
+            renderConnectPageState()
             setDojo()
         } else {
             setUpTor()
             // #170: pairing start, no stomp on the user's toggle.
             SentinelTorManager.start()
-            connectPage()?.showTorProgress()
+            // #260: same latch for the bootstrap spinner.
+            torProgressShown = true
+            renderConnectPageState()
             SentinelTorManager.getTorStateLiveData().observe(this) {
                 if (it.state == EnumTorState.ON) {
-                    if (connectPage()?.showTorProgressSuccess() == true) {
+                    // #260: the handoff runs exactly once per sheet
+                    // lifetime - the old render gate doubled as the
+                    // ON re-fire guard and as a dropped-start window
+                    // (view mid-creation: the pairing never started).
+                    // The latch owns the single-flight; the checkmark
+                    // renders from torSuccessShown.
+                    if (!torHandoffDone) {
+                        torHandoffDone = true
+                        torSuccessShown = true
+                        renderConnectPageState()
                         setDojo()
                     }
                 }
@@ -536,7 +593,11 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     private fun setDojoPost() {
-        connectPage()?.showDojoProgress()
+        // #260: latched - the "Connecting to Dojo" wheel is state
+        // the page renders, not a single-shot call that can die in
+        // the view-creation race.
+        dojoProgressShown = true
+        renderConnectPageState()
         try {
             val pairing = fromJSON<DojoPairing>(payload)
                 ?: throw  Exception("Invalid payload")
@@ -632,7 +693,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     private fun showPairingConfirmation() {
         val pairing = pendingPairing ?: return
         if (context == null) return
-        connectPage()?.showDojoProgressSuccess()
+        dojoSuccessShown = true
+        renderConnectPageState()
         val snapshot = readDisplaySnapshot()
         val rows = pairingDetailRows(pairing, snapshot)
         val view = layoutInflater.inflate(R.layout.dialog_dojo_pairing_details, null)
@@ -747,7 +809,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             dismissAllOrToast(true)
             return
         }
-        connectPage()?.showDojoProgressSuccess()
+        dojoSuccessShown = true
+        renderConnectPageState()
         val identity = pairingIdentityLine(
             pairingUrl,
             readDisplaySnapshot(),
@@ -795,7 +858,8 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
      */
     fun dismissAllOrToast(wasResponseSuccessful: Boolean, retry: Boolean = false) {
         if (wasResponseSuccessful) {
-            connectPage()?.showDojoProgressSuccess()
+            dojoSuccessShown = true
+            renderConnectPageState()
             mainHandler.postDelayed({
                 if (!listenerFired) {
                     listenerFired = true
