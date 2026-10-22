@@ -8,7 +8,7 @@ import android.content.DialogInterface;
 import android.content.pm.PackageManager;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import android.util.Log;
+import timber.log.Timber;
 
 import com.samourai.sentinel.R;
 
@@ -87,7 +87,7 @@ public class PermissionsUtil {
 
         for(int i = 0; i < permissions.length; i++)   {
             if (ActivityCompat.shouldShowRequestPermissionRationale((Activity)context, permissions[i])) {
-                Log.d("PermissionsUtil", "shouldShowRequestPermissionRationale(), no permission requested");
+                Timber.d("shouldShowRequestPermissionRationale(), no permission requested");
             }
             else    {
                 ActivityCompat.requestPermissions((Activity)context, permissions, code);

@@ -4,7 +4,6 @@ import android.app.Application
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -28,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
 import java.net.Proxy
+import timber.log.Timber
 
 /**
  * kmp-tor 2.x wrapper. Frozen public surface (all call sites unchanged):
@@ -80,7 +80,7 @@ object SentinelTorManager {
     @Synchronized
     fun setUp(app: Application) {
         if (runtime != null) return // idempotent: bottom sheets re-call setUp
-        Log.i(TAG, "setUp() building runtime")
+        Timber.i("setUp() building runtime")
         appContext = app
 
         val env = TorRuntime.Environment.Builder(
@@ -93,7 +93,7 @@ object SentinelTorManager {
 
             // kmp-tor contract: register an ERROR observer or it rethrows
             observerStatic(RuntimeEvent.ERROR) { t ->
-                Log.e(TAG, "kmp-tor error", t)
+                Timber.e(t, "kmp-tor error")
             }
 
             observerStatic(RuntimeEvent.STATE, OnEvent.Executor.Immediate) { s ->
@@ -103,7 +103,7 @@ object SentinelTorManager {
                     s.daemon.isStopping -> EnumTorState.STOPPING
                     else -> EnumTorState.OFF
                 }
-                Log.i(TAG, "state -> $st boot=${s.daemon.bootstrap.toInt()}")
+                Timber.i("state -> $st boot=${s.daemon.bootstrap.toInt()}")
                 publish(st, s.daemon.bootstrap.toInt())
             }
 
@@ -111,7 +111,7 @@ object SentinelTorManager {
                 proxy = l.socks.firstOrNull()?.let { s ->
                     // #135: timestamp t(socks-ready) so captures can prove
                     // readiness instead of inferring it.
-                    Log.i(TAG, "socks ready ${s.address.value}:${s.port.value}")
+                    Timber.i("socks ready ${s.address.value}:${s.port.value}")
                     Proxy(
                         Proxy.Type.SOCKS,
                         InetSocketAddress(s.address.value, s.port.value),
@@ -147,7 +147,7 @@ object SentinelTorManager {
 
     /** Public entry: user-directed start. Resets the retry budget + episode state. */
     fun start() {
-        Log.i(TAG, "start() (manual)")
+        Timber.i("start() (manual)")
         recoveries = 0
         cheapRestartUsed = false
         startInternal()
@@ -162,10 +162,10 @@ object SentinelTorManager {
     private fun startInternal(resetStallClock: Boolean = true) {
         val r = runtime
         if (r == null) {
-            Log.w(TAG, "start() called but runtime is null (setUp never ran)")
+            Timber.w("start() called but runtime is null (setUp never ran)")
             return
         }
-        Log.i(TAG, "start() called")
+        Timber.i("start() called")
         if (resetStallClock) {
             lastBootstrapProgressAt = SystemClock.elapsedRealtime()
         }
@@ -174,9 +174,9 @@ object SentinelTorManager {
         scope.launch {
             try {
                 r.startDaemonAsync()
-                Log.i(TAG, "startDaemonAsync returned")
+                Timber.i("startDaemonAsync returned")
             } catch (t: Throwable) {
-                Log.e(TAG, "startDaemonAsync threw", t)
+                Timber.e(t, "startDaemonAsync threw")
                 publish(EnumTorState.OFF, 0)
             }
         }
@@ -193,11 +193,11 @@ object SentinelTorManager {
      */
     @Synchronized
     fun stop() {
-        Log.i(TAG, "stop() called")
+        Timber.i("stop() called")
         val r = runtime ?: return
         val st = getTorState().state
         if (st == EnumTorState.OFF || st == EnumTorState.STOPPING || stopInFlight) {
-            Log.i(TAG, "stop() no-op: state=$st inFlight=$stopInFlight (#164 guard)")
+            Timber.i("stop() no-op: state=$st inFlight=$stopInFlight (#164 guard)")
             return
         }
         stopInFlight = true
@@ -208,10 +208,10 @@ object SentinelTorManager {
                 try {
                     withTimeoutOrNull(STOP_DEADLINE_MS) { r.stopDaemonAsync() }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "stopDaemonAsync threw (tolerated)", t)
+                    Timber.w(t, "stopDaemonAsync threw (tolerated)")
                 }
                 if (getTorState().state == EnumTorState.STOPPING) {
-                    Log.w(TAG, "stop(): no OFF emission landed - correcting to OFF (#164)")
+                    Timber.w("stop(): no OFF emission landed - correcting to OFF (#164)")
                     publish(EnumTorState.OFF, 0)
                 }
             } finally {
@@ -225,7 +225,7 @@ object SentinelTorManager {
         if (r == null) {
             // #161: silence was the last dishonesty on this surface -
             // the failure reports through the same single channel.
-            Log.w(TAG, "newIdentity() called but runtime is null (setUp never ran)")
+            Timber.w("newIdentity() called but runtime is null (setUp never ran)")
             emitNewNymNotice("Tor identity change failed")
             return
         }
@@ -233,7 +233,7 @@ object SentinelTorManager {
             try {
                 r.executeAsync(TorCmd.Signal.NewNym)
             } catch (t: Throwable) {
-                Log.e(TAG, "newIdentity failed", t)
+                Timber.e(t, "newIdentity failed")
                 emitNewNymNotice("Tor identity change failed")
             }
         }
@@ -327,8 +327,7 @@ object SentinelTorManager {
      */
     private fun cheapRestart() {
         cheapRestartUsed = true
-        Log.w(
-            TAG,
+        Timber.w(
             "watchdog: boot=0 stall > ${CHEAP_RESTART_MS / 1000}s — " +
                 "cheap restart (data dirs kept)",
         )
@@ -338,7 +337,7 @@ object SentinelTorManager {
             try {
                 withTimeoutOrNull(STOP_DEADLINE_MS) { wedged.stopDaemonAsync() }
             } catch (t: Throwable) {
-                Log.w(TAG, "stopDaemonAsync during cheap restart threw (tolerated)", t)
+                Timber.w(t, "stopDaemonAsync during cheap restart threw (tolerated)")
             }
             startInternal(resetStallClock = false) // re-arms the watchdog
         }
@@ -347,8 +346,7 @@ object SentinelTorManager {
     private fun attemptRecovery() {
         val app = appContext
         if (app == null || recoveries >= MAX_RECOVERIES) {
-            Log.e(
-                TAG,
+            Timber.e(
                 "watchdog: still wedged after $recoveries recovery attempt(s) — publishing OFF",
             )
             toast("Tor failed to bootstrap — retry Tor from settings")
@@ -356,8 +354,7 @@ object SentinelTorManager {
             return
         }
         recoveries++
-        Log.w(
-            TAG,
+        Timber.w(
             "watchdog: boot=0 stall > ${WIPE_STALL_MS / 1000}s — " +
                 "wiping tor data, recovery $recoveries/$MAX_RECOVERIES",
         )
@@ -369,7 +366,7 @@ object SentinelTorManager {
                 // is still "starting" — observed as a no-op in the #11 captures
                 withTimeoutOrNull(STOP_DEADLINE_MS) { wedged?.stopDaemonAsync() }
             } catch (t: Throwable) {
-                Log.w(TAG, "stopDaemonAsync during recovery threw (tolerated)", t)
+                Timber.w(t, "stopDaemonAsync during recovery threw (tolerated)")
             }
             runtime = null // release the wedged runtime
             app.getDir("tor", Application.MODE_PRIVATE).deleteRecursively()

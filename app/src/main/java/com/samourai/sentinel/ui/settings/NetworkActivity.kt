@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.util.Log
 import android.view.MenuItem
 import android.view.View
 import android.widget.Button
@@ -240,7 +239,7 @@ class NetworkActivity : SentinelActivity() {
                         Timber.e(e, "Dojo pairing gone, skipping remaining xpub imports")
                         return@forEachIndexed
                     } catch (e: Exception) {
-                        Log.d("NetworkActivity", "Error: ${e}")
+                        Timber.d(e, "Error")
                         failed++
                     }
                 }

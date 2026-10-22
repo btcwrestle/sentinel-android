@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Rect
 import android.os.Build
-import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.samourai.sentinel.R
 import com.samourai.sentinel.widgets.popUpMenu.internal.PopupMenuAdapter
 import java.lang.reflect.Method
+import timber.log.Timber
 
 /**
  * A more Material version of [androidx.appcompat.widget.ListPopupWindow] based on [RecyclerView].
@@ -39,7 +39,6 @@ internal class MaterialRecyclerViewPopupWindow(
     @SuppressLint("DiscouragedPrivateApi")
     companion object {
 
-        private const val TAG = "MaterialRVPopupWindow"
         private const val DEFAULT_BACKGROUND_DIM_AMOUNT = 0.3f
 
         private var clipToWindowEnabledMethod: Method? = null
@@ -51,7 +50,7 @@ internal class MaterialRecyclerViewPopupWindow(
                         "setClipToScreenEnabled", Boolean::class.javaPrimitiveType
                 )
             } catch (e: NoSuchMethodException) {
-                Log.i(TAG, "Could not find method setClipToScreenEnabled() on PopupWindow. Oh well.")
+                Timber.i("Could not find method setClipToScreenEnabled() on PopupWindow. Oh well.")
             }
 
             try {
@@ -62,8 +61,7 @@ internal class MaterialRecyclerViewPopupWindow(
                         Boolean::class.javaPrimitiveType
                 )
             } catch (e: NoSuchMethodException) {
-                Log.i(
-                        TAG,
+                Timber.i(
                         "Could not find method getMaxAvailableHeight(View, int, boolean)" + " on PopupWindow. Oh well."
                 )
             }
@@ -380,7 +378,7 @@ internal class MaterialRecyclerViewPopupWindow(
             try {
                 it.invoke(popup, clip)
             } catch (e: Exception) {
-                Log.i(TAG, "Could not call setClipToScreenEnabled() on PopupWindow. Oh well.")
+                Timber.i("Could not call setClipToScreenEnabled() on PopupWindow. Oh well.")
             }
         }
     }
@@ -393,8 +391,7 @@ internal class MaterialRecyclerViewPopupWindow(
                         ignoreBottomDecorations
                 ) as Int
             } catch (e: Exception) {
-                Log.i(
-                        TAG,
+                Timber.i(
                         "Could not call getMaxAvailableHeightMethod(View, int, boolean)" + " on PopupWindow. Using the public version."
                 )
             }

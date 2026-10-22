@@ -1,6 +1,6 @@
 package com.samourai.sentinel.ui.tools.sweep;
 
-import android.util.Log;
+import timber.log.Timber;
 
 import com.samourai.wallet.SamouraiWalletConst;
 import com.samourai.wallet.bip69.BIP69InputComparator;
@@ -60,7 +60,7 @@ public class TransactionForSweepHelper {
                 TransactionOutput output = supplier.getTransactionOutput(toAddress, value.longValue(), params);
                 outputs.add(output);
             } catch (final Exception e) {
-                Log.e(TransactionForSweepHelper.class.getSimpleName(), "getTransactionOutput failed", e);
+                Timber.e(e, "getTransactionOutput failed");
                 throw new MakeTxException(e);
             }
         }
@@ -73,7 +73,7 @@ public class TransactionForSweepHelper {
                 // ok, outpoint format is supported
             } catch (Exception e) {
                 // outpoint format is not supported, skip it
-                Log.e(TransactionForSweepHelper.class.getSimpleName(), "skipping outPoint (unsupported type): "+outPoint);
+                Timber.e("skipping outPoint (unsupported type): "+outPoint);
                 continue;
             }
 
@@ -119,9 +119,8 @@ public class TransactionForSweepHelper {
                 final DumpedPrivateKey pk = DumpedPrivateKey.fromBase58(params, privKey.getPrivateKeyAsWiF(params));
                 keyBag.put(input.getOutpoint().toString(), pk.getKey());
             }  catch(Exception e) {
-                Log.e(TransactionForSweepHelper.class.getCanonicalName(),
-                        "cannot process private key for input=" + input,
-                        e);
+                Timber.e(e,
+                        "cannot process private key for input=" + input);
             }
         }
 
