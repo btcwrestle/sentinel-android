@@ -1,6 +1,6 @@
 package com.samourai.sentinel.send;
 
-import android.util.Log;
+import timber.log.Timber;
 
 import com.samourai.sentinel.core.SentinelState;
 import com.samourai.sentinel.util.FormatsUtil;
@@ -186,7 +186,7 @@ public class FeeUtil extends com.samourai.wallet.util.FeeUtil {
     public BigInteger calculateFee(int txSize, BigInteger feePerKb)   {
         double fee = ((double)txSize / 1000.0 ) * feePerKb.doubleValue();
         if(Math.ceil(fee) < (double)txSize)    {
-            Log.d("FeeUtil", "adjusted fee:" + BigInteger.valueOf((long)(txSize + (txSize / 20))).longValue());
+            Timber.d("adjusted fee:" + BigInteger.valueOf((long)(txSize + (txSize / 20))).longValue());
             return BigInteger.valueOf((long)(txSize + (txSize / 20)));
         }
         else    {
@@ -219,7 +219,7 @@ public class FeeUtil extends com.samourai.wallet.util.FeeUtil {
         if(FeeUtil.getInstance().getSuggestedFee().getDefaultPerKB().longValue() < 1000L)    {
             SuggestedFee suggestedFee = new SuggestedFee();
             suggestedFee.setDefaultPerKB(BigInteger.valueOf(1200L));
-            Log.d("FeeUtil", "adjusted fee:" + suggestedFee.getDefaultPerKB().longValue());
+            Timber.d("adjusted fee:" + suggestedFee.getDefaultPerKB().longValue());
             FeeUtil.getInstance().setSuggestedFee(suggestedFee);
         }
     }

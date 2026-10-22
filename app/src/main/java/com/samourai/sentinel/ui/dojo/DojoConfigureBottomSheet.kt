@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -636,7 +635,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 override fun onResponse(call: Call, response: Response) {
                     val body = response.body?.string() ?: "{}"
                     if (response.code == 401 || (response.isSuccessful && !body.contains("authorizations"))) {
-                        Log.d("DojoConfiguration", "Unauthorized: wrong API key")
+                        Timber.d("Unauthorized: wrong API key")
                         // #261: newly reachable AFTER consent - the
                         // deliberate wording lives in dismissAllOrToast.
                         dismissAllOrToast(false)

@@ -9,7 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -606,7 +605,7 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                 } catch (e: ApiService.InvalidResponse) {
                     Timber.e(e, "Sweep broadcast got an invalid response")
                 } catch (e: Exception) {
-                    Log.d("SweepPrivateKey", "Error broadcasting tx: " + e)
+                    Timber.d(e, "Error broadcasting tx")
                 }
 
                 requireActivity().runOnUiThread {
