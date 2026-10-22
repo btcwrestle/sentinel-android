@@ -667,6 +667,12 @@ class ImportBackUpActivity : SentinelActivity() {
                 // is the import's outcome (not an error, not a success).
                 var networkRefusal: String? = null
                 var networkFlipNote: String? = null
+                // #276: the dojo leg's completion state - the SENTINEL
+                // arm's hoisted pattern, mirrored for this arm.
+                var dojoPairingFailed = false
+                var networkDojoSets = false
+                var networkDojoObjection: String? = null
+                var networkDojoSetNote: String? = null
                 viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
                     try {
                         val payload = ExportImportUtil().decryptSentinelLegacy(
@@ -674,13 +680,18 @@ class ImportBackUpActivity : SentinelActivity() {
                                 password
                         )
                         val pubKeys = payload.first
+                        // #276: the validated dojo (decryptSentinelLegacy
+                        // returns it as the pair's second) is no longer
+                        // dropped at this door - it gets its leg below.
+                        val dojo = payload.second
                         if (pubKeys.isNotEmpty()) {
                             val collection = PubKeyCollection()
                             collection.pubs = pubKeys
                             collection.collectionLabel = "Sentinel Import"
                             // #272: the door plan, post-decrypt pre-write.
                             // Legacy imports always merge (no clear tick on
-                            // this arm) and never carry prefs or a dojo.
+                            // this arm), carry no prefs - and their dojo
+                            // leg rides the plan below (#276).
                             val networkPlan = backupImportNetworkPlan(
                                 currentTestnet = SentinelState.isTestNet(),
                                 existingVotes = repository.collectionsSnapshot()
@@ -692,16 +703,36 @@ class ImportBackUpActivity : SentinelActivity() {
                                 clearExisting = false,
                                 importPrefs = false,
                                 backupPrefsTestnet = null,
-                                dojoWhisper = null
+                                // #276: the backup-borne dojo rides the
+                                // same URL whisper as the SENTINEL arm.
+                                dojoWhisper = NetworkClassifier.fromUrl(
+                                    dojo?.optJSONObject("pairing")?.optString("url")
+                                )
                             )
                             if (networkPlan.refusal != null) {
                                 networkRefusal = networkPlan.refusal
                             } else {
                                 networkFlipNote = networkPlan.flipNote
+                                networkDojoSets = networkPlan.dojoSetsNetwork
+                                networkDojoObjection = networkPlan.dojoObjection
+                                networkDojoSetNote = networkPlan.dojoSetNote
                                 ExportImportUtil().startImportCollections(
                                         arrayListOf(collection),
                                         false
                                 )
+                                // #276: the parsed-and-validated dojo is no
+                                // longer dropped on the floor here - the
+                                // same leg, the same helper and the same
+                                // #273 decision table as the SENTINEL arm.
+                                if (networkPlan.importDojo && dojo != null) {
+                                    if (importDojoWithRetry(dojo)) {
+                                        if (networkPlan.dojoSetsNetwork) {
+                                            prefsUtil.testnet = networkPlan.postImportTestnet
+                                        }
+                                    } else {
+                                        dojoPairingFailed = true
+                                    }
+                                }
                             }
                         } else {
                             throw IllegalStateException("0 public keys found")
@@ -725,8 +756,21 @@ class ImportBackUpActivity : SentinelActivity() {
                             } else if (it == null) {
                                 binding.importStartBtn.text = "Imported \u2713"
                                 requireRestart = true
+                                // #276: the dojo leg's outcome rides the
+                                // completion note - the SENTINEL arm's
+                                // runtime composition, mirrored.
+                                val networkNote =
+                                    if (networkDojoSets && !dojoPairingFailed)
+                                        networkDojoSetNote.orEmpty()
+                                    else
+                                        networkFlipNote.orEmpty() +
+                                                networkDojoObjection.orEmpty()
+                                val note =
+                                    (if (dojoPairingFailed)
+                                        " Dojo pairing failed - retry from Network screen."
+                                    else "") + networkNote
                                 showFloatingSnackBar(
-                                        binding.importPastePayloadBtn, "Successfully imported${networkFlipNote.orEmpty()}",
+                                        binding.importPastePayloadBtn, "Successfully imported$note",
                                         anchorView = binding.importStartBtn.id,
                                         actionText = "restart",
                                         actionClick = { restart() }

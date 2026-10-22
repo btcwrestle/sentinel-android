@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Observer
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -52,6 +53,8 @@ import org.json.JSONObject
 import org.koin.java.KoinJavaComponent
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import com.samourai.sentinel.core.DerivedNetwork
 import com.samourai.sentinel.core.NetworkClassifier
 
@@ -98,6 +101,14 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
             handled
         }
 
+        scanPubKeyFragment.setOnMultiKeyScanListener { account ->
+            // #254: multi-key UR payloads - a CRYPTO_ACCOUNT with several
+            // output descriptors, or a BYTES export with several legs -
+            // land as one labeled collection with every skip named:
+            // no silent drops on the scan door.
+            importURAccount(account)
+        }
+
         selectAddressTypeFragment.setOnSelectListener {
             validateXPUB(it)
         }
@@ -135,6 +146,85 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
             validate(pubKey)
             pubKeyString = pubKey
         }
+    }
+
+    /**
+     * #254: the multi-key UR arm. The cross-network guard first -
+     * validate()'s per-key rule, applied to the whole payload (one
+     * offending key refuses the account: it is one network by
+     * construction) - then a confirm dialog naming every key and every
+     * skip, then one collection with merge semantics like the backup
+     * door's arms (startImportCollections precedent:
+     * WalletPairingFragment, ImportBackUpActivity).
+     */
+    private fun importURAccount(account: URAccountDecode) {
+        if (SentinelState.isNetworkEstablished()) {
+            val offending = account.keys.firstOrNull {
+                (SentinelState.isTestNet() && !isPublicKeyTesnet(it.xpub)) ||
+                    (!SentinelState.isTestNet() && isPublicKeyTesnet(it.xpub))
+            }
+            if (offending != null) {
+                val message = if (SentinelState.isTestNet())
+                    "Can't track Mainnet public keys in Testnet"
+                else
+                    "Can't track Testnet public keys in Mainnet"
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                this.dismiss()
+                return
+            }
+        }
+        val keyLines = account.keys.joinToString("\n") { key -> "- ${key.label}" }
+        val skipLines = account.skipped.joinToString("\n") { skip -> "- ${skip}" }
+        val message = when {
+            account.keys.isEmpty() ->
+                "This payload carries no importable keys." +
+                    (if (skipLines.isNotEmpty()) "\n\nSkipped:\n${skipLines}" else "")
+            else ->
+                "This payload carries ${account.keys.size} keys:\n${keyLines}" +
+                    (if (skipLines.isNotEmpty()) "\n\nSkipped:\n${skipLines}" else "")
+        }
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(
+                if (account.keys.isEmpty()) "Nothing to import" else "Import account"
+            )
+            .setMessage(message)
+            .setNegativeButton("Cancel") { d, _ -> d.dismiss() }
+        if (account.keys.isNotEmpty()) {
+            dialog.setPositiveButton("Import") { d, _ ->
+                d.dismiss()
+                val collection = PubKeyCollection()
+                collection.collectionLabel = "UR Import"
+                collection.pubs = ArrayList(account.keys.map { key ->
+                    PubKeyModel(
+                        pubKey = key.xpub,
+                        label = key.label,
+                        type = key.type,
+                        fingerPrint = scanPubKeyFragment.getFingerprint()
+                    )
+                })
+                lifecycleScope.launch(Dispatchers.Main) {
+                    try {
+                        ExportImportUtil().startImportCollections(
+                            arrayListOf(collection),
+                            false
+                        )
+                        Toast.makeText(
+                            context,
+                            "Imported ${account.keys.size} keys",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        this@AddNewPubKeyBottomSheet.dismiss()
+                    } catch (e: Exception) {
+                        Toast.makeText(
+                            context,
+                            "Import failed: ${e.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun validateXPUB(addressTypes: AddressTypes) {
@@ -297,11 +387,111 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
 }
 
 
+/**
+ * #254: one key of a multi-key UR payload, labeled for import.
+ */
+internal data class URAccountKey(
+    val xpub: String,
+    val label: String,
+    val type: AddressTypes
+)
+
+/**
+ * #254: a UR payload's full content - every key it carried, plus every
+ * entry it could not carry, named with its reason. The old contract
+ * surfaced one String (the FIRST descriptor, or only the bip84 leg)
+ * and silently dropped the rest.
+ */
+internal data class URAccountDecode(
+    val keys: List<URAccountKey>,
+    val skipped: List<String>
+)
+
+/**
+ * #254: the derivation purpose out of an origin path - "84" from
+ * "84'/0'/0'" (an "m/" prefix tolerated). Null on a path too short,
+ * blank or digitless: the descriptor is then a NAMED skip, never a
+ * coercion - the old bare substring(0..1) threw on short paths and
+ * rewrote every unknown purpose into BIP84 version bytes.
+ */
+internal fun urPurposeFromPath(path: String?): String? {
+    val cleaned = path?.trim()?.removePrefix("m/")?.removePrefix("M/")
+        ?: return null
+    val first = cleaned.substringBefore('/').removeSuffix("'")
+    return if (first.isNotEmpty() && first.all { it.isDigit() }) first else null
+}
+
+/**
+ * #254: purpose to address type. 44/49/84 map; anything else (taproot,
+ * account 0, garbage) is null - a named skip, not a silent rewrite.
+ */
+internal fun urAccountType(purpose: String?): AddressTypes? = when (purpose) {
+    "44" -> AddressTypes.BIP44
+    "49" -> AddressTypes.BIP49
+    "84" -> AddressTypes.BIP84
+    else -> null
+}
+
+/**
+ * #254: the UR BYTES payload's keys - the bip44/bip49/bip84 legs a
+ * Samourai-style export carries, each an object with "_pub". The old
+ * read took bip84 only; the other legs never surfaced. A leg present
+ * but unreadable (no _pub) and any other bipNN leg are named skips.
+ */
+internal fun urBytesKeys(xpubsJson: JSONObject): URAccountDecode {
+    val keys = ArrayList<URAccountKey>()
+    val skipped = ArrayList<String>()
+    for ((name, type) in listOf(
+        "bip44" to AddressTypes.BIP44,
+        "bip49" to AddressTypes.BIP49,
+        "bip84" to AddressTypes.BIP84
+    )) {
+        when {
+            !xpubsJson.has(name) -> Unit
+            xpubsJson.getJSONObject(name).has("_pub") -> keys.add(
+                URAccountKey(
+                    xpub = xpubsJson.getJSONObject(name).getString("_pub"),
+                    label = "Deposit ${name.uppercase()}",
+                    type = type
+                )
+            )
+            else -> skipped.add("$name present but carries no _pub")
+        }
+    }
+    xpubsJson.keys().forEach { name ->
+        if (name.startsWith("bip") &&
+            name !in listOf("bip44", "bip49", "bip84")
+        ) {
+            skipped.add("$name not supported")
+        }
+    }
+    return URAccountDecode(keys, skipped)
+}
+
+/**
+ * #254: intra-payload duplicates (the same account surfacing twice)
+ * import once - and the collapse is NAMED, never silent.
+ */
+internal fun dedupeAccountKeys(keys: List<URAccountKey>): URAccountDecode {
+    val seen = HashSet<String>()
+    val unique = ArrayList<URAccountKey>()
+    val skipped = ArrayList<String>()
+    keys.forEach { key ->
+        if (seen.add(key.xpub)) unique.add(key)
+        else skipped.add("duplicate descriptor (${key.label}) - already in this payload")
+    }
+    return URAccountDecode(unique, skipped)
+}
+
+
 class ScanPubKeyFragment : Fragment() {
 
     private lateinit var  mCodeScanner: QRScanner;
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
     private var onScan: (scanData: String) -> Boolean = { false }
+    // #254: multi-key UR payloads hand their whole account here - the
+    // single-key contract above stays untouched for single payloads.
+    private var onMultiKeyScan: ((URAccountDecode) -> Unit)? = null
     private var urPayloadDecoder: ((URDecoder.Result) -> String?)? = null
     // #232: the shared invalid-payload policy's state - the payload and
     // clock stamp of the last ADMITTED decode (valid or not): the same QR
@@ -318,6 +508,10 @@ class ScanPubKeyFragment : Fragment() {
 
     fun setOnScanListener(callback: (scanData: String) -> Boolean) {
         this.onScan = callback
+    }
+
+    internal fun setOnMultiKeyScanListener(callback: (URAccountDecode) -> Unit) {
+        this.onMultiKeyScan = callback
     }
 
     fun setURPayloadDecoder(decoder: (URDecoder.Result) -> String?) {
@@ -414,17 +608,52 @@ class ScanPubKeyFragment : Fragment() {
                         }
                     }
                     else {
-                        val xpub = getXpubFromUR(it)
-                        if (xpub != null) {
-                            dispatch(xpub)
-                        }
-                        else {
-                            if (admitThroughGate("ur-error-public-key")) {
-                                MaterialAlertDialogBuilder(requireContext())
-                                    .setTitle("Error decoding public key")
-                                    .setPositiveButton("Ok") { dialog, which ->
-                                        dialog.dismiss()
-                                    }.show()
+                        // #254: the payload's full content - every key it
+                        // carried, every entry it could not. Census: this
+                        // default arm's only consumer is the sheet itself
+                        // (which registers the multi-key listener); the
+                        // labels sheet rides its own decoder and never
+                        // reaches this arm.
+                        val account = getXpubFromUR(it)
+                        when {
+                            account.keys.size == 1 && account.skipped.isEmpty() ->
+                                dispatch(account.keys.first().xpub)
+                            account.keys.isEmpty() && account.skipped.isEmpty() -> {
+                                if (admitThroughGate("ur-error-public-key")) {
+                                    MaterialAlertDialogBuilder(requireContext())
+                                        .setTitle("Error decoding public key")
+                                        .setPositiveButton("Ok") { dialog, which ->
+                                            dialog.dismiss()
+                                        }.show()
+                                }
+                            }
+                            else -> {
+                                // #254: multi-key payloads gate on what they
+                                // would import (#232 doctrine: the identity is
+                                // the payload the arm hands onward), then hand
+                                // the whole account to the sheet. The camera
+                                // keeps running behind the confirm dialog; a
+                                // confirmed import dismisses the sheet, whose
+                                // onPause stops the scanner.
+                                val multi = onMultiKeyScan
+                                if (multi != null &&
+                                    admitThroughGate(
+                                        account.keys.joinToString("|") { key -> key.xpub }
+                                    )
+                                ) {
+                                    multi(account)
+                                } else if (multi == null) {
+                                    // Loud fallback, never a quiet nothing:
+                                    // a consumer that never registered the
+                                    // listener still hears the decode.
+                                    if (admitThroughGate("ur-error-public-key")) {
+                                        MaterialAlertDialogBuilder(requireContext())
+                                            .setTitle("Error decoding public key")
+                                            .setPositiveButton("Ok") { dialog, which ->
+                                                dialog.dismiss()
+                                            }.show()
+                                    }
+                                }
                             }
                         }
                     }
@@ -461,16 +690,17 @@ class ScanPubKeyFragment : Fragment() {
 
     }
 
-    private fun getXpubFromUR(it: URDecoder.Result): String? {
+    private fun getXpubFromUR(it: URDecoder.Result): URAccountDecode {
         if (it.ur.registryType == RegistryType.CRYPTO_ACCOUNT) {
             val cryptoAccount = it.ur.decodeFromRegistry() as CryptoAccount
+            fingerprintHex = Hex.toHexString(cryptoAccount.masterFingerprint).lowercase()
+            val keys = ArrayList<URAccountKey>()
+            val skipped = ArrayList<String>()
             for (outputDescriptor in cryptoAccount.outputDescriptors) {
-                fingerprintHex = Hex.toHexString(cryptoAccount.masterFingerprint).lowercase()
                 val cryptoHDKey = outputDescriptor.hdKey
                 var lastChild = ChildNumber.ZERO
                 var depth = 1
                 var parentFingerprint = ByteArray(4)
-                var version: Int
                 if (cryptoHDKey.origin != null) {
                     if (cryptoHDKey.origin.components.isNotEmpty()) {
                         val lastComponent =
@@ -486,13 +716,23 @@ class ScanPubKeyFragment : Fragment() {
                 }
                 val parentFingerprintInt = ByteBuffer.wrap(parentFingerprint).int
 
-                if (cryptoHDKey.origin.path.substring(0..1) == "44")
-                    version = if (SentinelState.isTestNet())  XPUB.MAGIC_TPUB else XPUB.MAGIC_XPUB
-                else if (cryptoHDKey.origin.path.substring(0..1) == "49")
-                    version = if (SentinelState.isTestNet())  XPUB.MAGIC_UPUB else XPUB.MAGIC_YPUB
-                else
-                    version = if (SentinelState.isTestNet())  XPUB.MAGIC_VPUB else XPUB.MAGIC_ZPUB
-
+                // #254: purpose parsed guarded - the old bare
+                // substring(0..1) threw on short paths, NPE'd on a null
+                // origin, and coerced unknown purposes into BIP84 bytes.
+                val purpose = urPurposeFromPath(cryptoHDKey.origin?.path)
+                val type = urAccountType(purpose)
+                if (type == null) {
+                    skipped.add("purpose ${purpose ?: "unparsed"} (unsupported)")
+                    continue
+                }
+                val version = when (type) {
+                    AddressTypes.BIP44 ->
+                        if (SentinelState.isTestNet()) XPUB.MAGIC_TPUB else XPUB.MAGIC_XPUB
+                    AddressTypes.BIP49 ->
+                        if (SentinelState.isTestNet()) XPUB.MAGIC_UPUB else XPUB.MAGIC_YPUB
+                    else ->
+                        if (SentinelState.isTestNet()) XPUB.MAGIC_VPUB else XPUB.MAGIC_ZPUB
+                }
                 val xpub = XPUB.makeXPUB(
                     version,
                     depth.toByte(),
@@ -501,8 +741,18 @@ class ScanPubKeyFragment : Fragment() {
                     cryptoHDKey.chainCode,
                     cryptoHDKey.key
                 )
-                return xpub
+                keys.add(
+                    URAccountKey(
+                        xpub = xpub,
+                        label = "Deposit BIP${purpose}",
+                        type = type
+                    )
+                )
             }
+            // #254: every descriptor is emitted - the old loop returned on
+            // the first one; duplicates collapse loudly, never silently.
+            val deduped = dedupeAccountKeys(keys)
+            return URAccountDecode(deduped.keys, skipped + deduped.skipped)
         }
         else if (it.ur.registryType == RegistryType.BYTES) {
             val urBytes = it.ur.decodeFromRegistry()
@@ -510,15 +760,15 @@ class ScanPubKeyFragment : Fragment() {
             val buf = ByteBuffer.wrap(urBytes as ByteArray)
             val charBuffer = decoder.decode(buf)
             val xpubsJson = runCatching { JSONObject(charBuffer.toString()) }
-                .getOrElse { return null }
-            if (xpubsJson.has("bip84")) {
-                try {
-                    fingerprintHex = xpubsJson.getString("xfp").lowercase()
-                } catch (e: Exception) {}
-                return xpubsJson.getJSONObject("bip84").getString("_pub")
-            }
+                .getOrElse { return URAccountDecode(emptyList(), emptyList()) }
+            try {
+                fingerprintHex = xpubsJson.getString("xfp").lowercase()
+            } catch (e: Exception) {}
+            // #254: every leg the payload carries - the old read surfaced
+            // bip84 only and dropped bip44/bip49 on the floor.
+            return urBytesKeys(xpubsJson)
         }
-        return null
+        return URAccountDecode(emptyList(), emptyList())
     }
 
     override fun onResume() {
