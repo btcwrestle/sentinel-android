@@ -1,5 +1,6 @@
 package com.samourai.sentinel.ui.dojo
 
+import com.samourai.sentinel.core.DerivedNetwork
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -258,5 +259,89 @@ class PairingAckGateTest {
         val header = directoryHeader(communitySnapshot, communityPairing.pairing?.url)
         assertFalse(header?.flag?.contains("secret-api-key") == true)
         assertFalse(header?.name?.contains("secret-api-key") == true)
+    }
+
+    //
+    // Leg 4 (#250): the network row's evidence - declared (directory
+    // label behind the url-match guard) or whispered (URL mount),
+    // never a guess; the row stays hidden when there is none. The
+    // decision's declared-vs-whisper split lives in
+    // PairingNetworkDecisionTest; this pins what the dialog rows
+    // render.
+    //
+
+    private val testnetCommunitySnapshot = DojoDisplaySnapshot(
+        url = "http://community.example/test/v2",
+        name = "Directory Dojo",
+        flag = "SG",
+        jurisdiction = "Singapore",
+        network = "testnet",
+    )
+
+    @Test
+    fun `declared network renders for a community pairing`() {
+        val pairing = DojoPairing(pairing = Pairing(url = "http://community.example/test/v2"))
+        assertEquals(
+            DerivedNetwork.TESTNET,
+            pairingDetailRows(pairing, testnetCommunitySnapshot).network,
+        )
+    }
+
+    @Test
+    fun `the url whisper carries a manual testnet pairing`() {
+        // No snapshot at all - the /test mount is the only evidence.
+        val pairing = DojoPairing(pairing = Pairing(url = "http://manual.example/test/v2"))
+        assertEquals(DerivedNetwork.TESTNET, pairingDetailRows(pairing, null).network)
+    }
+
+    @Test
+    fun `a manual mainnet mount has no network row`() {
+        // No declaration, no whisper: absence of /test is "probably
+        // mainnet", and "probably" never renders.
+        val pairing = DojoPairing(pairing = Pairing(url = "http://manual.example/v2/"))
+        assertNull(pairingDetailRows(pairing, null).network)
+    }
+
+    @Test
+    fun `a stale snapshot label never declares`() {
+        // Directory metadata snapshotted for a different node: the
+        // url-match guard drops the label, and this mount is silent.
+        val pairing = DojoPairing(pairing = Pairing(url = "http://manual.example/v2/"))
+        assertNull(pairingDetailRows(pairing, testnetCommunitySnapshot).network)
+    }
+
+    @Test
+    fun `a non-declaring label is no declaration`() {
+        // signet/regtest/garbage: the label abstains (fail-closed,
+        // the fromXpub UNKNOWN discipline), the silent mount is all
+        // that remains.
+        val signetSnapshot = DojoDisplaySnapshot(
+            url = "http://community.example/v2/",
+            name = null,
+            flag = null,
+            jurisdiction = null,
+            network = "signet",
+        )
+        val pairing = DojoPairing(pairing = Pairing(url = "http://community.example/v2/"))
+        assertNull(pairingDetailRows(pairing, signetSnapshot).network)
+    }
+
+    @Test
+    fun `declared beats the whisper for the row`() {
+        // The directory says mainnet, the mount whispers testnet: the
+        // label is contract data, the mount is convention - the row
+        // shows the declaration.
+        val declaredMainnetSnapshot = DojoDisplaySnapshot(
+            url = "http://community.example/test/v2",
+            name = null,
+            flag = null,
+            jurisdiction = null,
+            network = "mainnet",
+        )
+        val pairing = DojoPairing(pairing = Pairing(url = "http://community.example/test/v2"))
+        assertEquals(
+            DerivedNetwork.MAINNET,
+            pairingDetailRows(pairing, declaredMainnetSnapshot).network,
+        )
     }
 }

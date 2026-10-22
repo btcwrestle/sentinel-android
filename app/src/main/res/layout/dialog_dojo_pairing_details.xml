@@ -72,6 +72,34 @@
             tools:text="Singapore" />
     </LinearLayout>
 
+    <!-- #250: the network row - evidence only (directory label or URL
+         whisper), rendered by the sheet when either is present; absent
+         means absent, never a placeholder. -->
+    <LinearLayout
+        android:id="@+id/dojoPairingNetworkRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="vertical"
+        android:visibility="gone"
+        tools:visibility="visible">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/dojo_pairing_row_network"
+            android:textColor="#9A9A9A"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/dojoPairingNetworkValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="13sp"
+            tools:text="Testnet" />
+    </LinearLayout>
+
     <LinearLayout
         android:id="@+id/dojoPairingUrlRow"
         android:layout_width="match_parent"

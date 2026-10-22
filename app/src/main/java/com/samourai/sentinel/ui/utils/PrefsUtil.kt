@@ -65,6 +65,13 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
     // pairing (DojoUtility.clearDojo); rides export()/import()
     // reflection like the rest.
     var dojoDisplayJurisdiction by stringPref(defaultValue = null)
+    // #250: the directory's network declaration for the paired node
+    // ("mainnet"/"testnet") - the one contract-grade network source,
+    // unlike the URL whisper. Snapshotted beside the quartet above
+    // at directory select time, normalized at read
+    // (normalizeDeclaredNetwork), cleared with the pairing. Rides
+    // export()/import() reflection like the rest.
+    var dojoDisplayNetwork by stringPref(defaultValue = null)
     // #119 Route A / #122: sibling explorer declared by the paired
     // Dojo's pairing payload (optional; absent = no self rung).
     // Snapshot written at the pairing capture sites, restored by
