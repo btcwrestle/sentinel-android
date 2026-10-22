@@ -140,6 +140,19 @@ class LogRedactionTest {
     }
 
     @Test
+    fun upubInUrlShapeIsRedacted() {
+        // The #96 device pass found this gap the hard way: upub (the
+        // testnet P2SH-witness SLIP-132 prefix) was missing from the
+        // alternation and a raw key rode a wire line on a live sync;
+        // no CI case had ever exercised the prefix.
+        val payload = "upub" + "a".repeat(107)
+        val line = "--> GET http://$host32.onion/api/v2/wallet?active=$payload HTTP/1.1"
+        val out = LogRedaction.redact(line)
+        assertFalse("upub must not survive", out.contains(payload))
+        assertTrue("xpub-family marker must render", out.contains("XPUB_REDACTED"))
+    }
+
+    @Test
     fun maskedHttpLoggerRidesTimberAndRedacts() {
         val lines = mutableListOf<Pair<String?, String>>()
         val tree = object : Timber.Tree() {

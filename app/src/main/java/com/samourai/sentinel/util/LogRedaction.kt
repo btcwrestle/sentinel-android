@@ -43,10 +43,14 @@ object LogRedaction {
      * Extended public keys as they ride URLs and payloads (#96's
      * acceptance condition: txids/addresses/xpubs masked). The
      * 90-char floor keeps anything shorter than a real key
-     * (111-ish chars total) untouched; prefixes cover mainnet,
-     * testnet, and the script-family variants.
+     * (111-ish chars total) untouched; the prefixes are the
+     * complete SLIP-132 extended-public set - mainnet
+     * xpub/ypub/zpub, testnet tpub/upub/vpub. upub was missing
+     * until the #96 device pass (2026-10-22) caught a raw
+     * testnet key riding a wire line - no CI case had ever
+     * exercised the prefix.
      */
-    private val XPUB = Regex("\\b(xpub|zpub|ypub|tpub|vpub)[1-9A-HJ-NP-Za-km-z]{90,}")
+    private val XPUB = Regex("\\b(xpub|zpub|ypub|tpub|upub|vpub)[1-9A-HJ-NP-Za-km-z]{90,}")
 
     /**
      * The Dojo access-token query parameter (Arc B). ApiService's
