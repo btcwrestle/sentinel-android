@@ -116,6 +116,9 @@ class DojoUtility {
         // #256: jurisdiction is directory display metadata like the
         // trio above - it dies with the pairing, never rides a re-pair.
         prefsUtil.dojoDisplayJurisdiction = null
+        // #250: the directory network label dies with the pairing,
+        // with its snapshot siblings.
+        prefsUtil.dojoDisplayNetwork = null
         prefsUtil.dojoExplorerUrl = null
         prefsUtil.dojoExplorerType = null
     }

@@ -16,6 +16,7 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
@@ -24,6 +25,9 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.invertedx.hummingbird.QRScanner
 import com.samourai.sentinel.R
 import com.samourai.sentinel.api.TlsPolicy
+import com.samourai.sentinel.core.DerivedNetwork
+import com.samourai.sentinel.core.NetworkClassifier
+import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.databinding.FragmentBottomsheetViewPagerBinding
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.tor.EnumTorState
@@ -211,6 +215,11 @@ data class DojoDisplaySnapshot(
     val name: String?,
     val flag: String?,
     val jurisdiction: String?,
+    // #250: the directory's network declaration for the selected
+    // node - raw label ("mainnet"/"testnet"), normalized at every
+    // read; the url-match guards keep a stale label out of every
+    // dialog and every decision.
+    val network: String? = null,
 )
 
 /**
@@ -259,6 +268,11 @@ data class PairingDetailRows(
     val url: String?,
     val version: String?,
     val explorer: String?,
+    // #250: the network evidence for the pre-pair dialog's network
+    // row - declared (directory label, url-match-guarded) or
+    // whispered (URL mount). Null means the row stays hidden: no
+    // evidence, never a guess.
+    val network: DerivedNetwork? = null,
 )
 
 fun pairingDetailRows(
@@ -269,11 +283,17 @@ fun pairingDetailRows(
     val jurisdiction = snapshot
         ?.takeIf { pairingUrl != null && it.url == pairingUrl }
         ?.jurisdiction?.takeIf { it.isNotBlank() }
+    // #250: the evidence - declaration first (contract), the URL
+    // mount's whisper second (convention), neither means none.
+    val declaredNetwork = snapshot
+        ?.takeIf { pairingUrl != null && it.url == pairingUrl }
+        ?.network?.let { normalizeDeclaredNetwork(it) }
     return PairingDetailRows(
         jurisdiction = jurisdiction,
         url = pairingUrl,
         version = pairing.pairing?.version?.takeIf { it.isNotBlank() },
         explorer = pairing.explorer?.url?.takeIf { it.isNotBlank() },
+        network = declaredNetwork ?: NetworkClassifier.fromUrl(pairingUrl),
     )
 }
 
@@ -330,6 +350,12 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     // old order - the dialog parses the payload directly, and the
     // response rides mainHandler into commitPairing() by closure.
     private val pairingAckGate = PairingAckGate()
+
+    // #250: the network decision, computed when the pre-pair dialog
+    // arms and consumed at the commit. Not a #261-style staging
+    // field: the payload never lives here, only the dialog's own
+    // outcome - held the way the gate holds its state.
+    private var networkDecision: PairingNetworkDecision = PairingNetworkDecision.Proceed
 
     private val dojoUtil: DojoUtility by KoinJavaComponent.inject(DojoUtility::class.java);
 
@@ -741,12 +767,58 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             headerRow.visibility = View.VISIBLE
         }
         bindDetailRow(view, R.id.dojoPairingJurisdictionRow, R.id.dojoPairingJurisdictionValue, rows.jurisdiction)
+        // #250: the network guard - evidence at dialog time, the
+        // decision before the buttons render. Declared rides the
+        // snapshot's url-match guard (a stale directory label can
+        // never bless or veto a pairing); the whisper comes from
+        // the URL mount. The #261 gate is untouched - the guard
+        // only decides what the buttons do.
+        val pairingUrl = pairing.pairing?.url
+        val declaredNetwork = normalizeDeclaredNetwork(
+            snapshot?.takeIf { pairingUrl != null && it.url == pairingUrl }?.network
+        )
+        networkDecision = pairingNetworkDecision(
+            appEstablished = SentinelState.isNetworkEstablished(),
+            appIsTestnet = prefsUtil.testnet == true,
+            whisper = NetworkClassifier.fromUrl(pairingUrl),
+            declared = declaredNetwork,
+        )
+        rows.network?.let { evidence ->
+            bindDetailRow(
+                view, R.id.dojoPairingNetworkRow, R.id.dojoPairingNetworkValue,
+                networkName(evidence == DerivedNetwork.TESTNET)
+            )
+        }
         bindDetailRow(view, R.id.dojoPairingUrlRow, R.id.dojoPairingUrlValue, rows.url)
         bindDetailRow(view, R.id.dojoPairingVersionRow, R.id.dojoPairingVersionValue, rows.version)
         bindDetailRow(view, R.id.dojoPairingExplorerRow, R.id.dojoPairingExplorerValue, rows.explorer)
-        MaterialAlertDialogBuilder(requireContext())
+        val decision = networkDecision
+        val appNetworkName = networkName(prefsUtil.testnet == true)
+        val evidenceName = (declaredNetwork ?: NetworkClassifier.fromUrl(pairingUrl))
+            ?.let { networkName(it == DerivedNetwork.TESTNET) }
+        val message = getString(R.string.dojo_pairing_confirm_message) + when (decision) {
+            is PairingNetworkDecision.ProceedAndSetNetwork ->
+                "\n\n" + getString(
+                    R.string.dojo_pairing_network_will_set,
+                    networkName(decision.targetIsTestnet)
+                )
+            PairingNetworkDecision.ConfirmMismatch ->
+                "\n\n" + getString(
+                    R.string.dojo_pairing_network_mismatch,
+                    evidenceName,
+                    appNetworkName
+                )
+            PairingNetworkDecision.Refuse ->
+                "\n\n" + getString(
+                    R.string.dojo_pairing_network_refuse,
+                    evidenceName,
+                    appNetworkName
+                )
+            else -> ""
+        }
+        val dialog = MaterialAlertDialogBuilder(requireContext())
             .setTitle(getString(R.string.dojo_pairing_confirm_title))
-            .setMessage(getString(R.string.dojo_pairing_confirm_message))
+            .setMessage(message)
             .setView(view)
             .setCancelable(false)
             .setPositiveButton(getString(R.string.dojo_pairing_confirm_accept)) { _, _ ->
@@ -756,6 +828,12 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
                 onPairingDeclineTapped()
             }
             .show()
+        // #250: the refuse arm is read-only - the reason renders and
+        // Pair cannot fire; Decline is the one way out, spending the
+        // gate's decline arm (dismiss + toast, zero contact).
+        if (networkDecision == PairingNetworkDecision.Refuse) {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+        }
     }
 
     /**
@@ -771,6 +849,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             prefsUtil.dojoDisplayName,
             prefsUtil.dojoDisplayFlag,
             prefsUtil.dojoDisplayJurisdiction,
+            prefsUtil.dojoDisplayNetwork,
         )
 
     // #256: a detail row renders only when it carries real data -
@@ -783,6 +862,13 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             view.findViewById<View>(rowId).visibility = View.VISIBLE
         }
     }
+
+    /**
+     * #250: the dialogs' network vocabulary - the Network page's
+     * strings (#208), reused, never duplicated.
+     */
+    private fun networkName(isTestnet: Boolean): String =
+        getString(if (isTestnet) R.string.network_testnet else R.string.network_mainnet)
 
     /**
      * #261: Pair tapped - the consent is spent and the connect
@@ -815,6 +901,16 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
      */
     private fun commitPairing(pairing: DojoPairing, authBody: JSONObject) {
         val node = pairing.pairing ?: return
+        // #250: the consented network set - the empty-keychain arm of
+        // the guard. The pairing IS the network's establishment
+        // (#42's own rule; the Pair tap was the consent, the will-set
+        // line the disclosure). Deliberately NOT performNetworkSwitch
+        // (#208): that arm clears the dojo and restarts, built for
+        // established keychains - here the prefs listener flips
+        // networkParams with nothing to strand.
+        (networkDecision as? PairingNetworkDecision.ProceedAndSetNetwork)?.let {
+            prefsUtil.testnet = it.targetIsTestnet
+        }
         dojoUtil.setDojoPayload(payload)
         prefsUtil.apiEndPointTor = node.url
         prefsUtil.apiEndPoint = node.url

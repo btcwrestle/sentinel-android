@@ -421,4 +421,18 @@
     <string name="dojo_pairing_row_explorer" translatable="false">Explorer</string>
     <string name="dojo_pairing_success_title" translatable="false">Dojo paired</string>
     <string name="dojo_pairing_success_message" translatable="false">Sentinel is now paired with</string>
+
+    <!--
+      #250: the pairing-path network guard. The row label joins the
+      dojo_pairing_row_* family; the three decision lines append to
+      the pre-pair dialog's lead-in message under the #256 rows
+      (rendered values reuse network_testnet/network_mainnet, not
+      duplicates). Marked translatable="false" to match the
+      project's existing pattern of English fallbacks for newer
+      strings (see dojo_pairing_confirm_* above).
+    -->
+    <string name="dojo_pairing_row_network" translatable="false">Network</string>
+    <string name="dojo_pairing_network_will_set" translatable="false">Pairing this Dojo will set Sentinel to %1$s.</string>
+    <string name="dojo_pairing_network_mismatch" translatable="false">Warning: this Dojo looks like a %1$s node, but Sentinel tracks %2$s. Pairing it may break how balances and addresses display.</string>
+    <string name="dojo_pairing_network_refuse" translatable="false">This Dojo is declared %1$s, but Sentinel tracks %2$s, set by your keys. Pairing cannot continue.</string>
 </resources>

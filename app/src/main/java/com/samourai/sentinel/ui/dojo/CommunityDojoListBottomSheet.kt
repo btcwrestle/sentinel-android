@@ -97,6 +97,11 @@ class CommunityDojoListBottomSheet() : GenericBottomSheet() {
                 // datum, display-only, cleared with the pairing (see
                 // DojoUtility.clearDojo).
                 prefsUtil.dojoDisplayJurisdiction = node.jurisdiction?.takeIf { it.isNotBlank() }
+                // #250: the directory's network declaration rides the
+                // same snapshot - the contract-grade source the pre-pair
+                // dialog's guard reads. Raw here like jurisdiction;
+                // normalizeDeclaredNetwork decides at read time.
+                prefsUtil.dojoDisplayNetwork = node.network?.takeIf { it.isNotBlank() }
                 // #210: resolve the host sheet at click time - the old
                 // constructor lambda died with the instance on every
                 // recreation. The configure sheet's existing #181 entry point
