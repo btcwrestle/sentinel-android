@@ -76,7 +76,9 @@ public class WebUtil {
         TlsPolicy.INSTANCE.install(builder);
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back - bodies carry raw
+            // tx hex and payload JSON. BASIC lines ride MaskedHttpLogger.
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -96,7 +98,6 @@ public class WebUtil {
     public String postURL(String URL, FormBody args) throws Exception {
 
 
-
         if ( PrefsUtil.getInstance(context).getValue(PrefsUtil.ENABLE_TOR, false)) {
             return tor_postURL(URL,args);
         }
@@ -111,7 +112,8 @@ public class WebUtil {
         builder.readTimeout(60,TimeUnit.HOURS);
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -144,7 +146,8 @@ public class WebUtil {
         TlsPolicy.INSTANCE.install(builder);
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -179,7 +182,8 @@ public class WebUtil {
                 .readTimeout(90, TimeUnit.SECONDS);
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
         // #229: host-scoped policy instead of trust-all; clearnet HTTPS now
         // keeps normal verification even in the Tor code path.
@@ -203,7 +207,6 @@ public class WebUtil {
 
     public String tor_postURL(String URL, String args) throws Exception {
 
-
         final MediaType JSON
                 = MediaType.parse("application/json; charset=utf-8");
         RequestBody body = RequestBody.create(JSON, args.toString());
@@ -226,7 +229,8 @@ public class WebUtil {
         }
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -246,7 +250,6 @@ public class WebUtil {
 
     public String tor_postURL(String URL, FormBody args) throws Exception {
 
-
         // #240: proxy restored (see tor_getURL) - fail closed, never direct.
         Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
         if (torProxy == null) {
@@ -264,7 +267,8 @@ public class WebUtil {
         }
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
