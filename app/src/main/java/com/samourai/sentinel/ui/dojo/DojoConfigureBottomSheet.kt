@@ -47,6 +47,7 @@ import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent
+import timber.log.Timber
 import java.io.IOException
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
@@ -676,11 +677,17 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             // only, on the main looper from any caller thread
             // (setDojo is main-only post-#176; this post stays as
             // defense).
-            mainHandler.post {
-                dismiss()
-                if (context != null)
-                    Toast.makeText(context, getString(R.string.dojo_connect_error, e.toString()), Toast.LENGTH_LONG).show()
-            }
+            // #264 (Arc C): the exception never reaches the UI. This
+            // catch swallows everything the try block throws, including
+            // Request.Builder().url()'s IllegalArgumentException, whose
+            // message embeds the pairing URL itself - an onion host for
+            // any Tor Dojo. The user gets the same deliberate static
+            // wording as every other post-consent failure arm; the
+            // detail goes to Timber, where the #267 MaskingDebugTree
+            // seam redacts both message and stack (the onion rides
+            // inside exception text - see util/LogRedaction.kt).
+            Timber.e(e, "pairing failed")
+            dismissAllOrToast(false)
         }
     }
 
