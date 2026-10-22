@@ -364,7 +364,6 @@
     <string name="no_dojo_connected">No Dojo connected</string>
     <string name="invalid_pairing_payload">Invalid pairing payload</string>
     <string name="invalid_payload">Invalid payload</string>
-    <string name="dojo_connect_error">Error: %1$s</string>
     <string name="dojo_pairing_details_unavailable">No Dojo pairing details available</string>
     <string name="no_api_key_found">No API key found</string>
     <string name="dojo_qr_render_failed">Could not render pairing QR code</string>
@@ -399,7 +398,10 @@
       window that did not exist when the gate sat after the 200. Wording
       says exactly what the state is: nothing committed, no wallet data
       out. Replaces dojo_connect_failed (removed: its only caller was
-      this sheet's generic fail toast). Marked translatable="false" to
+      this sheet's generic fail toast). #264 removed dojo_connect_error
+      the same way: its only caller was the sheet's catch-arm toast,
+      which rendered e.toString() - and with it the pairing URL - into
+      the UI. Marked translatable="false" to
       match the project's existing pattern of English fallbacks for
       newer strings (see dojo_pairing_confirm_* above).
     -->
