@@ -14,6 +14,8 @@ import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.transition.MaterialSharedAxis
 import com.samourai.sentinel.R
 import com.samourai.sentinel.api.ApiService
+import com.samourai.sentinel.core.NetworkClassifier
+import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.core.access.AccessFactory
 import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.repository.CollectionRepository
@@ -316,6 +318,46 @@ class ImportBackUpActivity : SentinelActivity() {
                         return@launch
                     }
 
+                    // #272: the backup door's network plan, computed
+                    // post-decrypt, pre-write - and pre-PIN: no point
+                    // asking for the PIN of an import that will be
+                    // refused. Pure planner in its own file (the
+                    // PairingNetworkDecision precedent), tick reads
+                    // captured here on Main (#82 pattern).
+                    val collectionsTicked = binding.importCollections.isChecked
+                    val clearExisting = binding.importClearExisting.isChecked
+                    val prefsTicked = binding.importPrefs.isChecked
+                    val dojoTicked = binding.importDojo.isChecked
+                    val currentTestnet = SentinelState.isTestNet()
+                    val networkPlan = backupImportNetworkPlan(
+                        currentTestnet = currentTestnet,
+                        existingVotes = repository.collectionsSnapshot()
+                            .flatMap { it.pubs }
+                            .map { NetworkClassifier.fromXpub(it.pubKey) },
+                        backupVotes = payload.first.orEmpty()
+                            .flatMap { it.pubs }
+                            .map { NetworkClassifier.fromXpub(it.pubKey) },
+                        importCollections = collectionsTicked,
+                        clearExisting = clearExisting,
+                        importPrefs = prefsTicked,
+                        backupPrefsTestnet = if (prefsTicked)
+                            payload.second.optBoolean("testnet", currentTestnet)
+                        else null,
+                        dojoWhisper = if (dojoTicked)
+                            NetworkClassifier.fromUrl(
+                                payload.third?.optJSONObject("pairing")?.optString("url")
+                            )
+                        else null
+                    )
+                    if (networkPlan.refusal != null) {
+                        setImportBusy(false)
+                        showFloatingSnackBar(
+                            binding.importPastePayloadBtn, networkPlan.refusal,
+                            anchorView = binding.importStartBtn.id
+                        )
+                        return@launch
+                    }
+
                     if (payload.second.get("pinEnabled").equals(true)) {
                         val fragmentManager = supportFragmentManager
                         val lockScreenDialog = LockScreenDialog(lockScreenMessage = "Enter pin code")
@@ -357,10 +399,21 @@ class ImportBackUpActivity : SentinelActivity() {
                                             }
                                         }
                                         if (binding.importDojo.isChecked) {
-                                            if (importDojoWithRetry(payload.third)) {
+                                            // #272: the plan may refuse the backup-borne
+                                            // Dojo (cross-network whisper) - the loud
+                                            // objection rides the completion snackbar
+                                            // and the pairing leg is skipped.
+                                            if (networkPlan.importDojo && importDojoWithRetry(payload.third)) {
                                                 payload.second.optString("apiEndPointTor").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPointTor = it }
                                                 payload.second.optString("apiEndPoint").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPoint = it }
-                                            } else {
+                                                // #273's PROCEED_AND_SET_NETWORK arm: the
+                                                // import tap was the consent, and the
+                                                // backup's Dojo is the first
+                                                // network-bearing input.
+                                                if (networkPlan.dojoSetsNetwork) {
+                                                    prefsUtil.testnet = networkPlan.postImportTestnet
+                                                }
+                                            } else if (networkPlan.importDojo) {
                                                 dojoPairingFailed = true
                                             }
                                         }
@@ -381,10 +434,21 @@ class ImportBackUpActivity : SentinelActivity() {
                                                 " ($ok of ${ok + bad} keys registered - retry from Network screen)"
                                             else ""
                                         } ?: ""
-                                        val dojoNote = if (dojoPairingFailed)
-                                            " Dojo pairing failed - retry from Network screen."
-                                        else ""
-                                        val note = "$xpubNote$dojoNote"
+                                        // #272: network notes, runtime-composed -
+                                        // a successful will-set leg supersedes the
+                                        // interim prefs/keychain flip note; a failed
+                                        // one leaves it standing.
+                                        val networkNote =
+                                            if (networkPlan.dojoSetsNetwork && !dojoPairingFailed)
+                                                networkPlan.dojoSetNote.orEmpty()
+                                            else
+                                                networkPlan.flipNote.orEmpty() +
+                                                    networkPlan.dojoObjection.orEmpty()
+                                        val note = "$xpubNote" +
+                                            (if (dojoPairingFailed)
+                                                " Dojo pairing failed - retry from Network screen."
+                                            else "") +
+                                            networkNote
                                         showFloatingSnackBar(
                                             binding.importPastePayloadBtn, "Successfully imported$note",
                                             anchorView = binding.importStartBtn.id,
@@ -437,10 +501,21 @@ class ImportBackUpActivity : SentinelActivity() {
                                     }
                                 }
                                 if (binding.importDojo.isChecked) {
-                                    if (importDojoWithRetry(payload.third)) {
+                                    // #272: the plan may refuse the backup-borne
+                                    // Dojo (cross-network whisper) - the loud
+                                    // objection rides the completion snackbar
+                                    // and the pairing leg is skipped.
+                                    if (networkPlan.importDojo && importDojoWithRetry(payload.third)) {
                                         payload.second.optString("apiEndPointTor").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPointTor = it }
                                         payload.second.optString("apiEndPoint").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPoint = it }
-                                    } else {
+                                        // #273's PROCEED_AND_SET_NETWORK arm: the
+                                        // import tap was the consent, and the
+                                        // backup's Dojo is the first
+                                        // network-bearing input.
+                                        if (networkPlan.dojoSetsNetwork) {
+                                            prefsUtil.testnet = networkPlan.postImportTestnet
+                                        }
+                                    } else if (networkPlan.importDojo) {
                                         dojoPairingFailed = true
                                     }
                                 }
@@ -461,10 +536,21 @@ class ImportBackUpActivity : SentinelActivity() {
                                         " ($ok of ${ok + bad} keys registered - retry from Network screen)"
                                     else ""
                                 } ?: ""
-                                val dojoNote = if (dojoPairingFailed)
-                                    " Dojo pairing failed - retry from Network screen."
-                                else ""
-                                val note = "$xpubNote$dojoNote"
+                                // #272: network notes, runtime-composed -
+                                // a successful will-set leg supersedes the
+                                // interim prefs/keychain flip note; a failed
+                                // one leaves it standing.
+                                val networkNote =
+                                    if (networkPlan.dojoSetsNetwork && !dojoPairingFailed)
+                                        networkPlan.dojoSetNote.orEmpty()
+                                    else
+                                        networkPlan.flipNote.orEmpty() +
+                                            networkPlan.dojoObjection.orEmpty()
+                                val note = "$xpubNote" +
+                                    (if (dojoPairingFailed)
+                                        " Dojo pairing failed - retry from Network screen."
+                                    else "") +
+                                    networkNote
                                 showFloatingSnackBar(
                                     binding.importPastePayloadBtn, "Successfully imported$note",
                                     anchorView = binding.importStartBtn.id,
@@ -510,6 +596,32 @@ class ImportBackUpActivity : SentinelActivity() {
                         )
                         return@launch
                     }
+                    // #272: the same door plan for the Samourai arm -
+                    // these imports always merge (replace=false), so an
+                    // established wallet plus a cross-network backup is
+                    // a hard refusal; an empty wallet announces the flip.
+                    val currentTestnet = SentinelState.isTestNet()
+                    val networkPlan = backupImportNetworkPlan(
+                        currentTestnet = currentTestnet,
+                        existingVotes = repository.collectionsSnapshot()
+                            .flatMap { it.pubs }
+                            .map { NetworkClassifier.fromXpub(it.pubKey) },
+                        backupVotes = collection.pubs
+                            .map { NetworkClassifier.fromXpub(it.pubKey) },
+                        importCollections = true,
+                        clearExisting = false,
+                        importPrefs = false,
+                        backupPrefsTestnet = null,
+                        dojoWhisper = null
+                    )
+                    if (networkPlan.refusal != null) {
+                        setImportBusy(false)
+                        showFloatingSnackBar(
+                            binding.importPastePayloadBtn, networkPlan.refusal,
+                            anchorView = binding.importStartBtn.id
+                        )
+                        return@launch
+                    }
                     viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
                         try {
                             ExportImportUtil().startImportCollections(
@@ -526,7 +638,7 @@ class ImportBackUpActivity : SentinelActivity() {
                                 binding.importStartBtn.text = "Imported \u2713"
                                 requireRestart = true
                                 showFloatingSnackBar(
-                                    binding.importPastePayloadBtn, "Successfully imported",
+                                    binding.importPastePayloadBtn, "Successfully imported${networkPlan.flipNote.orEmpty()}",
                                     anchorView = binding.importStartBtn.id,
                                     actionText = "restart",
                                     actionClick = { restart() }
@@ -551,6 +663,10 @@ class ImportBackUpActivity : SentinelActivity() {
                 // click thread) before the IO hop.
                 val payloadText = payloadObject.toString()
                 val password = binding.importPasswordInput.text.toString()
+                // #272: hoisted for the completion handler - a refusal
+                // is the import's outcome (not an error, not a success).
+                var networkRefusal: String? = null
+                var networkFlipNote: String? = null
                 viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
                     try {
                         val payload = ExportImportUtil().decryptSentinelLegacy(
@@ -562,10 +678,31 @@ class ImportBackUpActivity : SentinelActivity() {
                             val collection = PubKeyCollection()
                             collection.pubs = pubKeys
                             collection.collectionLabel = "Sentinel Import"
-                            ExportImportUtil().startImportCollections(
-                                    arrayListOf(collection),
-                                    false
+                            // #272: the door plan, post-decrypt pre-write.
+                            // Legacy imports always merge (no clear tick on
+                            // this arm) and never carry prefs or a dojo.
+                            val networkPlan = backupImportNetworkPlan(
+                                currentTestnet = SentinelState.isTestNet(),
+                                existingVotes = repository.collectionsSnapshot()
+                                    .flatMap { it.pubs }
+                                    .map { NetworkClassifier.fromXpub(it.pubKey) },
+                                backupVotes = pubKeys
+                                    .map { NetworkClassifier.fromXpub(it.pubKey) },
+                                importCollections = true,
+                                clearExisting = false,
+                                importPrefs = false,
+                                backupPrefsTestnet = null,
+                                dojoWhisper = null
                             )
+                            if (networkPlan.refusal != null) {
+                                networkRefusal = networkPlan.refusal
+                            } else {
+                                networkFlipNote = networkPlan.flipNote
+                                ExportImportUtil().startImportCollections(
+                                        arrayListOf(collection),
+                                        false
+                                )
+                            }
                         } else {
                             throw IllegalStateException("0 public keys found")
                         }
@@ -576,11 +713,20 @@ class ImportBackUpActivity : SentinelActivity() {
                 }
                         .invokeOnCompletion {
                             runOnUiThread {
-                            if (it == null) {
+                            val refusalMsg = networkRefusal
+                            if (refusalMsg != null) {
+                                // #272: the refusal IS the outcome - not a
+                                // success toast, not an error stack.
+                                setImportBusy(false)
+                                showFloatingSnackBar(
+                                        binding.importPastePayloadBtn, refusalMsg,
+                                        anchorView = binding.importStartBtn.id
+                                )
+                            } else if (it == null) {
                                 binding.importStartBtn.text = "Imported \u2713"
                                 requireRestart = true
                                 showFloatingSnackBar(
-                                        binding.importPastePayloadBtn, "Successfully imported",
+                                        binding.importPastePayloadBtn, "Successfully imported${networkFlipNote.orEmpty()}",
                                         anchorView = binding.importStartBtn.id,
                                         actionText = "restart",
                                         actionClick = { restart() }
