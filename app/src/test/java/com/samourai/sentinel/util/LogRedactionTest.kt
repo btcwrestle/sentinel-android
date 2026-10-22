@@ -114,4 +114,48 @@ class LogRedactionTest {
             lines.any { it.contains("UnknownHostException") },
         )
     }
+
+    @Test
+    fun atTokenInUrlShapeIsRedacted() {
+        val line = "--> GET https://$host32.onion/api/v2/wallet?active=abc&at=tok123456 HTTP/1.1"
+        val out = LogRedaction.redact(line)
+        assertFalse("token must not survive", out.contains("at=tok123456"))
+        assertTrue("at marker must render", out.contains("at=REDACTED"))
+        assertTrue("host rule still applies", out.contains("ONION_REDACTED"))
+    }
+
+    @Test
+    fun atRuleDoesNotBiteLongerParamNames() {
+        val line = "get?format=json&latitude=5"
+        assertEquals("longer names ending in 'at' pass through", line, LogRedaction.redact(line))
+    }
+
+    @Test
+    fun xpubInUrlShapeIsRedacted() {
+        val payload = "xpub" + "a".repeat(107)
+        val line = "--> GET https://$host32.onion/api/v2/wallet?active=$payload HTTP/1.1"
+        val out = LogRedaction.redact(line)
+        assertFalse("xpub must not survive", out.contains(payload))
+        assertTrue("xpub marker must render", out.contains("XPUB_REDACTED"))
+    }
+
+    @Test
+    fun maskedHttpLoggerRidesTimberAndRedacts() {
+        val lines = mutableListOf<Pair<String?, String>>()
+        val tree = object : Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                lines += tag to message
+            }
+        }
+        Timber.plant(tree)
+        try {
+            MaskedHttpLogger().log("--> GET https://$host32.onion/api?at=tok123 HTTP/1.1")
+        } finally {
+            Timber.uproot(tree)
+        }
+        assertEquals("exactly one line through the forest", 1, lines.size)
+        assertEquals("explicit tag", "OkHttp", lines[0].first)
+        assertFalse("onion masked in the wire line", lines[0].second.contains("$host32.onion"))
+        assertTrue("at masked in the wire line", lines[0].second.contains("at=REDACTED"))
+    }
 }

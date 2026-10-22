@@ -10,6 +10,7 @@ import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.utils.PrefsUtil
+import com.samourai.sentinel.util.MaskedHttpLogger
 import com.samourai.sentinel.util.apiScope
 import com.samourai.wallet.api.backend.beans.UnspentOutput
 import com.samourai.wallet.api.backend.beans.WalletResponse
@@ -168,6 +169,7 @@ open class ApiService {
             .build()
         return client.newCall(request).await()
     }
+
 
     suspend fun checkImportStatus(pubKey: String) = withContext(Dispatchers.IO) {
         buildClient(excludeAuthenticator = true)
@@ -396,14 +398,14 @@ open class ApiService {
             excludeAuthenticator: Boolean = false,
         ): OkHttpClient {
             val builder = OkHttpClient.Builder()
-            // #258/#96: debug HTTP logging is off. HEADERS printed every
-            // request line to logcat: the Dojo onion URL and the "at"
-            // access-token query parameter - the same leak class as the
-            // readPayload() pairing log. A masked HTTP logger (onion host
-            // + token redaction) is tracked in the #96 follow-up; until
-            // then, debug builds log nothing from the wire.
+            // #264/#96 (Arc B): the #258 silencer is retired. The wire
+            // logger returns at Level.BASIC - request and response lines
+            // only; headers and bodies never log (addresses, payload
+            // JSON, raw tx hex) - through MaskedHttpLogger, which rides
+            // Timber's masking seam and redacts the onion host, the
+            // "at" token, and the xpub in wallet URLs itself.
             if (BuildConfig.DEBUG) {
-                builder.addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.NONE))
+                builder.addInterceptor(HttpLoggingInterceptor(MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC))
             }
             builder.callTimeout(60, TimeUnit.SECONDS)
             builder.readTimeout(90, TimeUnit.SECONDS)
