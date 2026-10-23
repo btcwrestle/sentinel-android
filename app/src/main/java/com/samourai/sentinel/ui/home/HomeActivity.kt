@@ -152,8 +152,8 @@ class HomeActivity : SentinelActivity() {
         })
 
         model.getBalance().observe(this) {
-            updateBalance(it)
             balance = it
+            applyBalanceDisplayMode()
         }
 
         // Tap the balance to cycle BTC -> sats -> masked -> BTC.
@@ -163,9 +163,7 @@ class HomeActivity : SentinelActivity() {
             collectionsAdapter.notifyDataSetChanged()
         }
 
-        binding.exchangeRateTxt.visibility = if (prefsUtil.fiatDisabled == true) View.INVISIBLE else View.VISIBLE
-
-        model.getFiatBalance().observe(this, { updateFiat(it) })
+        model.getFiatBalance().observe(this) { applyBalanceDisplayMode() }
 
         binding.fab.setBackgroundResource(R.drawable.background_gradient);
 
@@ -458,8 +456,15 @@ class HomeActivity : SentinelActivity() {
      * (BTC / sats / masked). Street mode always wins and masks everything.
      */
     private fun applyBalanceDisplayMode() {
-        if (balance == -1L) return
         val mode = currentDisplayMode()
+        val hideFiat = prefsUtil.streetMode == true
+            || prefsUtil.fiatDisabled == true
+            || mode == BalanceDisplayMode.MASKED
+            || mode == BalanceDisplayMode.SATS
+        if (balance == -1L) {
+            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
+            return
+        }
         if (prefsUtil.streetMode == true || mode == BalanceDisplayMode.MASKED) {
             binding.homeBalanceBtc.text = BalanceDisplayFormatter.MASKED_TEXT
             binding.exchangeRateTxt.visibility = View.INVISIBLE
@@ -470,9 +475,8 @@ class HomeActivity : SentinelActivity() {
             binding.exchangeRateTxt.visibility = View.INVISIBLE
         } else {
             updateBalance(balance)
-            binding.exchangeRateTxt.visibility =
-                if (prefsUtil.fiatDisabled == true) View.INVISIBLE else View.VISIBLE
-            if (prefsUtil.fiatDisabled != true) {
+            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
+            if (!hideFiat) {
                 model.getFiatBalance().value?.let { updateFiat(it) }
             }
         }
@@ -480,16 +484,8 @@ class HomeActivity : SentinelActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (prefsUtil.streetMode == true) {
-            binding.homeBalanceBtc.text = "********"
-            binding.exchangeRateTxt.text = "********"
-        }
-        if (balance != -1L)
-            updateBalance(balance)
-
         applyBalanceDisplayMode()
-
-        binding.exchangeRateTxt.visibility = if (prefsUtil.fiatDisabled == true) View.INVISIBLE else View.VISIBLE
+        collectionsAdapter.notifyDataSetChanged()
     }
 
     private fun setUp() {

@@ -128,6 +128,11 @@ class TransactionsListFragment : Fragment() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        transactionAdapter.notifyDataSetChanged()
+    }
+
     companion object {
         private const val ARG_POSITION = "position"
         private const val ARG_COLLECTION_ID = "collectionId"
