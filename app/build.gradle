@@ -18,6 +18,15 @@ android {
         multiDexEnabled = true
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+    // Release signing. Absent locally: assemble*Release stays unsigned.
+    // CI tag builds set these after decoding ANDROID_RELEASE_KEYSTORE_BASE64
+    // (see build-staging-apk.yml and the README). No keystore is committed.
+    def releaseStore = providers.environmentVariable("CI_RELEASE_KEYSTORE").getOrNull()
+    def releaseStorePass = providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").getOrNull()
+    def releaseAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").getOrNull()
+    def releaseKeyPass = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").getOrNull()
+    def hasReleaseKey = releaseStore && releaseStorePass && releaseAlias && releaseKeyPass && file(releaseStore).exists()
+
     signingConfigs {
         // Stable signing for CI-built test APKs so that successive builds
         // can update over each other instead of failing signature checks.
@@ -31,6 +40,16 @@ android {
                 keyPassword "android"
             }
         }
+        // Not named "release": AGP would attach a signingConfigs.release
+        // to the release build type even when the keystore is missing.
+        ciRelease {
+            if (hasReleaseKey) {
+                storeFile file(releaseStore)
+                storePassword releaseStorePass
+                keyAlias releaseAlias
+                keyPassword releaseKeyPass
+            }
+        }
     }
 
     buildTypes {
@@ -42,8 +61,14 @@ android {
         }
 
         release {
-            minifyEnabled false
+            // BuildConfig.DEBUG follows this flag. SentinelApplication plants
+            // MaskingDebugTree only when DEBUG is true.
+            debuggable false
+            minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseKey) {
+                signingConfig signingConfigs.ciRelease
+            }
         }
     }
     packagingOptions {

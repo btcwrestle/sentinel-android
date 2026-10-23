@@ -41,6 +41,7 @@ app/output.json
 
 sentinel-ci-debug.keystore
 *.keystore
+*.jks
 
 # Samourai backend API key file (dead backend, refs #3)
 samourai.api

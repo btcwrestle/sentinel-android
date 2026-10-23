@@ -108,20 +108,54 @@ Manual and imported labels always win over automatic ones.
 
 ## Releases
 
-Tagging a `v*` tag runs the release workflow: a gated job builds the staging
-flavor and publishes the APK plus a SHA256SUMS.txt to GitHub Releases. First
-pipeline release: v5.1.3-dojobay.1 (staged as a prerelease; the app reports
-5.1.2 internally — the release-line decision is tracked in #66).
+Tagging a `v*` tag runs the release workflow. The tag job builds the staging
+release variant (`assembleStagingRelease`), signs it with the CI release
+keystore, and publishes that APK plus a SHA256SUMS.txt to GitHub Releases.
+The release variant is minified with R8. It installs as **Sentinel Beta**
+(applicationId `com.samourai.sentinel.staging`) and coexists with a production
+Sentinel install.
+
+The staging debug APK is still built for internal testing and uploaded as a
+short-lived Actions artifact. It is not attached to Releases.
+
+First pipeline release: v5.1.3-dojobay.1 (staged as a prerelease; the app reports
+5.1.2 internally — the release-line decision is tracked in #66). Packages
+signed with a different certificate cannot update an existing install; uninstall
+that package before installing one signed by the release key.
+
+### Release signing secrets
+
+Tag builds read these Actions repository secrets
+(Settings → Secrets and variables → Actions). Do not commit the keystore.
+
+| Secret | Value |
+|---|---|
+| `ANDROID_RELEASE_KEYSTORE_BASE64` | Base64 of the release keystore (PKCS12 or JKS), one line |
+| `ANDROID_RELEASE_STORE_PASSWORD` | Keystore store password |
+| `ANDROID_RELEASE_KEY_ALIAS` | Key alias inside the keystore |
+| `ANDROID_RELEASE_KEY_PASSWORD` | Key password (same as the store password for PKCS12) |
+
+Encode the keystore with `base64 < release.keystore | tr -d '\n'`. The workflow
+decodes it to a temp file and points Gradle at it with `CI_RELEASE_KEYSTORE`.
+Debug artifacts still use `ANDROID_DEBUG_KEYSTORE_BASE64`.
+
+A local release build does not need those secrets. With `CI_RELEASE_KEYSTORE`,
+`ANDROID_RELEASE_STORE_PASSWORD`, `ANDROID_RELEASE_KEY_ALIAS`, and
+`ANDROID_RELEASE_KEY_PASSWORD` unset, Gradle writes an unsigned APK.
 
 ## For testers
 
-The staging flavor installs as **Sentinel Beta** (applicationId
-`com.samourai.sentinel.staging`) and coexists with a production Sentinel
-install. Grab an APK from the
+Install the APK from the
 [Releases](https://github.com/tetragrammalol/sentinel-android-dojobay/releases)
-page, from the
-[Actions](https://github.com/tetragrammalol/sentinel-android-dojobay/actions)
-build-staging-apk artifacts, or build it:
+page. That file is the signed staging release build.
+
+Build the same variant locally:
+
+    ./gradlew :app:assembleStagingRelease
+
+The debug variant is for development. CI keeps it as an artifact on the
+[build-staging-apk](https://github.com/tetragrammalol/sentinel-android-dojobay/actions)
+workflow, not on the Releases page:
 
     ./gradlew :app:assembleStagingDebug
 
