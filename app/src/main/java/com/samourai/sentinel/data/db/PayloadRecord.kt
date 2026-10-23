@@ -178,8 +178,12 @@ class PayloadRecord(private val location: String, val name: String) {
      * truncates in place, so a failure partway through a direct write could
      * leave a truncated or empty payload - which previously presented as
      * "all wallets deleted".
+     *
+     * [keepBackup] copies the current file to `.bak` first. PIN removal
+     * passes false so the previous ciphertext is not left beside the
+     * plaintext file.
      */
-    fun writeToFile(value: String) {
+    fun writeToFile(value: String, keepBackup: Boolean = true) {
         // Serialize all writers to the same file. Without this, two
         // concurrent writers share the fixed-name tmp file: one rename
         // consumes it and the other's fallback copy then crashes with
@@ -192,7 +196,7 @@ class PayloadRecord(private val location: String, val name: String) {
             }
 
             // Preserve the current good payload before we touch anything.
-            if (file.exists() && file.length() > 0) {
+            if (keepBackup && file.exists() && file.length() > 0) {
                 try {
                     file.copyTo(backupFile, overwrite = true)
                 } catch (e: Exception) {
@@ -221,21 +225,30 @@ class PayloadRecord(private val location: String, val name: String) {
                         )
                     }
                 }
+                if (!keepBackup) {
+                    backupFile.delete()
+                }
             } catch (e: Exception) {
                 tempFile.delete()
+                if (e is PayloadReadException) throw e
                 throw PayloadReadException("Unable to write $name", e)
             }
         }
     }
 
     private fun encrypt(value: String): String {
-        val pin = AccessFactory.getInstance(null).pin
+        val access = AccessFactory.getInstance(null)
+        val key = access.dataKey
+        if (key != null && key.isNotEmpty()) {
+            return PayloadCipher.encrypt(value, key)
+        }
+        val pin = access.pin
         if (!pin.isNullOrEmpty()) {
             return AESUtil.encryptSHA256(value, CharSequenceX(pin), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
         }
         // Writing plaintext while a PIN is configured produces a file that can
         // never be decrypted on the next launch. Fail loudly instead.
-        if (AccessFactory.getInstance(null).isPinProtected) {
+        if (access.isPinProtected) {
             throw PayloadReadException(
                 "Refusing to write $name unencrypted while a PIN is configured"
             )
@@ -244,12 +257,30 @@ class PayloadRecord(private val location: String, val name: String) {
     }
 
     fun decrypt(value: String): String {
-        val pin = AccessFactory.getInstance(null).pin
-
-        if (!pin.isNullOrEmpty()) {
+        val access = AccessFactory.getInstance(null)
+        if (PayloadCipher.isModern(value)) {
+            val key = access.dataKey
+            if (key == null || key.isEmpty()) {
+                throw PayloadReadException(
+                    "Payload $name is encrypted but the data key is not unlocked"
+                )
+            }
+            return PayloadCipher.decrypt(value, key)
+        }
+        if (isLegacyOpenSslPayload(value)) {
+            val pin = access.pin
+            if (pin.isNullOrEmpty()) {
+                throw PayloadReadException(
+                    "Payload $name is encrypted but the PIN is not unlocked"
+                )
+            }
             return AESUtil.decryptSHA256(value, CharSequenceX(pin), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
         }
-
+        if (access.isPinProtected || access.dataKey != null) {
+            throw PayloadReadException(
+                "Refusing to read an unprotected $name while a PIN is configured"
+            )
+        }
         return value
     }
 

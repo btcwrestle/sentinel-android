@@ -20,6 +20,8 @@ import androidx.preference.PreferenceFragmentCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.samourai.sentinel.R
 import com.samourai.sentinel.core.access.AccessFactory
+import com.samourai.sentinel.core.access.PinVault
+import com.samourai.sentinel.data.db.appWalletPayloads
 import com.samourai.sentinel.data.db.dao.TxDao
 import com.samourai.sentinel.data.db.dao.UtxoDao
 import com.samourai.sentinel.data.repository.Bip329Exporter
@@ -41,16 +43,12 @@ import com.samourai.sentinel.ui.views.alertWithInput
 import com.samourai.sentinel.ui.views.confirm
 import com.samourai.sentinel.ui.webview.ExplorerRepository
 import com.samourai.sentinel.util.ExportImportUtil
-import com.samourai.sentinel.util.Hash
 import com.samourai.sentinel.util.UtxoMetaUtil
-import com.samourai.wallet.crypto.AESUtil
-import com.samourai.wallet.util.CharSequenceX
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -60,7 +58,6 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -324,6 +321,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                                     // Clear the PIN state BEFORE reset() so the
                                     // resulting empty payload is written in the
                                     // same (plaintext) form it will be read back in.
+                                    AccessFactory.getInstance(null).clearDataKey()
                                     AccessFactory.getInstance(null).pin = null
                                     AccessFactory.getInstance(null).setPinProtected(false)
                                     collectionRepository.reset()
@@ -410,54 +408,50 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     }
 
     private fun removePinCode(pin: String, lockScreenDialog: LockScreenDialog, checkBox: CheckBoxPreference) {
+        val filesDir = requireContext().filesDir
         settingsScope.launch {
-            withContext(Dispatchers.IO) {
-                val pinHash = prefsUtil.pinHash
-                pinHash?.let {
-                    if (accessFactory.validateHash(pin, pinHash)) {
-                        prefsUtil.pinHash = ""
-                        prefsUtil.pinEnabled = false
-                        accessFactory.pin = ""
-                        // Must be cleared BEFORE sync(), otherwise the payload writer
-                        // refuses to rewrite the (now intentionally) plaintext file.
-                        accessFactory.setPinProtected(false)
-                        accessFactory.reset()
-                        dojoUtility.store()
-                        collectionRepository.sync()
-                        withContext(Dispatchers.Main) {
-                            lockScreenDialog.dismiss()
-                            checkBox.isChecked = false
-                            parentFragmentManager.popBackStack()
-                        }
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            lockScreenDialog.showError()
-                        }
-                    }
+            val removed = withContext(Dispatchers.IO) {
+                val ok = PinVault(prefsUtil).disable(pin, appWalletPayloads(filesDir))
+                if (ok) {
+                    accessFactory.reset()
+                    dojoUtility.store()
+                    collectionRepository.sync()
                 }
+                ok
+            }
+            if (removed) {
+                lockScreenDialog.dismiss()
+                checkBox.isChecked = false
+                parentFragmentManager.popBackStack()
+            } else {
+                lockScreenDialog.showError()
             }
         }
-
     }
 
     private fun setPinCode(pin: String, it: CheckBoxPreference) {
-
+        val filesDir = requireContext().filesDir
         settingsScope.launch {
-            withContext(Dispatchers.IO) {
-                val digest = MessageDigest.getInstance("SHA-256")
-                val b = digest.digest(pin.toByteArray(charset("UTF-8")))
-                val hash = Hash(b)
-                prefsUtil.pinHash = hash.toString()
-                accessFactory.setIsLoggedIn(true)
-                accessFactory.pin = pin
-                accessFactory.setPinProtected(true)
-                dojoUtility.store()
-                // Re-encrypt the payload under the new PIN.
-                collectionRepository.sync()
+            val enabled = try {
+                withContext(Dispatchers.IO) {
+                    val vault = PinVault(prefsUtil)
+                    vault.enable(pin)
+                    if (!vault.upgradeExisting(appWalletPayloads(filesDir))) {
+                        throw IllegalStateException("Could not update saved payloads")
+                    }
+                    vault.markPayloadsCurrent()
+                    dojoUtility.store()
+                    collectionRepository.sync()
+                    true
+                }
+            } catch (e: Exception) {
+                false
             }
-            withContext(Dispatchers.Main) {
+            if (enabled) {
                 it.isChecked = true
                 prefsUtil.pinEnabled = true
+            } else {
+                Toast.makeText(context, "Could not save PIN", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -466,17 +460,18 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private fun export() {
         fun makeExportPayload(copyToClipBoard: Boolean) {
             settingsScope.launch(Dispatchers.IO) {
-                val payload = ExportImportUtil().makePayload()
+                val payloadText = ExportImportUtil().makePayload().toString()
                 withContext(Dispatchers.Main) {
+                    if (!isAdded) return@withContext
                     (activity as SentinelActivity).alertWithInput(labelEditText = "Password",
                             buttonLabel = "Encrypt",
                             maskInput = true,
                             maxLen = 128,
-                            label = "Add payload password", onConfirm = {
+                            label = "Add payload password", onConfirm = { password ->
                         // #48: an empty password IS a valid AES key input, so
                         // export would silently produce a backup that import
                         // refuses (line-93 guard). Reject at the source.
-                        if (it.isBlank()) {
+                        if (password.isBlank()) {
                             Toast.makeText(
                                 context,
                                 "Password cannot be empty - backup not created",
@@ -484,25 +479,34 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                             ).show()
                             return@alertWithInput
                         }
-                        val payloadEncrypted = ExportImportUtil().addVersionInfo(AESUtil.encryptSHA256(payload.toString(), CharSequenceX(it), AESUtil.DefaultPBKDF2HMACSHA256Iterations))
-                        exportedBackUp = payloadEncrypted.toString()
-                        if (copyToClipBoard) {
-                            val cm = context?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager?
-                            val clipData = ClipData
-                                    .newPlainText("Sentinel BackUp", payloadEncrypted.toString())
-                            if (cm != null) {
-                                cm.setPrimaryClip(clipData)
-                                Toast.makeText(context, getString(R.string.copied_to_clipboard), Toast.LENGTH_SHORT).show()
+                        settingsScope.launch {
+                            val payloadEncrypted = try {
+                                withContext(Dispatchers.IO) {
+                                    ExportImportUtil().encryptBackup(payloadText, password)
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Could not create backup", Toast.LENGTH_LONG).show()
+                                return@launch
                             }
-                            view?.let { it1 -> (activity as SentinelActivity).showFloatingSnackBar(it1, getString(R.string.copied_to_clipboard)) }
-                        } else {
-                            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
-                            intent.addCategory(Intent.CATEGORY_OPENABLE)
-                            intent.type = "text/plain"
-                            val current = Calendar.getInstance().time
-                            val formatter = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault())
-                            intent.putExtra(Intent.EXTRA_TITLE, "sentinel_backup_${formatter.format(current)}.txt")
-                            startActivityForResult(intent, REQ_CODE_WRITE_BACKUP)
+                            exportedBackUp = payloadEncrypted
+                            if (copyToClipBoard) {
+                                val cm = context?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager?
+                                val clipData = ClipData
+                                        .newPlainText("Sentinel BackUp", payloadEncrypted)
+                                if (cm != null) {
+                                    cm.setPrimaryClip(clipData)
+                                    Toast.makeText(context, getString(R.string.copied_to_clipboard), Toast.LENGTH_SHORT).show()
+                                }
+                                view?.let { it1 -> (activity as SentinelActivity).showFloatingSnackBar(it1, getString(R.string.copied_to_clipboard)) }
+                            } else {
+                                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                                intent.type = "text/plain"
+                                val current = Calendar.getInstance().time
+                                val formatter = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault())
+                                intent.putExtra(Intent.EXTRA_TITLE, "sentinel_backup_${formatter.format(current)}.txt")
+                                startActivityForResult(intent, REQ_CODE_WRITE_BACKUP)
+                            }
                         }
                     })
                 }
@@ -511,10 +515,11 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
         val options = arrayListOf("Copy to clipboard", "Save to file")
         MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.choose_export_opt))
+            .setMessage("The backup includes collections, settings, and any Dojo pairing. You will choose a password to encrypt it.")
             .setItems(options.toTypedArray()) { _, index ->
                 makeExportPayload(index==0)
             }
-            .setTitle(getString(R.string.choose_export_opt))
             .show()
 
     }

@@ -3,18 +3,20 @@ package com.samourai.sentinel.ui
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.FragmentTransaction
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.samourai.sentinel.R
-import com.samourai.sentinel.core.access.AccessFactory
+import com.samourai.sentinel.core.access.PinVault
+import com.samourai.sentinel.core.access.UnlockResult
+import com.samourai.sentinel.data.db.appWalletPayloads
 import com.samourai.sentinel.data.repository.FeeRepository
 import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.views.LockScreenDialog
-import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
 import org.koin.java.KoinJavaComponent.inject
 import timber.log.Timber
@@ -29,10 +31,10 @@ class MainActivity : AppCompatActivity() {
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java);
     private val dojoUtil: DojoUtility by inject(DojoUtility::class.java);
-    private val accessFactory: AccessFactory by inject(AccessFactory::class.java);
     private val feeRepository: FeeRepository by inject(FeeRepository::class.java);
 
     private var dontDeleteFile = false;
+    private var unlockBusy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,8 +49,7 @@ class MainActivity : AppCompatActivity() {
             supportFragmentManager.clearFragmentResult(REQUEST_KEY_UNLOCK_PIN)
             onUnlockPin(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
         }
-        val pinHash = prefsUtil.pinHash
-        if (!pinHash.isNullOrEmpty()) {
+        if (prefsUtil.isPinConfigured()) {
             // Recreation restores the pad under TAG_UNLOCK_PIN. Adding
             // another one here is how a font change used to stack two.
             if (supportFragmentManager.findFragmentByTag(TAG_UNLOCK_PIN) == null) {
@@ -67,26 +68,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onUnlockPin(pin: String) {
-        val pinHash = prefsUtil.pinHash
         val dialog = supportFragmentManager.findFragmentByTag(TAG_UNLOCK_PIN) as? LockScreenDialog
-        if (pinHash.isNullOrEmpty() || dialog == null) {
+        if (!prefsUtil.isPinConfigured() || dialog == null) {
             dialog?.dismiss()
             return
         }
-        if (AccessFactory.getInstance(this).validateHash(pin, pinHash)) {
-            accessFactory.pin = pin
-            // Mark the process as PIN-protected so payload writes can never
-            // silently fall back to plaintext.
-            AccessFactory.getInstance(this).setPinProtected(true)
-            // Previously runBlocking{} here froze the UI thread (and could ANR)
-            // right at the point the user is waiting to get in.
-            lifecycleScope.launch {
-                delay(100)
-                dojoUtil.read()
-                navigate()
+        if (unlockBusy) {
+            return
+        }
+        unlockBusy = true
+        val filesDir = applicationContext.filesDir
+        // KDF work stays off the UI thread. A correct PIN also rewrites
+        // any payload still in the previous format before navigation.
+        lifecycleScope.launch {
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    PinVault(prefsUtil).unlock(pin, appWalletPayloads(filesDir))
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Unlock failed")
+                UnlockResult.Unavailable("Could not open saved unlock data. Try again.")
             }
-        } else {
-            dialog.showError()
+            when (result) {
+                UnlockResult.Success -> {
+                    delay(100)
+                    dojoUtil.read()
+                    navigate()
+                }
+                UnlockResult.WrongPin, UnlockResult.NotConfigured -> {
+                    unlockBusy = false
+                    dialog.showError()
+                }
+                is UnlockResult.Unavailable -> {
+                    unlockBusy = false
+                    dialog.showError()
+                    Toast.makeText(this@MainActivity, result.message, Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
