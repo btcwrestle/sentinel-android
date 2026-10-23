@@ -54,6 +54,8 @@ import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
+private const val REQUEST_SCAN_TX = "broadcast_scan_tx"
+
 class BroadcastTx : SentinelActivity() {
 
     class BroadcastVm : ViewModel() {
@@ -131,6 +133,28 @@ class BroadcastTx : SentinelActivity() {
 
         disableBtn(binding.broadCastTransactionBtn, false)
 
+        supportFragmentManager.setFragmentResultListener(REQUEST_SCAN_TX, this) { _, bundle ->
+            val decoded = bundle.getString(ScanTxFragment.RESULT_TEXT) ?: return@setFragmentResultListener
+            // #247: gate at the consumer like the #245 surfaces - a repeat
+            // of the last admitted payload inside the window never
+            // re-enters validation.
+            val now = SystemClock.elapsedRealtime()
+            if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+                return@setFragmentResultListener
+            }
+            lastDecodePayload = decoded
+            lastDecodeAtMs = now
+            // #247: the whole decode rides the main looper - the old
+            // launch(Dispatchers.Default) ran camera.dismiss() (a
+            // BottomSheetDialogFragment) on the Default worker.
+            // validate()'s own UI writes already hop to Main; the decode
+            // itself is small-string parsing, fine here.
+            model.viewModelScope.launch(Dispatchers.Main) {
+                validate(decoded, true)
+                (supportFragmentManager.findFragmentByTag(ScanTxFragment.TAG) as? ScanTxFragment)?.dismiss()
+            }
+        }
+
         if (intent.hasExtra("signedTxHex")) {
             val signedTxHex: String = intent.getStringExtra("signedTxHex").toString()
             signedTxHex.let {
@@ -202,28 +226,8 @@ class BroadcastTx : SentinelActivity() {
     }
 
     private fun scanTx() {
-        val camera = ScanTxFragment()
-        camera.show(supportFragmentManager, "scanner_tag")
-        camera.setOnScanListener { decoded ->
-            // #247: gate at the consumer like the #245 surfaces - a repeat
-            // of the last admitted payload inside the window never
-            // re-enters validation.
-            val now = SystemClock.elapsedRealtime()
-            if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
-                return@setOnScanListener
-            }
-            lastDecodePayload = decoded
-            lastDecodeAtMs = now
-            // #247: the whole decode rides the main looper - the old
-            // launch(Dispatchers.Default) ran camera.dismiss() (a
-            // BottomSheetDialogFragment) on the Default worker.
-            // validate()'s own UI writes already hop to Main; the decode
-            // itself is small-string parsing, fine here.
-            model.viewModelScope.launch(Dispatchers.Main) {
-                validate(decoded, true)
-                camera.dismiss()
-            }
-        }
+        ScanTxFragment.newInstance(REQUEST_SCAN_TX)
+            .show(supportFragmentManager, ScanTxFragment.TAG)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -341,14 +345,17 @@ class ScanTxFragment : BottomSheetDialogFragment() {
 
     private lateinit var  mCodeScanner: QRScanner;
     private val appContext: Context by inject(Context::class.java)
-    private var onScan: (scanData: String) -> Unit = {}
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.content_scan_layout, container, false)
     }
 
-    fun setOnScanListener(callback: (scanData: String) -> Unit) {
-        this.onScan = callback
+    private fun deliver(scanData: String) {
+        val key = arguments?.getString(ARG_REQUEST_KEY) ?: return
+        parentFragmentManager.setFragmentResult(
+            key,
+            Bundle().apply { putString(RESULT_TEXT, scanData) }
+        )
     }
 
 
@@ -360,7 +367,7 @@ class ScanTxFragment : BottomSheetDialogFragment() {
 
         mCodeScanner.setQRDecodeListener {
             lifecycleScope.launch {
-                    onScan(it)
+                    deliver(it)
             }
         }
 
@@ -370,13 +377,13 @@ class ScanTxFragment : BottomSheetDialogFragment() {
                 onSuccess = {
                     if (it.ur.registryType == RegistryType.CRYPTO_PSBT) {
                         val cryptoPSBT = it.ur.decodeFromRegistry() as CryptoPSBT
-                        onScan(String(Hex.encode(cryptoPSBT.psbt)))
+                        deliver(String(Hex.encode(cryptoPSBT.psbt)))
                     }
                     else {
                         val urBytes = it.ur.decodeFromRegistry()
                         try {
                             val cryptoPSBT = it.ur.decodeFromRegistry() as CryptoPSBT
-                            onScan(String(Hex.encode(cryptoPSBT.psbt)))
+                            deliver(String(Hex.encode(cryptoPSBT.psbt)))
                         } catch (e: java.lang.Exception) {
                             //ignore, bytes not parsable as PSBT
                         }
@@ -384,7 +391,7 @@ class ScanTxFragment : BottomSheetDialogFragment() {
                             val transaction = Transaction(SentinelState.getNetworkParam(),
                                 urBytes as ByteArray?
                             )
-                            onScan(String(org.apache.commons.codec.binary.Hex.encodeHex(transaction.bitcoinSerialize())))
+                            deliver(String(org.apache.commons.codec.binary.Hex.encodeHex(transaction.bitcoinSerialize())))
                         } catch (e: java.lang.Exception) {
                             //ignore, bytes not parsable as tx
                         }
@@ -421,6 +428,16 @@ class ScanTxFragment : BottomSheetDialogFragment() {
     override fun onPause() {
         mCodeScanner.stopScanner()
         super.onPause()
+    }
+
+    companion object {
+        const val ARG_REQUEST_KEY = "scan_tx_request_key"
+        const val RESULT_TEXT = "scan_tx_result_text"
+        const val TAG = "scanner_tag"
+
+        fun newInstance(requestKey: String): ScanTxFragment = ScanTxFragment().apply {
+            arguments = Bundle().apply { putString(ARG_REQUEST_KEY, requestKey) }
+        }
     }
 
 }
