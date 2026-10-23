@@ -25,6 +25,8 @@ import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.math.MathUtils
 import com.google.android.material.progressindicator.CircularProgressIndicator
@@ -575,14 +577,41 @@ class ChoosePubkeyFragment : Fragment() {
 
 }
 
-class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = null, private var selectedPubKey: PubKeyModel? = null) : GenericBottomSheet() {
+class PreviewBottomSheet : GenericBottomSheet() {
     private var _binding: ContentSweepPreviewBinding? = null
     private val binding get() = _binding!!
 
-    private lateinit var utxoList: MutableList<UnspentOutput>
-    private lateinit var bipFormat: BipFormat
-    private lateinit var sweepPreview: SweepPreview
-    private lateinit var privKeyReader: PrivKeyReader
+    /** #215: restore builds this with the no-arg constructor. The preview the user was looking at rides in arguments. */
+    private val selectedCollection: PubKeyCollection?
+        get() {
+            val args = arguments ?: return null
+            if (!args.containsKey(ARG_LABEL)) return null
+            return PubKeyCollection(
+                collectionLabel = args.getString(ARG_LABEL).orEmpty(),
+                isImportFromWallet = args.getBoolean(ARG_FROM_WALLET)
+            )
+        }
+
+    private var selectedPubKey: PubKeyModel?
+        get() = arguments?.getParcelable<PubKeyModel>(ARG_PUBKEY)
+        set(value) {
+            editArgs {
+                if (value == null) remove(ARG_PUBKEY) else putParcelable(ARG_PUBKEY, value)
+            }
+        }
+
+    private val utxoList: MutableList<UnspentOutput>
+        get() {
+            val json = arguments?.getString(ARG_UTXOS) ?: return mutableListOf()
+            return Gson().fromJson(json, object : TypeToken<MutableList<UnspentOutput>>() {}.type)
+        }
+
+    private val bipFormat: BipFormat
+        get() = bipFormatFromId(arguments?.getString(ARG_BIP))
+            ?: throw IllegalStateException("bipFormat")
+
+    private val privKeyReader: PrivKeyReader
+        get() = PrivKeyReader(arguments?.getString(ARG_WIF).orEmpty(), SentinelState.getNetworkParam())
     private var feeRange: Float? = null
 
     private var feeLow: Long = 0L
@@ -616,11 +645,16 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
         binding.sweepPreviewCircularProgress.visibility = View.GONE
         binding.feeSelector.totalMinerFeeGroup.visibility = View.INVISIBLE
 
+        if (!hasPreviewState()) {
+            dismiss()
+            return view
+        }
+
         preparePreview()
 
         setUpFee()
 
-        if (selectedCollection!!.isImportFromWallet) {
+        if (selectedCollection?.isImportFromWallet == true) {
             binding.changePubkey.setOnClickListener {
                 onChangePubkeyButton()
             }
@@ -747,7 +781,8 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
         }
         var transaction: Transaction? = null
         try {
-            val receiveAddress = getAddress(selectedPubKey!!)
+            val pub = selectedPubKey ?: return null
+            val receiveAddress = getAddress(pub)
             val rbfOptin = false //PrefsUtil.getInstance(context).getValue(PrefsUtil.RBF_OPT_IN, false)
             val blockHeight = SentinelState.blockHeight?.height ?: -1L
             val totalValue = UnspentOutput.sumValue(utxoList)
@@ -763,7 +798,7 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                 fee = computeFee(bipFormat, utxoList, feePerKb.div(1000.0).toLong())
                 amount = totalValue - fee
             }
-            sweepPreview = SweepPreview(amount, address, bipFormat, fee, utxoList, privKeyReader.key, privKeyReader.params)
+            val sweepPreview = SweepPreview(amount, address, bipFormat, fee, utxoList, privKeyReader.key, privKeyReader.params)
             val params = sweepPreview.params
             val receivers: MutableMap<String, Long> = LinkedHashMap()
             receivers[receiveAddress] = sweepPreview.amount
@@ -845,26 +880,31 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
 
     override fun onResume() {
         super.onResume()
-        preparePreview()
+        if (_binding != null && hasPreviewState()) preparePreview()
     }
 
     fun setPrivKeyReader(privKeyReader: PrivKeyReader) {
-        this.privKeyReader = privKeyReader
+        val key = privKeyReader.key ?: return
+        editArgs { putString(ARG_WIF, key.getPrivateKeyAsWiF(privKeyReader.params)) }
     }
 
     fun setUTXOList(utxoList: MutableList<UnspentOutput>) {
-        this.utxoList = utxoList
+        editArgs { putString(ARG_UTXOS, Gson().toJson(utxoList)) }
     }
 
     fun setBipFormat(bipFormat: BipFormat) {
-        this.bipFormat = bipFormat
+        editArgs { putString(ARG_BIP, bipFormat.id) }
     }
 
     private fun preparePreview() {
-        binding.receiveAddress.text = getAddress(selectedPubKey!!)
-        binding.collectionAndPubkey.text = "${selectedCollection!!.collectionLabel}, ${selectedPubKey!!.label}"
-        binding.fromAddress.text = this.utxoList.get(0).addr
-        binding.amount.text = "${MonetaryUtil.getInstance().getBTCDecimalFormat(UnspentOutput.sumValue(utxoList))} BTC"
+        val pub = selectedPubKey ?: return
+        val collection = selectedCollection ?: return
+        val utxos = utxoList
+        if (utxos.isEmpty()) return
+        binding.receiveAddress.text = getAddress(pub)
+        binding.collectionAndPubkey.text = "${collection.collectionLabel}, ${pub.label}"
+        binding.fromAddress.text = utxos[0].addr
+        binding.amount.text = "${MonetaryUtil.getInstance().getBTCDecimalFormat(UnspentOutput.sumValue(utxos))} BTC"
     }
 
     private fun setUpFee() {
@@ -1010,7 +1050,40 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
     }
 
     fun setSelectedCollection(collection: PubKeyCollection) {
-        this.selectedCollection = collection
+        editArgs {
+            putString(ARG_LABEL, collection.collectionLabel)
+            putBoolean(ARG_FROM_WALLET, collection.isImportFromWallet)
+        }
+    }
+
+    private fun hasPreviewState(): Boolean {
+        val utxos = arguments?.getString(ARG_UTXOS)
+        return selectedPubKey != null && selectedCollection != null
+            && !utxos.isNullOrEmpty() && utxos != "[]"
+            && bipFormatFromId(arguments?.getString(ARG_BIP)) != null
+            && !arguments?.getString(ARG_WIF).isNullOrEmpty()
+    }
+
+    private fun editArgs(block: Bundle.() -> Unit) {
+        val bundle = arguments ?: Bundle().also { arguments = it }
+        bundle.block()
+    }
+
+    private fun bipFormatFromId(id: String?): BipFormat? = when (id) {
+        "LEGACY" -> BIP_FORMAT.LEGACY
+        "SEGWIT_COMPAT" -> BIP_FORMAT.SEGWIT_COMPAT
+        "SEGWIT_NATIVE" -> BIP_FORMAT.SEGWIT_NATIVE
+        "TAPROOT" -> BIP_FORMAT.TAPROOT
+        else -> null
+    }
+
+    companion object {
+        private const val ARG_LABEL = "sweep_preview_arg_label"
+        private const val ARG_FROM_WALLET = "sweep_preview_arg_from_wallet"
+        private const val ARG_PUBKEY = "sweep_preview_arg_pubkey"
+        private const val ARG_UTXOS = "sweep_preview_arg_utxos"
+        private const val ARG_BIP = "sweep_preview_arg_bip"
+        private const val ARG_WIF = "sweep_preview_arg_wif"
     }
 }
 
