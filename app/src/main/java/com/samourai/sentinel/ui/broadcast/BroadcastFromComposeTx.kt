@@ -13,9 +13,8 @@ class BroadcastFromComposeTx : SentinelActivity() {
     private lateinit var binding: ActivityBroadcastUnsignedTxBinding
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
 
-        super.onCreate(savedInstanceState)
         binding = ActivityBroadcastUnsignedTxBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)

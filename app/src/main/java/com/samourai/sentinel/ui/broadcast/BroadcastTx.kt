@@ -118,8 +118,7 @@ class BroadcastTx : SentinelActivity() {
         Timber.e(t, "File import failed outside the Exception wall")
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = LayoutBroadcastBottomSheetBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)

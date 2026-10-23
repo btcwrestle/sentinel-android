@@ -47,8 +47,7 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
     private val SWAPS_REFUND = 2147483642L
     private val SWAPS_ASB = 2147483641L
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityCollectionDetailsBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
@@ -57,6 +56,14 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         binding.fragmentHostContainerPager.isUserInputEnabled = false
 
         checkIntent()
+        // #291's twin: checkIntent() finish()es on a missing collection
+        // and does not return, so collection!! crashed a process that
+        // was restored onto this screen before the repository was read.
+        // The #300 gate skips this method until the process is admitted.
+        if (collection == null) {
+            if (!isFinishing) finish()
+            return
+        }
         val receiveViewModel: CollectionDetailsViewModel by viewModels(factoryProducer = {
             CollectionDetailsViewModel.getFactory(
                     collection!!

@@ -68,8 +68,7 @@ class NetworkActivity : SentinelActivity() {
     }
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         setContentView(R.layout.activity_network)
         setSupportActionBar(findViewById(R.id.toolbarCollectionDetails))
         if (supportActionBar != null) {
