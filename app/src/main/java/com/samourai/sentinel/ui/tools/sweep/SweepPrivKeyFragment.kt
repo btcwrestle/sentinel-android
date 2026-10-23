@@ -667,12 +667,9 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                                 }
                                  */
                                 dismiss()
-                                val bottomSheet = SuccessfulBottomSheet(
+                                val bottomSheet = SuccessfulBottomSheet.newInstance(
                                     "Sweep Successful",
                                     response!!,
-                                    onViewReady = {
-                                        it.view
-                                    },
                                 )
                                 bottomSheet.show(
                                     requireActivity().supportFragmentManager,

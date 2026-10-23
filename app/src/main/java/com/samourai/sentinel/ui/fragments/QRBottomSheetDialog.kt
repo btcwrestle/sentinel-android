@@ -41,9 +41,7 @@ import java.io.FileOutputStream
  * its Parcelable `ArrayList<PubKeyModel>` plus an `importFromWallet`
  * flag - the two things this sheet actually reads from it - so a
  * restored sheet keeps its QR payload, its title, its clipboard label,
- * its arrow navigation and FLAG_SECURE (base-class argument). The
- * legacy constructor shape is kept as a bridge so CollectionEditActivity
- * and BroadcastFromComposeTx compile unchanged.
+ * its arrow navigation and FLAG_SECURE (base-class argument).
  */
 class QRBottomSheetDialog() : GenericBottomSheet() {
 
@@ -57,29 +55,6 @@ class QRBottomSheetDialog() : GenericBottomSheet() {
         get() = arguments?.getParcelableArrayList<PubKeyModel>(ARG_PUBS) ?: arrayListOf()
     private val importFromWallet: Boolean
         get() = arguments?.getBoolean(ARG_IMPORT_FROM_WALLET, false) == true
-
-    /**
-     * #210 bridge for the pre-#210 primary constructor: same parameter
-     * shape, converts everything into arguments form at construction.
-     */
-    constructor(
-        qrData: String,
-        title: String? = "",
-        clipboardLabel: String? = "",
-        secure: Boolean = false,
-        collection: PubKeyCollection? = null
-    ) : this() {
-        arguments = (arguments ?: Bundle()).apply {
-            putString(ARG_QR_DATA, qrData)
-            putString(ARG_TITLE, title)
-            putString(ARG_CLIPBOARD_LABEL, clipboardLabel)
-            putBoolean(GenericBottomSheet.ARG_SECURE, secure)
-            collection?.let {
-                putParcelableArrayList(ARG_PUBS, ArrayList(it.pubs))
-                putBoolean(ARG_IMPORT_FROM_WALLET, it.isImportFromWallet)
-            }
-        }
-    }
 
     override fun getTheme(): Int = R.style.AppTheme_BottomSheet_Theme
 
@@ -259,5 +234,24 @@ class QRBottomSheetDialog() : GenericBottomSheet() {
         const val ARG_CLIPBOARD_LABEL = "qr_bottom_sheet_arg_clipboard_label"
         const val ARG_PUBS = "qr_bottom_sheet_arg_pubs"
         const val ARG_IMPORT_FROM_WALLET = "qr_bottom_sheet_arg_import_from_wallet"
+
+        fun newInstance(
+            qrData: String,
+            title: String? = "",
+            clipboardLabel: String? = "",
+            secure: Boolean = false,
+            collection: PubKeyCollection? = null
+        ): QRBottomSheetDialog = QRBottomSheetDialog().apply {
+            arguments = Bundle().apply {
+                putString(ARG_QR_DATA, qrData)
+                putString(ARG_TITLE, title)
+                putString(ARG_CLIPBOARD_LABEL, clipboardLabel)
+                putBoolean(GenericBottomSheet.ARG_SECURE, secure)
+                collection?.let {
+                    putParcelableArrayList(ARG_PUBS, ArrayList(it.pubs))
+                    putBoolean(ARG_IMPORT_FROM_WALLET, it.isImportFromWallet)
+                }
+            }
+        }
     }
 }

@@ -23,7 +23,7 @@ class BroadcastFromComposeTx : SentinelActivity() {
         var signedTxHex: String
 
         binding.showQrCode.setOnClickListener { _ ->
-            val dialog = QRBottomSheetDialog(
+            val dialog = QRBottomSheetDialog.newInstance(
                     qrString,
                     "Unsigned Transaction",
                     qrString)

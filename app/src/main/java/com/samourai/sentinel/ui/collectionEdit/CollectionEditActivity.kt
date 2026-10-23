@@ -276,7 +276,7 @@ class CollectionEditActivity : SentinelActivity() {
             override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
 
                 fun  viewPubKey(pubKeyModel: PubKeyModel, position: Int){
-                    val dialog =  QRBottomSheetDialog(
+                    val dialog =  QRBottomSheetDialog.newInstance(
                         pubKeyModel.pubKey,
                         pubKeyModel.label,
                         pubKeyModel.label,

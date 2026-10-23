@@ -54,8 +54,7 @@ import java.util.*
  * `arguments` as its Gson JSON form (the same serialization the Room
  * converters already use for its input/output lists) and is parsed once,
  * lazily, then cached for the sheet's lifetime. The street-mode `secure`
- * flag rides the base-class argument. The legacy (tx, secure) constructor
- * is kept as a bridge so TransactionsListFragment compiles unchanged.
+ * flag rides the base-class argument.
  */
 class TransactionsDetailsBottomSheet() : GenericBottomSheet() {
 
@@ -76,15 +75,6 @@ class TransactionsDetailsBottomSheet() : GenericBottomSheet() {
     /** #210: street-mode flag, read from arguments so it survives recreation. */
     private val secure: Boolean
         get() = arguments?.getBoolean(GenericBottomSheet.ARG_SECURE, false) == true
-
-    /** #210 bridge for the pre-#210 `TransactionsDetailsBottomSheet(tx, secure)` shape. */
-    constructor(tx: Tx, secure: Boolean = false) : this() {
-        arguments = (arguments ?: Bundle()).apply {
-            putString(ARG_TX_JSON, Gson().toJson(tx))
-            putBoolean(GenericBottomSheet.ARG_SECURE, secure)
-        }
-        txCache = tx
-    }
 
     private val apiService: ApiService by inject(ApiService::class.java)
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
@@ -416,5 +406,13 @@ class TransactionsDetailsBottomSheet() : GenericBottomSheet() {
     companion object {
         const val ARG_TX_JSON = "tx_details_bottom_sheet_arg_tx_json"
         const val REQUEST_KEY_TX_LABEL = "tx_details_bottom_sheet_request_key_label"
+
+        fun newInstance(tx: Tx, secure: Boolean = false): TransactionsDetailsBottomSheet =
+            TransactionsDetailsBottomSheet().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_TX_JSON, Gson().toJson(tx))
+                    putBoolean(GenericBottomSheet.ARG_SECURE, secure)
+                }
+            }
     }
 }

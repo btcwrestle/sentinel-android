@@ -98,7 +98,7 @@ class TransactionsListFragment(
         val decorator = RecyclerViewItemDividerDecorator(ContextCompat.getDrawable(requireContext(), R.drawable.divider_tx)!!)
         transactionsRecycler.addItemDecoration(decorator)
         transactionAdapter.setOnclickListener {
-            val dojoConfigureBottomSheet = TransactionsDetailsBottomSheet(it, secure = prefs.displaySecure!!)
+            val dojoConfigureBottomSheet = TransactionsDetailsBottomSheet.newInstance(it, secure = prefs.displaySecure!!)
             dojoConfigureBottomSheet.show(childFragmentManager, dojoConfigureBottomSheet.tag)
         }
 
