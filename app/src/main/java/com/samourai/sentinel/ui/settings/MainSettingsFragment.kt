@@ -40,6 +40,7 @@ import com.samourai.sentinel.ui.views.LockScreenDialog
 import com.samourai.sentinel.ui.views.alertWithInput
 import com.samourai.sentinel.ui.views.confirm
 import com.samourai.sentinel.ui.webview.ExplorerRepository
+import com.samourai.sentinel.util.CollectionsNotLoadedException
 import com.samourai.sentinel.util.ExportImportUtil
 import com.samourai.sentinel.util.Hash
 import com.samourai.sentinel.util.UtxoMetaUtil
@@ -52,6 +53,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
+import timber.log.Timber
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
@@ -466,7 +468,20 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private fun export() {
         fun makeExportPayload(copyToClipBoard: Boolean) {
             settingsScope.launch(Dispatchers.IO) {
-                val payload = ExportImportUtil().makePayload()
+                val payload = try {
+                    ExportImportUtil().makePayload()
+                } catch (e: CollectionsNotLoadedException) {
+                    // #289: do not offer a password for an empty snapshot.
+                    Timber.e(e, "export refused: collections not loaded")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "Backup not created. Unlock the wallet and try again.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@launch
+                }
                 withContext(Dispatchers.Main) {
                     (activity as SentinelActivity).alertWithInput(labelEditText = "Password",
                             buttonLabel = "Encrypt",

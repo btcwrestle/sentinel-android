@@ -78,8 +78,7 @@ class HomeActivity : SentinelActivity() {
     // the indicator LiveData is one shared mediator for the process now.
     private var indicatorObserver: Observer<ConnectionIndicator>? = null
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityHomeBinding.inflate(layoutInflater)
         val view = binding.root
         window.statusBarColor = ContextCompat.getColor(this, R.color.mpm_black)
