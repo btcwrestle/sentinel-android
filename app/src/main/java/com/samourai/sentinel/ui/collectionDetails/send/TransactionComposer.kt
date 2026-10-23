@@ -15,6 +15,7 @@ import com.samourai.sentinel.send.SendFactory
 import com.samourai.sentinel.util.FormatsUtil
 import com.samourai.wallet.psbt.PSBT
 import com.samourai.wallet.segwit.SegwitAddress
+import com.samourai.wallet.segwit.bech32.Bech32UtilGeneric
 import com.samourai.wallet.send.MyTransactionOutPoint
 import com.samourai.wallet.send.UTXO
 import com.samourai.wallet.util.FormatsUtilGeneric
@@ -27,6 +28,7 @@ import org.apache.commons.lang3.tuple.Triple
 import org.bitcoinj.core.Address
 import org.bitcoinj.core.ECKey
 import org.bitcoinj.params.MainNetParams
+import org.bitcoinj.script.ScriptBuilder
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent
 import timber.log.Timber
@@ -274,22 +276,31 @@ class TransactionComposer {
 
          */
 
-            //change address output
-            psbt!!.addOutput(
-                PSBT.PSBT_OUT_BIP32_DERIVATION,
-                changeECKey!!.getPubKey(),
-                PSBT.writeBIP32Derivation(
-                    Hex.decodeHex(data),
-                    purpose1!!,
-                    type,
-                    getAccount()!!.id,
-                    1,
-                    changeIndex!!
-                )
-            )
-            psbt!!.addOutputSeparator()
-
-            psbt!!.addOutputSeparator()
+            // BIP69 sorts outputs by value then script, so the change output is
+            // not a fixed index. A signer that trusts PSBT_OUT_BIP32_DERIVATION
+            // will display that output as change, so the derivation belongs
+            // only on the output whose script is the wallet change path.
+            // Spend-all / sweep drops the zero-value change receiver and must
+            // not label the payment as change. One map per real output.
+            val purpose = purpose1!!
+            val changeScript = if (change > 0L) scriptForAddress(changeAddress) else null
+            for (out in transaction.outputs) {
+                if (changeScript != null && out.scriptBytes.contentEquals(changeScript)) {
+                    psbt!!.addOutput(
+                        PSBT.PSBT_OUT_BIP32_DERIVATION,
+                        changeECKey!!.getPubKey(),
+                        PSBT.writeBIP32Derivation(
+                            Hex.decodeHex(data),
+                            purpose,
+                            type,
+                            getAccount()!!.id,
+                            1,
+                            changeIndex!!
+                        )
+                    )
+                }
+                psbt!!.addOutputSeparator()
+            }
 
             /*
         psbt!!.addOutput(
@@ -308,7 +319,7 @@ class TransactionComposer {
             psbt?.addGlobalXpubRecord(
                 PSBT.deserializeXPUB(getAccount()?.xpubstr()),
                 Hex.decodeHex(data),
-                purpose1,
+                purpose,
                 type,
                 getAccount()!!.id
             );
@@ -474,6 +485,22 @@ class TransactionComposer {
 
     fun getPSBT(): PSBT? {
         return psbt;
+    }
+
+    /**
+     * Output script [SendFactory] would put on the wire for [address].
+     * Matching this against [org.bitcoinj.core.Transaction.getOutputs] is what
+     * keeps the change derivation on the change output after BIP69 sorting.
+     */
+    private fun scriptForAddress(address: String): ByteArray {
+        val params = SentinelState.getNetworkParam()
+        return if (FormatsUtil.isValidBech32(address)) {
+            Bech32UtilGeneric.getInstance().computeScriptPubKey(address, params)
+        } else {
+            ScriptBuilder.createOutputScript(
+                Address.fromBase58(params, address)
+            ).program
+        }
     }
 
     companion object {
