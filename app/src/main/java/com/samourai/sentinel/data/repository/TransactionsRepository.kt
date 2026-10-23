@@ -499,16 +499,32 @@ class TransactionsRepository {
                             utxos.addAll(list)
                         }
                     }
-                } catch (e: Exception) { Timber.e(e) }
+                } catch (e: Exception) {
+                    // #287: same wall as fetchFromServer. A swallowed
+                    // failure used to fall through to saveUtxos with an
+                    // empty or partial list.
+                    throw e
+                }
             }
 
             // #202: no pre-wipe - saveUtxos below reconciles inside
             // UtxoDao.upsertCollectionUtxos, one transaction.
+            // #287: this line is reached only when every pubkey job
+            // returned. A throw above skips it, so a failed fetch
+            // cannot delete rows or do-not-spend marks. A genuine
+            // empty wallet (every job returned, no outputs) still
+            // reconciles — that empty-success case is #226, not this.
             saveUtxos(utxos, collectionId)
         } catch (e: ApiNotConfigured) {
+            // #103: degrade, no rethrow. The throw left the loop
+            // before saveUtxos, so nothing is reconciled.
             Timber.e(e)
         } catch (e: Exception) {
+            // #287: rethrow so syncCollections counts the collection
+            // failed. Swallowing here was the Success banner over a
+            // wiped utxo table.
             Timber.e(e)
+            throw e
         }
     }
     }

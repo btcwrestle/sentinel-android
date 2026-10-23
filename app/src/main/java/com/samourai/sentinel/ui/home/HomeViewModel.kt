@@ -453,6 +453,13 @@ class HomeViewModel : ViewModel() {
 
             updateBalance()
 
+            // #287: launchSyncRound stamps lastRoundSignature before the
+            // fetch. Leaving it set after a failure makes the next auto
+            // arm log "signature unchanged" and never retry, so the
+            // Failed round is the last one until a manual refresh.
+            if (failed > 0) {
+                lastRoundSignature = null
+            }
             syncState.postValue(
                 when {
                     failed == collections.size -> SyncState.Failed(
@@ -485,6 +492,10 @@ class HomeViewModel : ViewModel() {
             // Syncing ("Sync interrupted." on routine refresh).
             // round == null: caller had no identity - today's behavior.
             if (!resolved && (round == null || syncRound === round)) {
+                // #287: an interrupted live round must not keep the
+                // pre-stamped signature either. A superseded round
+                // (syncRound !== round) does not touch it.
+                lastRoundSignature = null
                 syncState.postValue(SyncState.Failed("Sync interrupted.", retryable = true))
             }
         }
