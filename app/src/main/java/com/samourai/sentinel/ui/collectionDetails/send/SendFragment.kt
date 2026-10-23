@@ -36,6 +36,7 @@ import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.PubKeyModel
 import com.samourai.sentinel.data.repository.ExchangeRateRepository
 import com.samourai.sentinel.data.repository.FeeRepository
+import com.samourai.sentinel.data.repository.collapsedNormalPerVb
 import com.samourai.sentinel.databinding.FragmentSpendBinding
 import com.samourai.sentinel.send.SuggestedFee
 import com.samourai.sentinel.ui.SentinelActivity
@@ -710,10 +711,12 @@ class SendFragment : Fragment() {
             val hiSf = SuggestedFee()
             hiSf.defaultPerKB = BigInteger.valueOf(feeHigh * 1000L)
             feeRepository.setHighFee(hiSf)
-        } else if (feeLow == feeMed || feeMed == feeMed) {
-            feeMed = (feeLow + feeHigh) / 2L
+        } else if (feeLow == feeMed || feeMed == feeHigh) {
+            // #305: the old check compared a tier to itself, so it always
+            // ran, and the stored per-KB value was High. Normal is the average.
+            feeMed = collapsedNormalPerVb(feeLow, feeMed, feeHigh)
             val miSf = SuggestedFee()
-            miSf.defaultPerKB = BigInteger.valueOf(feeHigh * 1000L)
+            miSf.defaultPerKB = BigInteger.valueOf(feeMed * 1000L)
             feeRepository.setNormalFee(miSf)
         }
         if (feeLow < 1L) {
