@@ -22,7 +22,8 @@ import java.io.File
  *    and propagate (so syncCollections can count the collection
  *    failed). ApiNotConfigured still degrades without a save (#103).
  *    Every job returning does save, including when the returned set
- *    is empty — that empty-success wipe stays #226.
+ *    is empty. Whether that empty set is written is #226
+ *    (emptyReconcileAllowed), not this ladder.
  * 2. A source pin. The ladder alone cannot go red if the production
  *    function is reverted. The pin reads fetchUTXOS and syncCollections
  *    and fails on the pre-#287 shape: the one-line
