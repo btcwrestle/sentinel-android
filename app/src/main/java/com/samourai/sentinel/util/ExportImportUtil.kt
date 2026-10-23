@@ -322,8 +322,11 @@ class ExportImportUtil {
             val publicKeys: ArrayList<PubKeyModel> = arrayListOf()
             val decrypted: String = if(payloadVersion == 1){
                 AESUtil.decrypt(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2Iterations)
-            }else{       
-                AESUtil.decryptSHA256(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2Iterations)
+            } else {
+                // #278: decryptSHA256 passes this count through to
+                // PBKDF2-HMAC-SHA256. 5000 is the SHA-1 constant and
+                // cannot open a payload written with the SHA-256 default.
+                AESUtil.decryptSHA256(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
             }
             val payloadJSON = JSONObject(decrypted)
 
