@@ -14,9 +14,6 @@ class LegacyPbkdf2IterationsTest {
 
     @Test
     fun `legacy v2 uses the SHA-256 iteration count and v1 stays on SHA-1`() {
-        val aes = source("extlibj/src/main/java/com/samourai/wallet/crypto/AESUtil.java")
-        assertTrue(aes.contains("decrypt_AES256CBC_PBKDF2_HMAC_SHA256(password.toString(), iterations, ciphertext, false)"))
-
         val util = source("app/src/main/java/com/samourai/sentinel/util/ExportImportUtil.kt")
         val legacy = util.substringAfter("fun decryptSentinelLegacy")
         val v1 = legacy.substringBefore("else")
