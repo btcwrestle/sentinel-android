@@ -1,8 +1,12 @@
 package com.samourai.sentinel.util
 
+import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import timber.log.Timber
 import timber.log.Timber.DebugTree
+import java.util.logging.Filter
+import java.util.logging.LogRecord
+import java.util.logging.Logger
 
 /**
  * Redaction at the logging boundary (#264/#96).
@@ -100,5 +104,50 @@ class MaskedHttpLogger : HttpLoggingInterceptor.Logger {
 class MaskingDebugTree : DebugTree() {
     override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
         super.log(priority, tag, LogRedaction.redact(message), t)
+    }
+}
+
+/**
+ * #304: OkHttp's connection-pool leak warning does not cross Timber,
+ * [MaskedHttpLogger], or any `android.util.Log` call this app owns.
+ * `RealConnectionPool` calls `Platform.logCloseableLeak`, and
+ * `Platform.log` writes `java.util.logging` logger `okhttp3.OkHttpClient`.
+ * On Android, OkHttp's `AndroidLog` bridges that logger to logcat with
+ * tag `okhttp.OkHttpClient` and `useParentHandlers = false`. The record
+ * is filtered before any handler runs (including that bridge), so
+ * redacting here covers the leak line and every other message on the
+ * same logger (callback failures, the "set level to FINE" hint).
+ *
+ * The filter mutates the record and still returns true: the warning
+ * stays, the Dojo URL does not. Silencing the logger would hide the
+ * leak that #293 exists to remove.
+ */
+object OkHttpLogRedaction {
+    private val redacting = Filter { record ->
+        try {
+            redact(record)
+        } catch (_: Exception) {
+            // A failure here must not publish the original record.
+            record.message = "okhttp log redaction failed"
+            record.thrown = null
+        }
+        true
+    }
+
+    /** Idempotent. Safe to call from every Dojo client builder. */
+    fun install() {
+        Logger.getLogger(OkHttpClient::class.java.name).filter = redacting
+    }
+
+    internal fun redact(record: LogRecord) {
+        record.message?.let { raw ->
+            val redacted = LogRedaction.redact(raw)
+            if (redacted != raw) record.message = redacted
+        }
+        val thrown = record.thrown ?: return
+        val rendered = thrown.stackTraceToString()
+        val redacted = LogRedaction.redact(rendered)
+        if (redacted == rendered) return
+        record.thrown = Throwable(redacted).also { it.stackTrace = emptyArray() }
     }
 }

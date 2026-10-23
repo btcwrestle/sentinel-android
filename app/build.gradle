@@ -180,6 +180,7 @@ implementation 'it.unimi.dsi:fastutil:8.3.0'   // boltzmann public API exposes f
 
     //Test Libs
     testImplementation "junit:junit:4.13.2"
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
     // The android.jar used for unit tests stubs org.json to throw
     // "not mocked", so tests that parse JSON need the real implementation.
     testImplementation 'org.json:json:20240303'

@@ -11,6 +11,7 @@ import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.util.MaskedHttpLogger
+import com.samourai.sentinel.util.OkHttpLogRedaction
 import com.samourai.sentinel.util.apiScope
 import com.samourai.wallet.api.backend.beans.UnspentOutput
 import com.samourai.wallet.api.backend.beans.WalletResponse
@@ -397,6 +398,10 @@ open class ApiService {
             authToken: String?,
             excludeAuthenticator: Boolean = false,
         ): OkHttpClient {
+            // #304: same global logger the pool uses. Installing at
+            // client build covers a process that reached a Dojo call
+            // without going through Application.onCreate.
+            OkHttpLogRedaction.install()
             val builder = OkHttpClient.Builder()
             // #264/#96 (Arc B): the #258 silencer is retired. The wire
             // logger returns at Level.BASIC - request and response lines
