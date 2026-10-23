@@ -38,6 +38,16 @@ class MigrationActivity : AppCompatActivity() {
         val view = binding.root
         setContentView(view)
 
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_DOJO_SETUP,
+            this
+        ) { _, _ ->
+            supportFragmentManager.clearFragmentResult(REQUEST_KEY_DOJO_SETUP)
+            if (dojoUtil.isDojoEnabled()) {
+                migratePubKeys()
+            }
+        }
+
         binding.importBtn.setOnClickListener {
             startMigrating()
         }
@@ -74,17 +84,13 @@ class MigrationActivity : AppCompatActivity() {
     }
 
     private fun showDojoDialog() {
-        val dojoConfigureBottomSheet = DojoConfigureBottomSheet()
-        dojoConfigureBottomSheet.show(supportFragmentManager, dojoConfigureBottomSheet.tag)
-        dojoConfigureBottomSheet.isCancelable = false
+        if (supportFragmentManager.findFragmentByTag(TAG_DOJO_SETUP) != null) return
+        val dojoConfigureBottomSheet = DojoConfigureBottomSheet.newInstance(
+            requestKey = REQUEST_KEY_DOJO_SETUP,
+            cancelable = false
+        )
         dojoConfigureBottomSheet.setPayload(dojoPayload)
-        dojoConfigureBottomSheet.setDojoConfigurationListener(object : DojoConfigureBottomSheet.DojoConfigurationListener {
-            override fun onDismiss() {
-                if (dojoUtil.isDojoEnabled()) {
-                    migratePubKeys()
-                }
-            }
-        })
+        dojoConfigureBottomSheet.show(supportFragmentManager, TAG_DOJO_SETUP)
     }
 
     private fun migratePubKeys() {
@@ -247,5 +253,10 @@ class MigrationActivity : AppCompatActivity() {
                 null
             }
         }
+    }
+
+    companion object {
+        const val TAG_DOJO_SETUP = "migration_dojo_setup_sheet"
+        const val REQUEST_KEY_DOJO_SETUP = "migration_dojo_setup_result"
     }
 }

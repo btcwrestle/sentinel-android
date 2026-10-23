@@ -1006,6 +1006,17 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             mainHandler.postDelayed({
                 if (!listenerFired) {
                     listenerFired = true
+                    // #220: the host re-registers for this key in onCreate.
+                    // The field listener stays for any caller that has not
+                    // moved; the three #220 hosts do not set it, so success
+                    // is delivered once.
+                    val key = arguments?.getString(ARG_REQUEST_KEY).orEmpty()
+                    if (key.isNotEmpty() && isAdded) {
+                        parentFragmentManager.setFragmentResult(
+                            key,
+                            Bundle().apply { putBoolean(RESULT_PAIRED, true) }
+                        )
+                    }
                     dojoConfigurationListener?.onDismiss()
                 }
                 dismiss()
@@ -1114,6 +1125,19 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
 
     interface DojoConfigurationListener {
         fun onDismiss()
+    }
+
+    companion object {
+        const val ARG_REQUEST_KEY = "dojo_configure_arg_request_key"
+        const val RESULT_PAIRED = "dojo_configure_result_paired"
+
+        fun newInstance(requestKey: String, cancelable: Boolean = true): DojoConfigureBottomSheet =
+            DojoConfigureBottomSheet().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_REQUEST_KEY, requestKey)
+                    putBoolean(GenericBottomSheet.ARG_CANCELABLE, cancelable)
+                }
+            }
     }
 }
 

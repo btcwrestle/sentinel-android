@@ -36,6 +36,9 @@ import kotlinx.coroutines.launch
 import org.koin.java.KoinJavaComponent.inject
 import timber.log.Timber
 
+private const val TAG_DOJO_SETUP = "network_dojo_setup_sheet"
+private const val REQUEST_KEY_DOJO_SETUP = "network_dojo_setup_result"
+
 class NetworkActivity : SentinelActivity() {
 
     var torRenewBtn: TextView? = null
@@ -86,6 +89,15 @@ class NetworkActivity : SentinelActivity() {
         networkStatusIcon = findViewById(R.id.network_bitcoin_status_icon)
         networkStatus = findViewById(R.id.network_bitcoin_status)
         networkSwitchBtn = findViewById(R.id.networking_network_switch_btn)
+        // #220: re-registered every create. The sheet posts on pairing
+        // success; this does not depend on the sheet instance.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_DOJO_SETUP,
+            this
+        ) { _, _ ->
+            supportFragmentManager.clearFragmentResult(REQUEST_KEY_DOJO_SETUP)
+            onDojoSetupFinished()
+        }
         torRenewBtn?.setOnClickListener {
             // #161: no optimistic feedback here - tor's verbatim reply
             // (success or rate-limit notice) is the single source of
@@ -479,25 +491,25 @@ class NetworkActivity : SentinelActivity() {
     }
 
     private fun showDojoSetUpBottomSheet() {
-        val dojoConfigureBottomSheet = DojoConfigureBottomSheet()
-        dojoConfigureBottomSheet.show(supportFragmentManager, dojoConfigureBottomSheet.tag)
-        dojoConfigureBottomSheet.setDojoConfigurationListener(object : DojoConfigureBottomSheet.DojoConfigurationListener {
-            override fun onDismiss() {
-                //Update dojo status
-                setDojoStatus()
-                // #274: #273's pairing guard can flip the network flag
-                // at Pair time while this activity sits behind the sheet -
-                // re-render the Bitcoin Network row too, or it keeps the
-                // pre-pairing network (and the wrong switch direction)
-                // until the activity is recreated.
-                setNetworkStatus()
-                if (!prefsUtil.isAPIEndpointEnabled()) {
-                    //removeDojo()
-                    Toast.makeText(applicationContext, getString(R.string.no_dojo_connected), Toast.LENGTH_SHORT).show()
-                } else
-                    importAllXpubs()
-            }
-        })
+        if (supportFragmentManager.findFragmentByTag(TAG_DOJO_SETUP) != null) return
+        DojoConfigureBottomSheet.newInstance(
+            requestKey = REQUEST_KEY_DOJO_SETUP
+        ).show(supportFragmentManager, TAG_DOJO_SETUP)
+    }
+
+    /** #220: re-reads Dojo and network prefs. Same work the old listener did. */
+    private fun onDojoSetupFinished() {
+        setDojoStatus()
+        // #274: #273's pairing guard can flip the network flag
+        // at Pair time while this activity sits behind the sheet -
+        // re-render the Bitcoin Network row too, or it keeps the
+        // pre-pairing network (and the wrong switch direction)
+        // until the activity is recreated.
+        setNetworkStatus()
+        if (!prefsUtil.isAPIEndpointEnabled()) {
+            Toast.makeText(applicationContext, getString(R.string.no_dojo_connected), Toast.LENGTH_SHORT).show()
+        } else
+            importAllXpubs()
     }
 
 

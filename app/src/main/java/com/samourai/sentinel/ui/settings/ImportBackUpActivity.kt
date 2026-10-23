@@ -63,6 +63,11 @@ class ImportBackUpActivity : SentinelActivity() {
     private val repository: CollectionRepository by inject(CollectionRepository::class.java)
     private val apiService: ApiService by inject(ApiService::class.java)
 
+    // #220: the import work captured by the pin pad. Set only while this
+    // activity instance is alive. A recreated activity finds the pad and
+    // no continuation, and closes the pad. The decrypted backup is not saved.
+    private var importPinContinuation: ((String) -> Unit)? = null
+
     // #80: real failures in the import launches must reach the
     // invokeOnCompletion reporting path, not the process. Masking
     // them as CancellationException destroyed type and stack.
@@ -80,6 +85,23 @@ class ImportBackUpActivity : SentinelActivity() {
 
         window.navigationBarColor = ContextCompat.getColor(this, R.color.v3_background)
 
+        // #220: the pad posts here. No continuation means this screen was
+        // rebuilt under a pad from the previous instance — close it.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_IMPORT_PIN,
+            this
+        ) { _, bundle ->
+            supportFragmentManager.clearFragmentResult(REQUEST_KEY_IMPORT_PIN)
+            val continuation = importPinContinuation
+            if (continuation == null) {
+                dismissImportPinDialog()
+            } else {
+                continuation(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
+            }
+        }
+        if (supportFragmentManager.findFragmentByTag(TAG_IMPORT_PIN) != null && importPinContinuation == null) {
+            dismissImportPinDialog()
+        }
 
         binding.importChoosePayloadBtn.setOnClickListener {
             var intent = Intent(Intent.ACTION_GET_CONTENT)
@@ -359,16 +381,21 @@ class ImportBackUpActivity : SentinelActivity() {
                     }
 
                     if (payload.second.get("pinEnabled").equals(true)) {
-                        val fragmentManager = supportFragmentManager
-                        val lockScreenDialog = LockScreenDialog(lockScreenMessage = "Enter pin code")
-                        val transaction = fragmentManager.beginTransaction()
-                        transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
-                        transaction.add(android.R.id.content, lockScreenDialog).commit()
-                        lockScreenDialog.setOnPinEntered {
-                            if (AccessFactory.getInstance(this@ImportBackUpActivity).validateHash(it,
+                        if (supportFragmentManager.findFragmentByTag(TAG_IMPORT_PIN) != null) {
+                            setImportBusy(false)
+                            return@launch
+                        }
+                        val lockScreenDialog = LockScreenDialog.newInstance(
+                            message = "Enter pin code",
+                            requestKey = REQUEST_KEY_IMPORT_PIN,
+                            purpose = LockScreenDialog.PURPOSE_IMPORT
+                        )
+                        importPinContinuation = { entered ->
+                            if (AccessFactory.getInstance(this@ImportBackUpActivity).validateHash(entered,
                                     payload.second.get("pinHash").toString()
                                 )) {
-                                AccessFactory.getInstance(this@ImportBackUpActivity).pin = it
+                                importPinContinuation = null
+                                AccessFactory.getInstance(this@ImportBackUpActivity).pin = entered
                                 lockScreenDialog.dismiss()
 
                                 // Hoisted OUT of the launch body: the
@@ -474,6 +501,10 @@ class ImportBackUpActivity : SentinelActivity() {
                                 lockScreenDialog.showError()
                             }
                         }
+                        supportFragmentManager.beginTransaction()
+                            .setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+                            .add(android.R.id.content, lockScreenDialog, TAG_IMPORT_PIN)
+                            .commit()
                     } else {
                         // Hoisted OUT of the launch body (see branch above).
                         var xpubImport: Pair<Int, Int>? = null
@@ -897,6 +928,11 @@ class ImportBackUpActivity : SentinelActivity() {
         }
     }
 
+    private fun dismissImportPinDialog() {
+        val existing = supportFragmentManager.findFragmentByTag(TAG_IMPORT_PIN) ?: return
+        supportFragmentManager.beginTransaction().remove(existing).commit()
+    }
+
     override fun onBackPressed() {
         if (requireRestart) {
             startActivity(Intent(this, HomeActivity::class.java).apply {
@@ -911,6 +947,8 @@ class ImportBackUpActivity : SentinelActivity() {
 
     companion object {
         const val REQUEST_FILE_CODE = 44
+        const val TAG_IMPORT_PIN = "lock_screen_import"
+        const val REQUEST_KEY_IMPORT_PIN = "lock_screen_import_result"
     }
 
 }
