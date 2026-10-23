@@ -10,8 +10,8 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
-import androidx.paging.PagedListAdapter
 import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.samourai.sentinel.R
 import com.samourai.sentinel.data.Tx
@@ -27,7 +27,7 @@ import java.util.*
  *
  * @author Sarath
  */
-class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(DIFF) {
+class TransactionAdapter : ListAdapter<Tx, TransactionAdapter.ViewHolder>(DIFF) {
 
     private val appContext: Context by inject(Context::class.java)
     private val prefsUtil: com.samourai.sentinel.ui.utils.PrefsUtil by inject(com.samourai.sentinel.ui.utils.PrefsUtil::class.java)
@@ -37,7 +37,7 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
 
     /**
      * txid -> label, from LabelRepository.observeTxLabelMap(). Labels are
-     * not part of the PagedList items, so a new map re-renders the rows.
+     * not part of the list items, so a new map re-renders the rows.
      */
     var txLabels: Map<String, String> = emptyMap()
         set(value) {
@@ -84,10 +84,7 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
         df.minimumFractionDigits = 8
         df.maximumFractionDigits = 8
 
-        if (getItem(position) == null) {
-            return
-        }
-        val tx = getItem(position)!!
+        val tx = getItem(position)
         holder.txContainer.setOnClickListener {
             onClickListener.invoke(tx)
         }
@@ -130,12 +127,12 @@ class TransactionAdapter : PagedListAdapter<Tx, TransactionAdapter.ViewHolder>(D
         }
 
         if (position != 0) {
-            val previous = getItem(position - 1)!!
+            val previous = getItem(position - 1)
             val datePrev = Date().apply { time = previous.time * 1000 }
             if (isSameDay(datePrev, current) && previous.confirmations >= MAX_CONFIRM_COUNT) {
                 //No-OP
             } else {
-                if (getItem(position)!!.confirmations < MAX_CONFIRM_COUNT) {
+                if (tx.confirmations < MAX_CONFIRM_COUNT) {
                     //NO-OP
                 }
                 else {

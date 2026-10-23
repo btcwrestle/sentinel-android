@@ -10,8 +10,6 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.paging.LivePagedListBuilder
-import androidx.paging.PagedList
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.samourai.sentinel.R
@@ -53,20 +51,18 @@ class TransactionsListFragment(
         }
 
         private val txDao: TxDao by KoinJavaComponent.inject(TxDao::class.java)
-        val txLiveData: LiveData<PagedList<Tx>> = if (position == 0)
-            LivePagedListBuilder(
-                txDao.getTxAssociatedToCollection(pubKeyCollection.id), 12
-            ).build()
+        // #284: Room LiveData, same invalidation path as the sync reconcile.
+        // A PagedList built while this table was still empty (balance is
+        // published per pubkey BEFORE saveTx) stayed empty until this
+        // fragment was destroyed and recreated.
+        val txLiveData: LiveData<List<Tx>> = if (position == 0)
+            txDao.observeCollectionTx(pubKeyCollection.id)
         else if (pubKeyCollection.isImportFromWallet && position == 1)
-            LivePagedListBuilder(
-                txDao.getPaginatedTx(pubKeyCollection.id,
-                    listOf(getPubKeyModelByLabel("Deposit BIP84").pubKey,
-                        getPubKeyModelByLabel("Deposit BIP49").pubKey,
-                        getPubKeyModelByLabel("Deposit BIP44").pubKey)), 12
-            ).build()
-        else LivePagedListBuilder(
-            txDao.getPaginatedTx(pubKeyCollection.id, pubKeyCollection.pubs[position - 1].pubKey), 12
-        ).build()
+            txDao.observeTxForPubKeys(pubKeyCollection.id,
+                listOf(getPubKeyModelByLabel("Deposit BIP84").pubKey,
+                    getPubKeyModelByLabel("Deposit BIP49").pubKey,
+                    getPubKeyModelByLabel("Deposit BIP44").pubKey))
+        else txDao.observeTxForPubKey(pubKeyCollection.id, pubKeyCollection.pubs[position - 1].pubKey)
 
         class TransactionsViewModelFactory(private val pubKeyCollection: PubKeyCollection, private val position: Int) : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -106,8 +102,13 @@ class TransactionsListFragment(
             dojoConfigureBottomSheet.show(childFragmentManager, dojoConfigureBottomSheet.tag)
         }
 
-        transactionViewModel.txLiveData.observe(this.viewLifecycleOwner) {
-            transactionAdapter.submitList(it)
+        transactionViewModel.txLiveData.observe(this.viewLifecycleOwner) { txs ->
+            // commit callback: ListAdapter applies the diff async. Ask for
+            // another measure once rows exist so a pager that measured this
+            // page at 0 (pre-#284 wrap_content) cannot freeze that height.
+            transactionAdapter.submitList(txs) {
+                transactionsRecycler.requestLayout()
+            }
         }
 
         labelRepository.observeTxLabelMap().observe(this.viewLifecycleOwner) { map ->

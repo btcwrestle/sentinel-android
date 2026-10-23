@@ -12,7 +12,6 @@ import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -96,7 +95,12 @@ class TransactionsFragment : Fragment() {
     private fun initViewModel() {
         transactionsViewModel.setCollection(collection)
 
-        binding.txViewPager.adapter = CollectionPubKeysViewpager(this.activity, collection)
+        // #284: tab pages are children of THIS fragment. Hosting them on
+        // the activity (the #181 bug) lets the pager bind a page before
+        // its view exists; that page then never rebinds, so the balance
+        // (this fragment) shows and the tx list stays empty until the
+        // screen is destroyed and recreated.
+        binding.txViewPager.adapter = CollectionPubKeysViewpager(this, collection)
         binding.txViewPager.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.grey_homeActivity))
         binding.txViewPager.offscreenPageLimit = 5
 
@@ -355,7 +359,7 @@ class TransactionsFragment : Fragment() {
     private fun rebuildPager() {
         val currentTab = binding.txViewPager.currentItem
         tabMediator?.detach()
-        binding.txViewPager.adapter = CollectionPubKeysViewpager(this.activity, collection)
+        binding.txViewPager.adapter = CollectionPubKeysViewpager(this, collection)
         val newItemCount = binding.txViewPager.adapter?.itemCount ?: 0
         if (currentTab < newItemCount) {
             binding.txViewPager.setCurrentItem(currentTab, false)
@@ -416,10 +420,10 @@ class TransactionsFragment : Fragment() {
     }
 
     private class CollectionPubKeysViewpager(
-        fa: FragmentActivity?,
+        fragment: Fragment,
         private val collection: PubKeyCollection,
 
-        ) : FragmentStateAdapter(fa!!) {
+        ) : FragmentStateAdapter(fragment) {
         override fun createFragment(position: Int): Fragment {
             return TransactionsListFragment(position, collection)
         }

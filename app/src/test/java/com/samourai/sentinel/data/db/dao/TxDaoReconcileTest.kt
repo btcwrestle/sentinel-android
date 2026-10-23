@@ -95,7 +95,8 @@ class TxDaoReconcileTest {
         hash: String,
         confirmations: Long = 6,
         time: Long = 1000L,
-        collectionId: String = collection
+        collectionId: String = collection,
+        associatedPubKey: String = pubKey
     ): Tx = Tx(
         hash = hash,
         time = time,
@@ -106,7 +107,7 @@ class TxDaoReconcileTest {
         out = emptyList(),
         block_height = 700000L,
         confirmations = confirmations,
-        associatedPubKey = pubKey,
+        associatedPubKey = associatedPubKey,
         collectionId = collectionId
     )
 
@@ -187,5 +188,47 @@ class TxDaoReconcileTest {
         val stored = dao.getAssociated(collection, pubKey)
         assertEquals(1, stored.size)
         assertEquals(42L, stored[0].confirmations)
+    }
+
+    /**
+     * #284: the keychain list reads these LiveDatas (newest first), not
+     * a Paging DataSource. A pubkey tab must not leak a sibling key.
+     */
+    @Test
+    fun keychainListQueriesSeeReconcileNewestFirst() = runBlocking {
+        val all = dao.observeCollectionTx(collection)
+        val allGot = mutableListOf<List<Tx>>()
+        val allObserver = Observer<List<Tx>> { allGot.add(it) }
+        val one = dao.observeTxForPubKey(collection, pubKey)
+        val oneGot = mutableListOf<List<Tx>>()
+        val oneObserver = Observer<List<Tx>> { oneGot.add(it) }
+        val many = dao.observeTxForPubKeys(collection, listOf(pubKey, "other"))
+        val manyGot = mutableListOf<List<Tx>>()
+        val manyObserver = Observer<List<Tx>> { manyGot.add(it) }
+        all.observeForever(allObserver)
+        one.observeForever(oneObserver)
+        many.observeForever(manyObserver)
+        try {
+            drainMain()
+            allGot.clear()
+            oneGot.clear()
+            manyGot.clear()
+            dao.upsertCollectionTx(
+                collection,
+                listOf(
+                    tx("old", time = 1L),
+                    tx("new", time = 9L),
+                    tx("sib", time = 8L, associatedPubKey = "other")
+                )
+            )
+            drainMain()
+            assertEquals(listOf("new", "sib", "old"), allGot.last().map { it.hash })
+            assertEquals(listOf("new", "old"), oneGot.last().map { it.hash })
+            assertEquals(listOf("new", "sib", "old"), manyGot.last().map { it.hash })
+        } finally {
+            all.removeObserver(allObserver)
+            one.removeObserver(oneObserver)
+            many.removeObserver(manyObserver)
+        }
     }
 }
