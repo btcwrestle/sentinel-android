@@ -59,7 +59,19 @@ import com.samourai.sentinel.core.DerivedNetwork
 import com.samourai.sentinel.core.NetworkClassifier
 
 
-class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secure: Boolean = false) : GenericBottomSheet(secure = secure) {
+class AddNewPubKeyBottomSheet : GenericBottomSheet {
+
+    /** #216: restore uses the no-arg constructor. A prefilled key rides in arguments. */
+    constructor() : super()
+
+    constructor(secure: Boolean) : super(secure)
+
+    constructor(pubKey: String, secure: Boolean) : super(secure) {
+        arguments = (arguments ?: Bundle()).apply { putString(ARG_PUBKEY, pubKey) }
+    }
+
+    private val pubKey: String
+        get() = arguments?.getString(ARG_PUBKEY).orEmpty()
 
     private val scanPubKeyFragment = ScanPubKeyFragment()
     private var newPubKeyListener: ((pubKey: PubKeyModel?) -> Unit)? = null
@@ -92,7 +104,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
 
         setUpViewPager()
 
-        scanPubKeyFragment.setOnScanListener {
+        liveScan().setOnScanListener {
             // #232: same order, new contract - validate() decides whether
             // the decode was consumed; the raw scan lands in pubKeyString
             // either way (pre-existing overwrite: validateXPUB re-reads it).
@@ -101,7 +113,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
             handled
         }
 
-        scanPubKeyFragment.setOnMultiKeyScanListener { account ->
+        liveScan().setOnMultiKeyScanListener { account ->
             // #254: multi-key UR payloads - a CRYPTO_ACCOUNT with several
             // output descriptors, or a BYTES export with several legs -
             // land as one labeled collection with every skip named:
@@ -109,11 +121,11 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
             importURAccount(account)
         }
 
-        selectAddressTypeFragment.setOnSelectListener {
+        liveType().setOnSelectListener {
             validateXPUB(it)
         }
 
-        chooseCollectionFragment.setOnSelectListener { selectedCollection ->
+        liveCollection().setOnSelectListener { selectedCollection ->
             // #243: check the duplicate HERE, before the intent - opening
             // CollectionEditActivity with a key it will reject used to land
             // the user on an empty key list where a save could wipe the
@@ -199,7 +211,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                         pubKey = key.xpub,
                         label = key.label,
                         type = key.type,
-                        fingerPrint = scanPubKeyFragment.getFingerprint()
+                        fingerPrint = liveScan().getFingerprint()
                     )
                 })
                 lifecycleScope.launch(Dispatchers.Main) {
@@ -243,13 +255,13 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                     XPUB.makeXPUB(XPUB.MAGIC_ZPUB, xpub.depth, xpub.fingerprint, xpub.child, xpub.chain, xpub.getPubkey())
                 else
                     pubKeyString
-            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = addressTypes, fingerPrint = scanPubKeyFragment.getFingerprint())
+            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = addressTypes, fingerPrint = liveScan().getFingerprint())
         } else if (pubKeyString.startsWith("ypub") || pubKeyString.startsWith("upub")) {
-            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = addressTypes, fingerPrint = scanPubKeyFragment.getFingerprint())
+            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = addressTypes, fingerPrint = liveScan().getFingerprint())
         } else if (pubKeyString.startsWith("zpub") || pubKeyString.startsWith("vpub")) {
-            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = addressTypes, fingerPrint = scanPubKeyFragment.getFingerprint())
+            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = addressTypes, fingerPrint = liveScan().getFingerprint())
         } else {
-            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = AddressTypes.BIP44, fingerPrint = scanPubKeyFragment.getFingerprint())
+            PubKeyModel(pubKey = pubKeyString, balance = 0, account_index = 0, change_index = 1, label = "Untitled", type = AddressTypes.BIP44, fingerPrint = liveScan().getFingerprint())
         }
 
         if (newPubKeyListener != null) {
@@ -298,13 +310,13 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
 
             FormatsUtil.isValidBitcoinAddress(payload.trim()) -> {
                 if (newPubKeyListener != null) {
-                    val pubKey = PubKeyModel(pubKey = payload, type = AddressTypes.ADDRESS, label = "Untitled", fingerPrint = scanPubKeyFragment.getFingerprint())
+                    val pubKey = PubKeyModel(pubKey = payload, type = AddressTypes.ADDRESS, label = "Untitled", fingerPrint = liveScan().getFingerprint())
                     newPubKeyListener?.let { it(pubKey) }
                     this.dismiss()
                     newPubKeyListener = null
                     return true
                 } else {
-                    pubKeyModel = PubKeyModel(pubKey = payload, type = AddressTypes.ADDRESS, label = "Untitled", fingerPrint = scanPubKeyFragment.getFingerprint())
+                    pubKeyModel = PubKeyModel(pubKey = payload, type = AddressTypes.ADDRESS, label = "Untitled", fingerPrint = liveScan().getFingerprint())
                     // Skip type selection screen since payload is an address
                     binding.pager.setCurrentItem(2, true)
                 }
@@ -318,7 +330,7 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
                 else {
                     binding.pager.setCurrentItem(1, true)
                     binding.pager.post {
-                        selectAddressTypeFragment.setType(type)
+                        liveType().setType(type)
                     }
                 }
             }
@@ -374,11 +386,23 @@ class AddNewPubKeyBottomSheet(private val pubKey: String = "", private val secur
         binding.pager.isUserInputEnabled = false
     }
 
+    /** #216: ViewPager2 restores pages under f0/f1/f2. Those are not these fields. */
+    private fun liveScan(): ScanPubKeyFragment =
+        childFragmentManager.findFragmentByTag("f0") as? ScanPubKeyFragment ?: scanPubKeyFragment
+
+    private fun liveType(): SelectAddressTypeFragment =
+        childFragmentManager.findFragmentByTag("f1") as? SelectAddressTypeFragment ?: selectAddressTypeFragment
+
+    private fun liveCollection(): ChooseCollectionFragment =
+        childFragmentManager.findFragmentByTag("f2") as? ChooseCollectionFragment ?: chooseCollectionFragment
+
     fun setPubKeyListener(listener: (pubKey: PubKeyModel?) -> Unit) {
         newPubKeyListener = listener
     }
 
     companion object {
+        private const val ARG_PUBKEY = "add_new_pubkey_arg_pubkey"
+
         internal fun isDojoPairingPayload(payload: String): Boolean = runCatching {
             val json = JSONObject(payload.trim())
             json.has("external") && json.has("payload")
