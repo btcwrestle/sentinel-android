@@ -485,6 +485,12 @@ class NetworkActivity : SentinelActivity() {
             override fun onDismiss() {
                 //Update dojo status
                 setDojoStatus()
+                // #274: #273's pairing guard can flip the network flag
+                // at Pair time while this activity sits behind the sheet -
+                // re-render the Bitcoin Network row too, or it keeps the
+                // pre-pairing network (and the wrong switch direction)
+                // until the activity is recreated.
+                setNetworkStatus()
                 if (!prefsUtil.isAPIEndpointEnabled()) {
                     //removeDojo()
                     Toast.makeText(applicationContext, getString(R.string.no_dojo_connected), Toast.LENGTH_SHORT).show()
@@ -494,6 +500,20 @@ class NetworkActivity : SentinelActivity() {
         })
     }
 
+
+    /**
+     * #274 general case: any writer that flips the network flag or the
+     * Dojo pairing while this activity sits stopped on the back stack
+     * is reflected on return - not just the pairing sheet's dismiss.
+     * Pure re-render: setNetworkStatus() re-derives from prefs, and
+     * onNetworkSwitchTapped() re-derives again at tap time, so a stale
+     * row can never act wrong.
+     */
+    override fun onResume() {
+        super.onResume()
+        setNetworkStatus()
+        setDojoStatus()
+    }
 
     override fun onDestroy() {
         super.onDestroy()
