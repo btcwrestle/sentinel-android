@@ -174,12 +174,12 @@ class TransactionsFragment : Fragment() {
             true
         }
 
-        binding.collectionBalanceFiat.visibility = if (prefsUtil.fiatDisabled!!) View.INVISIBLE else View.VISIBLE
+        binding.collectionBalanceFiat.visibility =
+            if (prefsUtil.fiatDisabled == true || prefsUtil.streetMode == true
+                || BalanceDisplayMode.fromString(prefsUtil.balanceDisplayMode) != BalanceDisplayMode.BTC
+            ) View.INVISIBLE else View.VISIBLE
         fiatBalanceLiveData.observe(viewLifecycleOwner, Observer {
-            if (isAdded) {
-                binding.collectionBalanceFiat.text = it
-                setBalance(-1)
-            }
+            if (isAdded) setBalance(indexPubSelected.value?.minus(1) ?: -1)
         })
         transactionsViewModel.getMessage().observe(
             this.viewLifecycleOwner
@@ -285,6 +285,11 @@ class TransactionsFragment : Fragment() {
                 BalanceDisplayFormatter.MASKED_TEXT
             else
                 getFiatBalance(sats, exchangeRateRepository.getRateLive().value)
+        binding.collectionBalanceFiat.visibility =
+            if (prefsUtil.fiatDisabled == true || mode != BalanceDisplayMode.BTC)
+                View.INVISIBLE
+            else
+                View.VISIBLE
     }
 
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
