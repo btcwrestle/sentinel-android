@@ -66,6 +66,39 @@ object LogRedaction {
      */
     private val AT_TOKEN = Regex("\\bat=[^&\\s\"']+")
 
+    /**
+     * The same access token as JSON: `"at":"..."`, plus the auth-body
+     * fields `access_token` and `refresh_token`. The query rule above
+     * does not match this shape. The key is kept so the line stays
+     * readable; only the value is replaced.
+     */
+    private val JSON_TOKEN_FIELD = Regex(
+        "\"(at|access_token|refresh_token)\"\\s*:\\s*\"[^\"]*\""
+    )
+
+    /**
+     * Subscribe payloads put the watched value in `"addr"`. Mask the
+     * whole field so the format (address, xpub, or anything else)
+     * does not matter.
+     */
+    private val JSON_ADDR_FIELD = Regex("\"addr\"\\s*:\\s*\"[^\"]*\"")
+
+    /**
+     * Bech32 addresses (bc1 / tb1 / bcrt1). The 14-char data floor
+     * leaves short fragments like "bc1q" alone. Case-insensitive:
+     * BIP173 allows an all-uppercase form.
+     */
+    private val BECH32_ADDR = Regex(
+        "\\b(?:bcrt1|bc1|tb1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{14,}\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Base58 addresses (mainnet 1/3, testnet m/n/2). Total length
+     * 26-35. Shorter digit runs stay visible.
+     */
+    private val BASE58_ADDR = Regex("\\b[13mn2][1-9A-HJ-NP-Za-km-z]{25,34}\\b")
+
     /** Applies every rule, in order, to one log line. */
     fun redact(message: String): String =
         message
@@ -73,6 +106,12 @@ object LogRedaction {
             .replace(HEX_64, "HEX_REDACTED")
             .replace(XPUB, "XPUB_REDACTED")
             .replace(AT_TOKEN, "at=REDACTED")
+            .replace(JSON_TOKEN_FIELD) { match ->
+                "\"${match.groupValues[1]}\":\"REDACTED\""
+            }
+            .replace(JSON_ADDR_FIELD, "\"addr\":\"REDACTED\"")
+            .replace(BECH32_ADDR, "ADDR_REDACTED")
+            .replace(BASE58_ADDR, "ADDR_REDACTED")
 }
 
 /**

@@ -23,6 +23,8 @@ import com.samourai.sentinel.databinding.ActivityImportBackUpBinding
 import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.SentinelActivity
+import com.samourai.sentinel.ui.dojo.isAcceptableDojoPairingUrl
+import com.samourai.sentinel.ui.dojo.validateDojoPairingPayload
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.PrefsUtil
@@ -170,6 +172,18 @@ class ImportBackUpActivity : SentinelActivity() {
     }
 
     /**
+     * Prefs may carry a second copy of the Dojo URL. Apply it only when
+     * it meets the pairing rule. [com.samourai.sentinel.ui.dojo.DojoUtility.setDojo]
+     * has already stored the pairing URL; an unacceptable prefs copy is left unused.
+     */
+    private fun applyImportedDojoEndpoints(prefs: JSONObject) {
+        prefs.optString("apiEndPointTor").takeIf { isAcceptableDojoPairingUrl(it) }
+            ?.let { prefsUtil.apiEndPointTor = it }
+        prefs.optString("apiEndPoint").takeIf { isAcceptableDojoPairingUrl(it) }
+            ?.let { prefsUtil.apiEndPoint = it }
+    }
+
+    /**
      * Dojo pairing leg (#48). DojoUtil.setDojo persists creds + endpoints
      * LOCALLY first, then makes ONE network auth call - which is what dies
      * with "unable to resolve host" while the Tor circuit is still
@@ -182,6 +196,9 @@ class ImportBackUpActivity : SentinelActivity() {
      */
     private suspend fun importDojoWithRetry(dojo: JSONObject?): Boolean {
         if (dojo == null) return true
+        // Same gate as a scanned pairing. Fail before the Tor wait so a
+        // payload with a blank credential or a plain-http host is not retried.
+        if (!validateDojoPairingPayload(dojo.toString())) return false
         // #99: the bar now spans the Tor wait AND the bounded auth-retry
         // window. The old code hid it at ON - before repeat(3), where rounds
         // fail on a not-yet-usable circuit (10-02: two auth attempts failed
@@ -431,8 +448,7 @@ class ImportBackUpActivity : SentinelActivity() {
                                             // objection rides the completion snackbar
                                             // and the pairing leg is skipped.
                                             if (networkPlan.importDojo && importDojoWithRetry(payload.third)) {
-                                                payload.second.optString("apiEndPointTor").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPointTor = it }
-                                                payload.second.optString("apiEndPoint").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPoint = it }
+                                                applyImportedDojoEndpoints(payload.second)
                                                 // #273's PROCEED_AND_SET_NETWORK arm: the
                                                 // import tap was the consent, and the
                                                 // backup's Dojo is the first
@@ -537,8 +553,7 @@ class ImportBackUpActivity : SentinelActivity() {
                                     // objection rides the completion snackbar
                                     // and the pairing leg is skipped.
                                     if (networkPlan.importDojo && importDojoWithRetry(payload.third)) {
-                                        payload.second.optString("apiEndPointTor").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPointTor = it }
-                                        payload.second.optString("apiEndPoint").takeIf { it.isNotEmpty() }?.let { prefsUtil.apiEndPoint = it }
+                                        applyImportedDojoEndpoints(payload.second)
                                         // #273's PROCEED_AND_SET_NETWORK arm: the
                                         // import tap was the consent, and the
                                         // backup's Dojo is the first

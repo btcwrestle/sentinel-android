@@ -1,12 +1,14 @@
 package com.samourai.sentinel.ui.dojo
 
 import com.samourai.sentinel.api.ApiService
+import com.samourai.sentinel.api.TlsPolicy
 import com.samourai.sentinel.data.db.SentinelCollectionStore
 import com.samourai.sentinel.data.db.PayloadRecord
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.helpers.toJSON
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import kotlinx.coroutines.*
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
@@ -33,6 +35,7 @@ class DojoUtility {
     }
 
     suspend fun setDojo(pairing: String): Response {
+        if (!validate(pairing)) throw Exception("Invalid payload")
         val payload = fromJSON<DojoPairing>(pairing)
                 ?: throw  Exception("Invalid payload")
         this.dojoPayload = payload
@@ -48,27 +51,7 @@ class DojoUtility {
     }
 
 
-    fun validate(payloadString: String): Boolean {
-        try {
-            val payload = fromJSON<DojoPairing>(payloadString)
-                    ?: throw  Exception("Invalid payload")
-            if (payload.pairing == null) {
-                return false
-            }
-            if (payload.pairing.type != "dojo.api") {
-                return false
-            }
-            if (payload.pairing.apikey == null) {
-                return false
-            }
-            if (payload.pairing.url == null) {
-                return false
-            }
-            return true
-        } catch (ex: Exception) {
-            return false
-        }
-    }
+    fun validate(payloadString: String): Boolean = validateDojoPairingPayload(payloadString)
 
     fun isAuthenticated(): Boolean {
         return isAuthenticated;
@@ -183,6 +166,7 @@ class DojoUtility {
     }
 
     fun setDojoPayload(payloadString: String) {
+        if (!validate(payloadString)) throw Exception("Invalid payload")
         val payload = fromJSON<DojoPairing>(payloadString)
             ?: throw  Exception("Invalid payload")
         this.dojoPayload = payload
@@ -194,8 +178,43 @@ class DojoUtility {
     }
 
     fun import(dojoPairing: JSONObject) {
+        if (!validate(dojoPairing.toString())) throw Exception("Invalid payload")
         dojoPayload = fromJSON(dojoPairing.toString())
         // See setDojoPayload: apiKey must track dojoPayload.
         apiKey = dojoPayload?.pairing?.apikey
     }
+}
+
+/**
+ * #302: Gson materializes omitted [Pairing] strings as "", so a null
+ * check accepts a payload that has no url or apikey. Both must be
+ * non-blank, type must be dojo.api, and the URL must parse as https
+ * or as an onion host (plain http to any other host is refused).
+ *
+ * [DojoUtility.validate] delegates here so the UI, backup import, and
+ * unit tests share one implementation.
+ */
+internal fun validateDojoPairingPayload(payloadString: String): Boolean {
+    return try {
+        val payload = fromJSON<DojoPairing>(payloadString) ?: return false
+        val pairing = payload.pairing ?: return false
+        if (pairing.type != "dojo.api") return false
+        if (pairing.apikey.isNullOrBlank()) return false
+        isAcceptableDojoPairingUrl(pairing.url)
+    } catch (ex: Exception) {
+        false
+    }
+}
+
+/**
+ * True when [raw] is an absolute http(s) URL whose host is an onion
+ * service, or any https URL. Plain http to a clearnet host, IP, or
+ * unparseable string is false. The host check is the parsed host
+ * ([TlsPolicy.shouldRelax]), never a substring search.
+ */
+internal fun isAcceptableDojoPairingUrl(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+    val parsed = raw.toHttpUrlOrNull() ?: return false
+    if (TlsPolicy.shouldRelax(parsed.host.trimEnd('.'))) return true
+    return parsed.scheme == "https"
 }
