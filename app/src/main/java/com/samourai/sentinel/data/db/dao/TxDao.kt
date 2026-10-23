@@ -1,7 +1,6 @@
 package com.samourai.sentinel.data.db.dao
 
 import androidx.lifecycle.LiveData
-import androidx.paging.DataSource
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -22,10 +21,10 @@ interface TxDao {
 
 
     @Query("SELECT * from transactions WHERE collectionId=:collectionID  AND associatedPubKey=:associatedPubKey ORDER BY time DESC ,confirmations ASC ")
-    fun getPaginatedTx(collectionID: String, associatedPubKey: String): DataSource.Factory<Int, Tx>
+    fun observeTxForPubKey(collectionID: String, associatedPubKey: String): LiveData<List<Tx>>
 
     @Query("SELECT * FROM transactions WHERE collectionId=:collectionID AND associatedPubKey IN (:pubKeys)  ORDER BY time DESC ,confirmations ASC ")
-    fun getPaginatedTx(collectionID: String, pubKeys: List<String>): DataSource.Factory<Int, Tx>
+    fun observeTxForPubKeys(collectionID: String, pubKeys: List<String>): LiveData<List<Tx>>
 
     @Query("SELECT * from transactions WHERE collectionId=:collectionID AND associatedPubKey=:pubKey  ORDER BY time DESC LIMIT $TX_PAGE_SIZE")
     fun getAssociated(collectionID: String, pubKey: String): List<Tx>
@@ -33,8 +32,17 @@ interface TxDao {
     @Query("SELECT * from transactions WHERE associatedPubKey=:pubKey  ORDER BY time DESC LIMIT $TX_PAGE_SIZE")
     fun getAssociated(pubKey: String): List<Tx>
 
+    /**
+     * #284: keychain "All" tab. Room LiveData, not a Paging DataSource.
+     * The PagedList was built once per tab and could stay on its initial
+     * empty snapshot for the life of the screen (opened in the
+     * balance-before-saveTx window, or a first load that raced the sync
+     * commit). Leaving and re-entering built a new snapshot, so the rows
+     * appeared. Same invalidation path as [getAllTx], which #201 pins.
+     * DESC here (newest first); [getAllTx] stays ASC for its caller.
+     */
     @Query("SELECT * from transactions WHERE collectionId=:collectionID  ORDER BY time DESC LIMIT $TX_PAGE_SIZE")
-    fun getTxAssociatedToCollection(collectionID: String): DataSource.Factory<Int, Tx>
+    fun observeCollectionTx(collectionID: String): LiveData<List<Tx>>
 
     /**
      * #201: batch upsert for a sync round. REPLACE (not IGNORE) so
