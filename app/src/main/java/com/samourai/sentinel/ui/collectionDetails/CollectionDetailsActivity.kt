@@ -76,24 +76,24 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
                 }
             }
             if (collection != null) {
-                receiveFragment.setCollection(collection!!)
-                sendFragment.setCollection(collection!!)
+                liveReceive().setCollection(collection!!)
+                liveSend().setCollection(collection!!)
                 // #204: per-emission refresh. This observer fires on EVERY
                 // collectionsLiveData delivery (once per pubkey per sync
                 // round); the fragment now guards its own pager rebuild on
                 // a real pubkey-set change. The one-time entry point in
                 // checkIntent() below keeps calling initViewModel directly.
-                transactionsFragment.onCollectionRefreshed(collection!!)
+                liveTx().onCollectionRefreshed(collection!!)
             } else {
                 finish()
             }
         })
 
 
-        transactionsFragment.setBalance(receiveViewModel.getBalance())
+        liveTx().setBalance(receiveViewModel.getBalance())
 
         receiveViewModel.getFiatBalance().observe(this) {
-            transactionsFragment.setBalanceFiat(receiveViewModel.getFiatBalance())
+            liveTx().setBalanceFiat(receiveViewModel.getFiatBalance())
         }
 
         binding.bottomNav.setOnNavigationItemSelectedListener { item ->
@@ -152,19 +152,19 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         }
 
         val pubIndexObserver = Observer<Int> { newIndex ->
-            receiveFragment.setDropDownPub(newIndex)
-            sendFragment.setDropDownPub(newIndex)
-            sendFragment.setIndexPubSelector(newIndex)
+            liveReceive().setDropDownPub(newIndex)
+            liveSend().setDropDownPub(newIndex)
+            liveSend().setIndexPubSelector(newIndex)
         }
 
-        transactionsFragment.indexPubSelected.observe(this, pubIndexObserver)
+        liveTx().indexPubSelected.observe(this, pubIndexObserver)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 1 && resultCode == Activity.RESULT_OK) {
             data?.data?.also { uri ->
-                val fileContent = sendFragment.viewModel.getPsbtBytes()
+                val fileContent = liveSend().viewModel.getPsbtBytes()
                 val outputStream = contentResolver.openOutputStream(uri)
                 outputStream?.write(fileContent)
                 outputStream?.close()
@@ -176,7 +176,7 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         }
         else if (requestCode == 2 && resultCode == Activity.RESULT_OK) {
             data?.data?.also { uri ->
-                val fileContent = sendFragment.viewModel.psbtLive.value
+                val fileContent = liveSend().viewModel.psbtLive.value
                 val outputStream = contentResolver.openOutputStream(uri)
                 outputStream?.write(fileContent?.toByteArray())
                 outputStream?.close()
@@ -189,11 +189,11 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
     }
 
     override fun onBackPressed() {
-        if (receiveFragment.isVisible) {
+        if (liveReceive().isVisible) {
             binding.fragmentHostContainerPager.setCurrentItem(1, true)
         }
-        else if (sendFragment.isVisible) {
-            if (sendFragment.onBackPressed()) {
+        else if (liveSend().isVisible) {
+            if (liveSend().onBackPressed()) {
                 binding.fragmentHostContainerPager.setCurrentItem(1, true)
             }
         } else {
@@ -227,6 +227,22 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         return true
     }
 
+    /**
+     * #217: ViewPager2 restores a fragment under the tag "f" + position.
+     * That object is not the field instance this activity constructed.
+     * Before the pager has added anything, the tag is empty and the
+     * field is the instance createFragment will return, so the first
+     * launch still pushes state onto the object that will be shown.
+     */
+    private fun liveReceive(): ReceiveFragment =
+        supportFragmentManager.findFragmentByTag("f0") as? ReceiveFragment ?: receiveFragment
+
+    private fun liveSend(): SendFragment =
+        supportFragmentManager.findFragmentByTag("f2") as? SendFragment ?: sendFragment
+
+    private fun liveTx(): TransactionsFragment =
+        supportFragmentManager.findFragmentByTag("f1") as? TransactionsFragment ?: transactionsFragment
+
     private fun checkIntent() {
         if (intent.extras != null) {
             if (intent.extras!!.containsKey("collection")) {
@@ -234,9 +250,9 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
                     collection = it
                 }
                 if (collection != null) {
-                    receiveFragment.setCollection(collection!!)
-                    sendFragment.setCollection(collection!!)
-                    transactionsFragment.initViewModel(collection!!)
+                    liveReceive().setCollection(collection!!)
+                    liveSend().setCollection(collection!!)
+                    liveTx().initViewModel(collection!!)
                 } else {
                     finish()
                 }
@@ -256,6 +272,9 @@ class CollectionDetailsActivity : SentinelActivity(), TransactionsFragment.OnTab
         override fun getItemCount(): Int = 3
 
         override fun createFragment(position: Int): Fragment {
+            // #217: these field instances are only for the first add.
+            // A restored pager does not call createFragment; liveReceive,
+            // liveSend and liveTx find the fragment under its tag.
             return when (position) {
                 0 -> {
                     receiveFragment

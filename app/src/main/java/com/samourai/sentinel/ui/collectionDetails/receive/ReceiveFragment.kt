@@ -438,7 +438,12 @@ class ReceiveFragment : Fragment() {
      */
     fun setCollection(collection: PubKeyCollection) {
         this.collection = collection
-        if (isAdded) {
+        // #217: isAdded is true for a fragment the FragmentManager
+        // restored, before its view exists. setUpToolBar reads the
+        // toolbar found in onCreateView. Touch the view only once it
+        // exists; onCreateView does this setup itself when the
+        // collection was stored first.
+        if (view != null) {
             receiveViewModel.setCollection(collection)
             setUpSpinner()
             setUpToolBar()

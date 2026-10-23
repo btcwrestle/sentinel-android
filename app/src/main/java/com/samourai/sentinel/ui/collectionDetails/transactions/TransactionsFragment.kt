@@ -328,7 +328,10 @@ class TransactionsFragment : Fragment() {
         val pubsChanged = fingerprint != lastPubsFingerprint
         this.collection = collection
         this.lastPubsFingerprint = fingerprint
-        if (isAdded) {
+        // #217: a restored fragment is added before its view exists.
+        // The binding work waits for onViewCreated, which calls the
+        // private initViewModel once this field is set.
+        if (view != null) {
             transactionsViewModel.setCollection(collection)
             if (!pagerWired) {
                 // Emission arrived after attach but before onViewCreated.
@@ -425,7 +428,7 @@ class TransactionsFragment : Fragment() {
 
         ) : FragmentStateAdapter(fragment) {
         override fun createFragment(position: Int): Fragment {
-            return TransactionsListFragment(position, collection)
+            return TransactionsListFragment.newInstance(position, collection)
         }
 
         override fun getItemCount(): Int {
