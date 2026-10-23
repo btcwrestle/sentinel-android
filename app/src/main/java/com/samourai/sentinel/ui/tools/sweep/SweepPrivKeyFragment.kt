@@ -91,7 +91,7 @@ private const val REQUEST_SCAN_PRIVKEY = "sweep_scan_privkey"
 
 class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = false) : GenericBottomSheet(secure = secure) {
 
-    private val scanPubKeyFragment = ScanPubKeyFragment(privKey)
+    private val keyEntryFragment = SweepKeyEntryFragment(privKey)
     private val chooseCollectionFragment = ChooseCollectionFragment()
     private val choosePubkeyFragment = ChoosePubkeyFragment()
     private val previewBottomSheet = PreviewBottomSheet()
@@ -113,7 +113,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         setUpViewPager()
 
-        scanPubKeyFragment.setOnPreviewButtonCall {
+        keyEntryFragment.setOnPreviewButtonCall {
             validate(it)
             pubKeyString = it
         }
@@ -232,7 +232,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     private fun setUpViewPager() {
 
         val item = arrayListOf<Fragment>()
-        item.add(scanPubKeyFragment)
+        item.add(keyEntryFragment)
         item.add(chooseCollectionFragment)
         item.add(choosePubkeyFragment)
         binding.pager.adapter = object : FragmentStateAdapter(this) {
@@ -251,7 +251,8 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
 }
 
 
-class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
+/** #280: the sweep private-key page. Not the pubkey scanner, which keeps this name in ui.fragments. */
+class SweepKeyEntryFragment(private val privKey: String = "") : Fragment() {
 
     private lateinit var pasteBtn: Button
     private lateinit var scanBtn: Button
