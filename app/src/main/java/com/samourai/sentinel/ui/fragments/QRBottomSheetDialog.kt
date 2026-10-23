@@ -153,7 +153,11 @@ class QRBottomSheetDialog() : GenericBottomSheet() {
             else if (qrToolbar.title.equals("Deposit BIP49")) {
                 qrToolbar.title = "Deposit BIP84"
                 qrTextView.text =  getPubKeyModelByLabel("Deposit BIP84").pubKey
-                setQR(view,  getPubKeyModelByLabel("Deposit BIP89").pubKey)
+                // #219: this fetch used a BIP89 label that no pub
+                // carries, so it silently fell back to pubs[0] - the
+                // wrong QR. Left arrow from BIP49 cycles to BIP84,
+                // like its sibling title/text lines.
+                setQR(view,  getPubKeyModelByLabel("Deposit BIP84").pubKey)
             }
             else if (qrToolbar.title.equals("Deposit BIP44")) {
                 qrToolbar.title = "Deposit BIP49"
