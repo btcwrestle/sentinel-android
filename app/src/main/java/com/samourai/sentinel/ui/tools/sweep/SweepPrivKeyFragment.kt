@@ -277,7 +277,7 @@ class SweepPrivKeyFragment : GenericBottomSheet {
 
 
 /** #280: the sweep private-key page. Not the pubkey scanner, which keeps this name in ui.fragments. */
-class SweepKeyEntryFragment : Fragment() {
+class SweepKeyEntryFragment : Fragment {
 
     constructor() : super()
 

@@ -73,6 +73,9 @@ class AddNewPubKeyBottomSheet : GenericBottomSheet {
     private val pubKey: String
         get() = arguments?.getString(ARG_PUBKEY).orEmpty()
 
+    private val secure: Boolean
+        get() = arguments?.getBoolean(GenericBottomSheet.ARG_SECURE, false) == true
+
     private val scanPubKeyFragment = ScanPubKeyFragment()
     private var newPubKeyListener: ((pubKey: PubKeyModel?) -> Unit)? = null
     private val selectAddressTypeFragment = SelectAddressTypeFragment()
