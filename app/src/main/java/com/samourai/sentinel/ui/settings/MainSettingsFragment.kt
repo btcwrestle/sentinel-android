@@ -80,6 +80,24 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private val settingsScope = CoroutineScope(context = Dispatchers.Main)
     private var exportedBackUp: String? = null
 
+    /**
+     * #220: first pin of a set-pin flow. Memory of this fragment instance
+     * only. A recreated fragment has none, and the confirm pad is closed.
+     */
+    private var pendingNewPin: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        parentFragmentManager.setFragmentResultListener(REQUEST_KEY_PIN_ENTER, this) { _, bundle ->
+            parentFragmentManager.clearFragmentResult(REQUEST_KEY_PIN_ENTER)
+            onPinEntered(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
+        }
+        parentFragmentManager.setFragmentResultListener(REQUEST_KEY_PIN_CONFIRM, this) { _, bundle ->
+            parentFragmentManager.clearFragmentResult(REQUEST_KEY_PIN_CONFIRM)
+            onPinConfirmed(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
+        }
+    }
+
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.main_preferences, rootKey)
     }
@@ -87,36 +105,29 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // #220: confirm step compared against pendingNewPin, which does not
+        // survive recreation and must not be saved. Close that pad; the
+        // enter pad underneath still posts to the listener above.
+        view.post {
+            if (!isAdded) return@post
+            if (parentFragmentManager.findFragmentByTag(TAG_PIN_CONFIRM) != null && pendingNewPin == null) {
+                parentFragmentManager.popBackStack()
+            }
+        }
+
         setExchangeSettings()
         setExplorerSettings()
 
         val pineEntryCheckBox = findPreference<CheckBoxPreference>("pinEnabled")
         pineEntryCheckBox?.let {
             it.setOnPreferenceChangeListener { _, newValue ->
-                val lockScreenDialog = LockScreenDialog(lockScreenMessage = if (newValue == true) "Enter new pin code" else "Enter current pin code")
-                val transaction = parentFragmentManager.beginTransaction()
-                transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
-                transaction.add(android.R.id.content, lockScreenDialog).addToBackStack("Lock").commit()
-                lockScreenDialog.setOnPinEntered { pin ->
-                    if (newValue == true) {
-                        val lockScreenDialogConf = LockScreenDialog(lockScreenMessage = "Please Re-Enter Pin Code")
-                        val transactionConf = parentFragmentManager.beginTransaction()
-                        transactionConf.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
-                        transactionConf.add(android.R.id.content, lockScreenDialogConf).addToBackStack("Lock").commit()
-                        lockScreenDialogConf.setOnPinEntered { pinConf ->
-                            if (pinConf == pin) {
-                                setPinCode(pin, it)
-                                lockScreenDialog.dismiss()
-                                parentFragmentManager.popBackStack()
-                            }
-                            else
-                                Toast.makeText(requireContext(), "Pins are not the same", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        removePinCode(pin, lockScreenDialog, pineEntryCheckBox)
-                    }
-                }
-
+                val enabling = newValue == true
+                showPinDialog(
+                    message = if (enabling) "Enter new pin code" else "Enter current pin code",
+                    requestKey = REQUEST_KEY_PIN_ENTER,
+                    purpose = if (enabling) LockScreenDialog.PURPOSE_SET else LockScreenDialog.PURPOSE_REMOVE,
+                    tag = TAG_PIN_ENTER
+                )
                 false
             }
         }
@@ -341,6 +352,61 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                     }
                 }
         )
+    }
+
+    private fun showPinDialog(message: String, requestKey: String, purpose: String, tag: String) {
+        if (parentFragmentManager.findFragmentByTag(tag) != null) return
+        val dialog = LockScreenDialog.newInstance(
+            message = message,
+            requestKey = requestKey,
+            purpose = purpose
+        )
+        parentFragmentManager.beginTransaction()
+            .setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+            .add(android.R.id.content, dialog, tag)
+            .addToBackStack("Lock")
+            .commit()
+    }
+
+    private fun onPinEntered(pin: String) {
+        val dialog = parentFragmentManager.findFragmentByTag(TAG_PIN_ENTER) as? LockScreenDialog ?: return
+        when (dialog.purpose) {
+            LockScreenDialog.PURPOSE_SET -> {
+                pendingNewPin = pin
+                showPinDialog(
+                    message = "Please Re-Enter Pin Code",
+                    requestKey = REQUEST_KEY_PIN_CONFIRM,
+                    purpose = LockScreenDialog.PURPOSE_CONFIRM,
+                    tag = TAG_PIN_CONFIRM
+                )
+            }
+            LockScreenDialog.PURPOSE_REMOVE -> {
+                val box = findPreference<CheckBoxPreference>("pinEnabled") ?: return
+                removePinCode(pin, dialog, box)
+            }
+        }
+    }
+
+    private fun onPinConfirmed(pin: String) {
+        val dialog = parentFragmentManager.findFragmentByTag(TAG_PIN_CONFIRM) as? LockScreenDialog
+        val first = pendingNewPin
+        if (dialog == null || first == null) {
+            pendingNewPin = null
+            if (parentFragmentManager.findFragmentByTag(TAG_PIN_CONFIRM) != null) {
+                parentFragmentManager.popBackStack()
+            }
+            return
+        }
+        if (pin == first) {
+            val box = findPreference<CheckBoxPreference>("pinEnabled") ?: return
+            pendingNewPin = null
+            setPinCode(pin, box)
+            (parentFragmentManager.findFragmentByTag(TAG_PIN_ENTER) as? LockScreenDialog)?.dismiss()
+            parentFragmentManager.popBackStack()
+        } else {
+            Toast.makeText(requireContext(), "Pins are not the same", Toast.LENGTH_SHORT).show()
+            dialog.showError()
+        }
     }
 
     private fun removePinCode(pin: String, lockScreenDialog: LockScreenDialog, checkBox: CheckBoxPreference) {
@@ -608,5 +674,9 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         const val REQ_CODE_WRITE_BACKUP = 12
         const val REQ_CODE_IMPORT_LABELS = 13
         const val REQ_CODE_EXPORT_LABELS = 14
+        const val TAG_PIN_ENTER = "lock_screen_pin_enter"
+        const val TAG_PIN_CONFIRM = "lock_screen_pin_confirm"
+        const val REQUEST_KEY_PIN_ENTER = "lock_screen_pin_enter_result"
+        const val REQUEST_KEY_PIN_CONFIRM = "lock_screen_pin_confirm_result"
     }
 }

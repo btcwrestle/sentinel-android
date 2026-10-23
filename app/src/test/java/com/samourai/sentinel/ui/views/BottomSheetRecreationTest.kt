@@ -187,4 +187,93 @@ class BottomSheetRecreationTest {
 
         second.destroy()
     }
+
+    @Test
+    fun `lock screen pad round-trips its channel and does not store the pin`() {
+        val first = Robolectric.buildActivity(FragmentActivity::class.java).create()
+        LockScreenDialog.newInstance(
+            message = "Enter pin code",
+            requestKey = "lock_screen_unlock_result",
+            purpose = LockScreenDialog.PURPOSE_UNLOCK
+        ).let { dialog ->
+            first.get().supportFragmentManager.beginTransaction()
+                .add(android.R.id.content, dialog, "lock_screen_unlock")
+                .commitNow()
+        }
+
+        val outState = Bundle()
+        first.saveInstanceState(outState)
+        first.destroy()
+
+        val second = Robolectric.buildActivity(FragmentActivity::class.java).create(outState)
+        val restored = second.get().supportFragmentManager
+            .findFragmentByTag("lock_screen_unlock") as? LockScreenDialog
+        assertNotNull("pad must be restored from saved state", restored)
+        val args = restored!!.requireArguments()
+        assertEquals("Enter pin code", args.getString(LockScreenDialog.ARG_MESSAGE))
+        assertEquals("lock_screen_unlock_result", args.getString(LockScreenDialog.ARG_REQUEST_KEY))
+        assertEquals(LockScreenDialog.PURPOSE_UNLOCK, args.getString(LockScreenDialog.ARG_PURPOSE))
+        assertFalse(
+            "the pin must not be in the saved arguments",
+            args.containsKey(LockScreenDialog.RESULT_PIN)
+        )
+
+        var delivered: String? = null
+        second.get().supportFragmentManager.setFragmentResultListener(
+            "lock_screen_unlock_result",
+            second.get()
+        ) { _, bundle ->
+            delivered = bundle.getString(LockScreenDialog.RESULT_PIN)
+        }
+        second.get().supportFragmentManager.beginTransaction().remove(restored).commitNow()
+        second.start()
+        second.get().supportFragmentManager.setFragmentResult(
+            "lock_screen_unlock_result",
+            Bundle().apply { putString(LockScreenDialog.RESULT_PIN, "1234") }
+        )
+        assertEquals("1234", delivered)
+        second.get().supportFragmentManager.clearFragmentResult("lock_screen_unlock_result")
+        second.destroy()
+    }
+
+    @Test
+    fun `dojo setup sheet round-trips its result key and cancel contract`() {
+        val first = Robolectric.buildActivity(FragmentActivity::class.java).create()
+        DojoConfigureBottomSheet.newInstance(
+            requestKey = "home_dojo_setup_result",
+            cancelable = false
+        ).show(first.get().supportFragmentManager, "home_dojo_setup_sheet")
+        first.get().supportFragmentManager.executePendingTransactions()
+
+        val outState = Bundle()
+        first.saveInstanceState(outState)
+        first.destroy()
+
+        val second = Robolectric.buildActivity(FragmentActivity::class.java).create(outState)
+        val restored = second.get().supportFragmentManager
+            .findFragmentByTag("home_dojo_setup_sheet") as? DojoConfigureBottomSheet
+        assertNotNull("sheet must be restored from saved state", restored)
+        val args = restored!!.requireArguments()
+        assertEquals(
+            "home_dojo_setup_result",
+            args.getString(DojoConfigureBottomSheet.ARG_REQUEST_KEY)
+        )
+        assertFalse("non-cancelable contract must survive restore", restored.isCancelable)
+
+        var paired: Boolean? = null
+        second.get().supportFragmentManager.setFragmentResultListener(
+            "home_dojo_setup_result",
+            second.get()
+        ) { _, bundle ->
+            paired = bundle.getBoolean(DojoConfigureBottomSheet.RESULT_PAIRED)
+        }
+        second.get().supportFragmentManager.beginTransaction().remove(restored).commitNow()
+        second.start()
+        second.get().supportFragmentManager.setFragmentResult(
+            "home_dojo_setup_result",
+            Bundle().apply { putBoolean(DojoConfigureBottomSheet.RESULT_PAIRED, true) }
+        )
+        assertEquals(true, paired)
+        second.destroy()
+    }
 }

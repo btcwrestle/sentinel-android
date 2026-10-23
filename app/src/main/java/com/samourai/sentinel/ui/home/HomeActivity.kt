@@ -103,6 +103,15 @@ class HomeActivity : SentinelActivity() {
         ) { _, bundle ->
             onFirstRunNetworkChoice(bundle.getBoolean(ConfirmBottomSheet.RESULT_CONFIRMED))
         }
+        // #220: same shape as the network choice. A restored Dojo sheet
+        // posts here; this registration runs on every create.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_DOJO_SETUP,
+            this
+        ) { _, _ ->
+            supportFragmentManager.clearFragmentResult(REQUEST_KEY_DOJO_SETUP)
+            onDojoSetupFinished()
+        }
 
         binding.toolbarIcon.setOnClickListener {
             showToolOptions(it)
@@ -531,21 +540,28 @@ class HomeActivity : SentinelActivity() {
     }
 
     private fun showDojoSetUpBottomSheet() {
-        val dojoConfigureBottomSheet = DojoConfigureBottomSheet()
-        dojoConfigureBottomSheet.show(supportFragmentManager, dojoConfigureBottomSheet.tag)
-        dojoConfigureBottomSheet.setDojoConfigurationListener(object : DojoConfigureBottomSheet.DojoConfigurationListener {
-            override fun onDismiss() {
-                if (!prefsUtil.isAPIEndpointEnabled()) {
-                    //showServerConfig()
-                    Toast.makeText(applicationContext, "No Dojo connected", Toast.LENGTH_SHORT).show()
-                } else {
-                    // This sheet is only ever reached from the first-time setup
-                    // flow (setUp() / showServerConfig()), so a successful
-                    // connection here is always the user's first Dojo.
-                    BalanceHelpDialog.show(this@HomeActivity)
-                }
-            }
-        })
+        // #220: the restored sheet is already in the FragmentManager.
+        // Showing another stacks a second wizard over the one the
+        // durable listener is waiting on.
+        if (supportFragmentManager.findFragmentByTag(TAG_DOJO_SETUP) != null) return
+        DojoConfigureBottomSheet.newInstance(
+            requestKey = REQUEST_KEY_DOJO_SETUP
+        ).show(supportFragmentManager, TAG_DOJO_SETUP)
+    }
+
+    /**
+     * #220: state-derived. Success is "pairing live, endpoints set"
+     * (#159); the body re-reads prefs rather than closing over the sheet.
+     */
+    private fun onDojoSetupFinished() {
+        if (!prefsUtil.isAPIEndpointEnabled()) {
+            Toast.makeText(applicationContext, "No Dojo connected", Toast.LENGTH_SHORT).show()
+        } else {
+            // This sheet is only ever reached from the first-time setup
+            // flow (setUp() / showServerConfig()), so a successful
+            // connection here is always the user's first Dojo.
+            BalanceHelpDialog.show(this@HomeActivity)
+        }
     }
 
     private fun updateBalance(it: Long) {
@@ -693,5 +709,7 @@ class HomeActivity : SentinelActivity() {
         // registered in onCreate.
         const val TAG_FIRST_RUN_NETWORK_SHEET = "first_run_network_choice_sheet"
         const val REQUEST_KEY_FIRST_RUN_NETWORK = "first_run_network_choice_result"
+        const val TAG_DOJO_SETUP = "home_dojo_setup_sheet"
+        const val REQUEST_KEY_DOJO_SETUP = "home_dojo_setup_result"
     }
 }
