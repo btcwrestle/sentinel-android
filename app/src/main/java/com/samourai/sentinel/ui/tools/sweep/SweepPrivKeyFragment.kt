@@ -87,6 +87,8 @@ import java.text.DecimalFormat
 import kotlin.math.ceil
 
 
+private const val REQUEST_SCAN_PRIVKEY = "sweep_scan_privkey"
+
 class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = false) : GenericBottomSheet(secure = secure) {
 
     private val scanPubKeyFragment = ScanPubKeyFragment(privKey)
@@ -280,6 +282,32 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
         startSweepBtn = view.findViewById(R.id.sweepStartBtn)
         textPrivKey = view.findViewById(R.id.textPrivateKey)
 
+        parentFragmentManager.setFragmentResultListener(REQUEST_SCAN_PRIVKEY, viewLifecycleOwner) { _, bundle ->
+            val decoded = bundle.getString(ScanPrivKeyFragment.RESULT_TEXT) ?: return@setFragmentResultListener
+            // #248: gate at the consumer, same shape as the #245
+            // surfaces - a repeat of the last admitted payload
+            // inside the window (the same QR still in frame, the
+            // library's same-frame double-fire) is dropped before
+            // it reaches the field.
+            val now = SystemClock.elapsedRealtime()
+            if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+                return@setFragmentResultListener
+            }
+            lastDecodePayload = decoded
+            lastDecodeAtMs = now
+            if (isPrivateKey(decoded)) {
+                // #248: validate BEFORE the field write - garbage
+                // used to land verbatim in the private-key field
+                // with only the button alpha as feedback.
+                startSweepBtn.alpha = 1f
+                textPrivKey.editText!!.setText(decoded)
+                (parentFragmentManager.findFragmentByTag(ScanPrivKeyFragment.TAG) as? ScanPrivKeyFragment)?.dismiss()
+            } else {
+                startSweepBtn.alpha = 0.6f
+                Toast.makeText(context, "Invalid private key", Toast.LENGTH_LONG).show()
+            }
+        }
+
         val clipboard = context?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
         startSweepBtn.alpha = 0.6f
@@ -298,32 +326,8 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
             if (!AndroidUtil.isPermissionGranted(Manifest.permission.CAMERA, appContext))
                 askCameraPermission()
             else {
-                val camera = ScanPrivKeyFragment()
-                camera.show(requireFragmentManager(), "scanner_tag")
-                camera.setOnScanListener { decoded ->
-                    // #248: gate at the consumer, same shape as the #245
-                    // surfaces - a repeat of the last admitted payload
-                    // inside the window (the same QR still in frame, the
-                    // library's same-frame double-fire) is dropped before
-                    // it reaches the field.
-                    val now = SystemClock.elapsedRealtime()
-                    if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
-                        return@setOnScanListener
-                    }
-                    lastDecodePayload = decoded
-                    lastDecodeAtMs = now
-                    if (isPrivateKey(decoded)) {
-                        // #248: validate BEFORE the field write - garbage
-                        // used to land verbatim in the private-key field
-                        // with only the button alpha as feedback.
-                        startSweepBtn.alpha = 1f
-                        textPrivKey.editText!!.setText(decoded)
-                        camera.dismiss()
-                    } else {
-                        startSweepBtn.alpha = 0.6f
-                        Toast.makeText(context, "Invalid private key", Toast.LENGTH_LONG).show()
-                    }
-                }
+                ScanPrivKeyFragment.newInstance(REQUEST_SCAN_PRIVKEY)
+                    .show(parentFragmentManager, ScanPrivKeyFragment.TAG)
             }
         }
 
@@ -983,14 +987,17 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
 
     private lateinit var  mCodeScanner: QRScanner;
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
-    private var onScan: (scanData: String) -> Unit = {}
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.content_scan_layout, container, false)
     }
 
-    fun setOnScanListener(callback: (scanData: String) -> Unit) {
-        this.onScan = callback
+    private fun deliver(scanData: String) {
+        val key = arguments?.getString(ARG_REQUEST_KEY) ?: return
+        parentFragmentManager.setFragmentResult(
+            key,
+            Bundle().apply { putString(RESULT_TEXT, scanData) }
+        )
     }
 
 
@@ -1002,7 +1009,7 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
 
         mCodeScanner.setQRDecodeListener {
             lifecycleScope.launch {
-                onScan(it)
+                deliver(it)
             }
         }
     }
@@ -1017,6 +1024,16 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
     override fun onPause() {
         mCodeScanner.stopScanner()
         super.onPause()
+    }
+
+    companion object {
+        const val ARG_REQUEST_KEY = "scan_privkey_request_key"
+        const val RESULT_TEXT = "scan_privkey_result_text"
+        const val TAG = "scanner_tag"
+
+        fun newInstance(requestKey: String): ScanPrivKeyFragment = ScanPrivKeyFragment().apply {
+            arguments = Bundle().apply { putString(ARG_REQUEST_KEY, requestKey) }
+        }
     }
 
 }
