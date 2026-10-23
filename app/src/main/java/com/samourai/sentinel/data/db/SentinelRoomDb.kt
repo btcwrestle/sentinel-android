@@ -18,6 +18,7 @@ import com.samourai.sentinel.data.db.entity.LabelEntry
 import com.samourai.sentinel.data.db.entity.TxEntropy
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import java.io.File
 
 @Database(entities = [Tx::class, Utxo::class, UtxoLabel::class, LabelEntry::class, TxEntropy::class], version = 5, exportSchema = false)
 @TypeConverters(TxInputConverter::class)
@@ -29,7 +30,27 @@ abstract class SentinelRoomDb : RoomDatabase() {
     abstract fun labelEntryDao(): LabelEntryDao
     abstract fun txEntropyDao(): TxEntropyDao
 
+    /**
+     * Removes every user-held row (transactions, UTXOs, labels, entropy)
+     * and compacts the file. The schema and the Keystore-wrapped key stay,
+     * so the same open connection still works after "Erase all Sentinel data".
+     */
+    fun eraseStoredRows() {
+        val database = openHelper.writableDatabase
+        val session = SupportSqlSession(database)
+        val tables = DatabaseMigrator.userTableNames(session)
+        runInTransaction {
+            DatabaseMigrator.deleteFrom(session, tables)
+        }
+        DatabaseMigrator.compact(session)
+        val path = database.path
+        if (path != null) {
+            PlaintextSqlite.shredPlaintextResidue(File(path))
+        }
+    }
+
     companion object {
+        const val DB_NAME = "sentinel_database"
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -118,16 +139,33 @@ abstract class SentinelRoomDb : RoomDatabase() {
                 return tempInstance
             }
             synchronized(this) {
+                val app = context.applicationContext
+                val dbFile = app.getDatabasePath(DB_NAME)
+                dbFile.parentFile?.mkdirs()
+                val encryptedPresent = dbFile.exists() &&
+                    dbFile.length() > 0L &&
+                    !PlaintextSqlite.isPlaintext(dbFile)
+                val rawKey = DatabaseKeyStore.getOrCreate(app, encryptedPresent)
                 val instance = Room.databaseBuilder(
-                        context.applicationContext,
+                        app,
                         SentinelRoomDb::class.java,
-                        "sentinel_database"
+                        DB_NAME
                 )
                         // v1 -> v2: add utxo_labels. CREATE-only migration so
                         // existing user data (utxos, txs) is never touched.
                         // v2 -> v3: add label_entries + utxo_labels.origin.
                         // v4 -> v5: wipe tx_entropy rows (regenerable cache).
                         // Destructive fallback stays disabled on purpose.
+                        // A plaintext file is copied into an encrypted one on
+                        // first open. The key is Keystore-wrapped and is not
+                        // derived from the PIN.
+                        .openHelperFactory(
+                            EncryptedRoomFactory(
+                                DatabasePassphrase.utf8(rawKey),
+                                dbFile,
+                                rawKey.copyOf()
+                            )
+                        )
                         .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                         .build()
                 INSTANCE = instance
