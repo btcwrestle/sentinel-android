@@ -181,9 +181,7 @@ class BroadcastTx : SentinelActivity() {
                     showLoading(false)
                     if (it == null) {
                         onBroadcastSuccess?.invoke(hash)
-                        val bottomSheet = SuccessfulBottomSheet("Broadcast Successful", hash ,onViewReady = {
-                            val view1 = it.view
-                        })
+                        val bottomSheet = SuccessfulBottomSheet.newInstance("Broadcast Successful", hash)
                         bottomSheet.show(supportFragmentManager, bottomSheet.tag)
                         binding.hexTextView.text = ""
                         model.setHex("")
