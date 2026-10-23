@@ -88,10 +88,11 @@ import kotlin.math.ceil
 
 
 private const val REQUEST_SCAN_PRIVKEY = "sweep_scan_privkey"
+private const val ARG_PRIVKEY = "sweep_privkey_arg_privkey"
 
-class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = false) : GenericBottomSheet(secure = secure) {
+class SweepPrivKeyFragment : GenericBottomSheet {
 
-    private val keyEntryFragment = SweepKeyEntryFragment(privKey)
+    private val keyEntryFragment: SweepKeyEntryFragment
     private val chooseCollectionFragment = ChooseCollectionFragment()
     private val choosePubkeyFragment = ChoosePubkeyFragment()
     private val previewBottomSheet = PreviewBottomSheet()
@@ -99,6 +100,19 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     var privKeyReader: PrivKeyReader? = null
     private var _binding: FragmentBottomsheetViewPagerBinding? = null
     private val binding get() = _binding!!
+
+    /** #216: restore uses the no-arg constructor. The key rides in arguments. */
+    constructor() : super() {
+        keyEntryFragment = SweepKeyEntryFragment()
+    }
+
+    constructor(privKey: String, secure: Boolean = false) : super(secure) {
+        arguments = (arguments ?: Bundle()).apply { putString(ARG_PRIVKEY, privKey) }
+        keyEntryFragment = SweepKeyEntryFragment(privKey)
+    }
+
+    private val privKey: String
+        get() = arguments?.getString(ARG_PRIVKEY).orEmpty()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -113,7 +127,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         setUpViewPager()
 
-        keyEntryFragment.setOnPreviewButtonCall {
+        liveKeyEntry().setOnPreviewButtonCall {
             validate(it)
             pubKeyString = it
         }
@@ -123,8 +137,8 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
             binding.pager.setCurrentItem(2, true)
         }
 
-        chooseCollectionFragment.setOnSelectListener {
-            choosePubkeyFragment.setSelectedCollection(it!!)
+        liveCollection().setOnSelectListener {
+            livePubkey().setSelectedCollection(it!!)
             previewBottomSheet.setSelectedCollection(it)
             if (!it.isImportFromWallet)
                 binding.pager.setCurrentItem(2, true)
@@ -135,7 +149,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
             }
         }
 
-        choosePubkeyFragment.setOnSelectListener {
+        livePubkey().setOnSelectListener {
             this.dismiss()
             previewBottomSheet.setSelectedPubkey(it!!)
             previewBottomSheet.show(requireActivity().supportFragmentManager, previewBottomSheet.tag)
@@ -248,11 +262,31 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
         binding.pager.isUserInputEnabled = false
     }
 
+
+    /** #216: ViewPager2 restores pages under f0/f1/f2. Those are not these fields. */
+    private fun liveKeyEntry(): SweepKeyEntryFragment =
+        childFragmentManager.findFragmentByTag("f0") as? SweepKeyEntryFragment ?: keyEntryFragment
+
+    private fun liveCollection(): ChooseCollectionFragment =
+        childFragmentManager.findFragmentByTag("f1") as? ChooseCollectionFragment ?: chooseCollectionFragment
+
+    private fun livePubkey(): ChoosePubkeyFragment =
+        childFragmentManager.findFragmentByTag("f2") as? ChoosePubkeyFragment ?: choosePubkeyFragment
+
 }
 
 
 /** #280: the sweep private-key page. Not the pubkey scanner, which keeps this name in ui.fragments. */
-class SweepKeyEntryFragment(private val privKey: String = "") : Fragment() {
+class SweepKeyEntryFragment : Fragment {
+
+    constructor() : super()
+
+    constructor(privKey: String) : super() {
+        arguments = Bundle().apply { putString(ARG_PRIVKEY, privKey) }
+    }
+
+    private val privKey: String
+        get() = arguments?.getString(ARG_PRIVKEY).orEmpty()
 
     private lateinit var pasteBtn: Button
     private lateinit var scanBtn: Button
