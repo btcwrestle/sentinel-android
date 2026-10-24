@@ -11,7 +11,6 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Response
 import java.io.IOException
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
@@ -25,7 +24,8 @@ import kotlin.coroutines.resumeWithException
  *      ```
  *      see [README.md](https://github.com/gildor/kotlin-coroutines-okhttp/blob/master/README.md#Debugging) with details about debugging using this feature
  *
- * @return Result of request or throw exception
+ * @return Result of request or throw exception. The socket is already
+ * released: see [releasingConnection]. Callers may still read the body.
  */
 
 
@@ -39,10 +39,20 @@ public suspend fun Call.await(recordStack: Boolean = isRecordStack): Response {
     } else {
         null
     }
-    return suspendCancellableCoroutine { continuation ->
+    // #293: release the connection before this returns. Discarded
+    // responses (import xpub, non-2xx branches, a sibling request
+    // abandoned by an early return) otherwise stay in the pool until
+    // GC, and that GC path logs the raw Dojo URL (#304).
+    val response = suspendCancellableCoroutine { continuation ->
         enqueue(object : Callback {
             override fun onResponse(call: Call, response: Response) {
-                continuation.resume(response)
+                // Member resume(value, onCancellation): if the caller is
+                // already cancelled, the response is not delivered and the
+                // lambda closes it. A delivered response is released by
+                // releasingConnection before await returns.
+                continuation.resume(response) { _, _, _ ->
+                    response.releaseConnectionQuietly()
+                }
             }
 
             override fun onFailure(call: Call, e: IOException) {
@@ -61,4 +71,5 @@ public suspend fun Call.await(recordStack: Boolean = isRecordStack): Response {
             }
         }
     }
+    return response.releasingConnection()
 }
