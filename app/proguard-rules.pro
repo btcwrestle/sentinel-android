@@ -53,3 +53,17 @@
 -dontwarn javax.management.ObjectName
 -dontwarn org.codehaus.janino.ClassBodyEvaluator
 -dontwarn sun.reflect.Reflection
+
+# Gson (com.google.code.gson:gson:2.9.0) — broke v5.1.3-dojobay.5 at
+# launch. R8 obfuscated TypeToken itself (crash trace showed
+# com.google.gson.reflect.a.getSuperclassTypeParameter), so every
+# anonymous TypeToken<T> subclass threw "Missing type parameter" once
+# minified. The header's "Gson ... kept" claim only becomes true here.
+# Anonymous-TypeToken census at fix time, all one failure class:
+#   ui/dojo/DojoUtil.kt readPayload (witnessed on device, .5 launch)
+#   data/db/PayloadRecord.kt:103,125
+#   data/Tx.kt:153,168
+#   util/ExportImportUtil.kt:294
+#   ui/tools/sweep/SweepPrivKeyFragment.kt:606
+-keep class com.google.gson.reflect.TypeToken { *; }
+-keep class * extends com.google.gson.reflect.TypeToken
