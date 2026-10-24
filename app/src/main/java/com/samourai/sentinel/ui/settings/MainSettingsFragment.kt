@@ -147,6 +147,15 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
             }
         }
 
+        // Home reads PrefsUtil, not the checkbox widget. Copy the new
+        // value across, same as street mode.
+        val fiatPref = findPreference<CheckBoxPreference>("fiatDisabled")
+        fiatPref?.isChecked = prefsUtil.fiatDisabled == true
+        fiatPref?.setOnPreferenceChangeListener { _, newValue ->
+            prefsUtil.fiatDisabled = newValue as Boolean
+            true
+        }
+
         // Whirlpool auto-labeling toggle (#6). Matches the haptic
         // idiom: PrefsUtil-backed CheckBoxPreference.
         val whirlpoolAutoLabelsPref =

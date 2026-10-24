@@ -180,7 +180,7 @@ class TransactionsFragment : Fragment() {
                     prefsUtil.streetMode == true,
                     prefsUtil.fiatDisabled == true
                 )
-            ) View.VISIBLE else View.INVISIBLE
+            ) View.VISIBLE else View.GONE
         fiatBalanceLiveData.observe(viewLifecycleOwner, Observer {
             if (isAdded) setBalance(indexPubSelected.value?.minus(1) ?: -1)
         })
@@ -283,32 +283,33 @@ class TransactionsFragment : Fragment() {
                 BalanceDisplayMode.fromString(prefsUtil.balanceDisplayMode)
         binding.collectionBalanceBtc.text =
             BalanceDisplayFormatter.format(sats, mode)
-        binding.collectionBalanceFiat.text =
-            if (mode == BalanceDisplayMode.MASKED)
-                BalanceDisplayFormatter.MASKED_TEXT
-            else
-                getFiatBalance(sats, exchangeRateRepository.getRateLive().value)
-        binding.collectionBalanceFiat.visibility =
-            if (BalanceDisplayFormatter.showsFiat(
-                    mode, prefsUtil.streetMode == true, prefsUtil.fiatDisabled == true
-                )
-            ) View.VISIBLE else View.INVISIBLE
+        val showFiat = BalanceDisplayFormatter.showsFiat(
+            mode, prefsUtil.streetMode == true, prefsUtil.fiatDisabled == true
+        )
+        val fiat = if (!showFiat || mode == BalanceDisplayMode.MASKED) {
+            ""
+        } else {
+            getFiatBalance(sats, exchangeRateRepository.getRateLive().value)
+        }
+        if (!showFiat || fiat.isBlank()) {
+            binding.collectionBalanceFiat.text = ""
+            binding.collectionBalanceFiat.visibility = View.GONE
+        } else {
+            binding.collectionBalanceFiat.text = fiat
+            binding.collectionBalanceFiat.visibility = View.VISIBLE
+        }
     }
 
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
-        if (rate != null) {
-            balance?.let {
-                return try {
-                    val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
-                        .format((balance / 1e8) * rate.rate)
-                    "$fiatRate ${rate.currency}"
-                } catch (e: Exception) {
-                    "00.00 ${rate.currency}"
-                }
-            }
-            return "00.00"
-        } else {
-            return "00.00"
+        if (prefsUtil.fiatDisabled == true) return ""
+        if (rate == null || rate.rate <= 0L) return ""
+        balance ?: return ""
+        return try {
+            val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
+                .format((balance / 1e8) * rate.rate)
+            "$fiatRate ${rate.currency}"
+        } catch (e: Exception) {
+            ""
         }
     }
 

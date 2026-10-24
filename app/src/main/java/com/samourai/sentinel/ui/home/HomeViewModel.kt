@@ -782,14 +782,16 @@ class HomeViewModel : ViewModel() {
     fun getFiatBalance(): LiveData<String> = fiatBalance
 
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
-        if (rate == null) return "00.00"
-        balance ?: return "00.00"
+        // Missing rate is blank. Callers hide the line instead of painting a fake amount.
+        if (prefsUtil.fiatDisabled == true) return ""
+        if (rate == null || rate.rate <= 0L) return ""
+        balance ?: return ""
         return try {
             val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
                 .format((balance / 1e8) * rate.rate)
             "$fiatRate ${rate.currency}"
         } catch (e: Exception) {
-            "00.00 ${rate.currency}"
+            ""
         }
     }
 
