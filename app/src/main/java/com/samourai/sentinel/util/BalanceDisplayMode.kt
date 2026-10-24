@@ -29,6 +29,14 @@ object BalanceDisplayFormatter {
     const val MASKED_TEXT = "********"
 
     /**
+     * Whether the fiat line under a balance is shown. Fiat follows BTC and
+     * sats alike; it is hidden only by street mode, the hide-fiat setting,
+     * or the masked display mode.
+     */
+    fun showsFiat(mode: BalanceDisplayMode, streetMode: Boolean, fiatDisabled: Boolean): Boolean =
+        !streetMode && !fiatDisabled && mode != BalanceDisplayMode.MASKED
+
+    /**
      * Renders a satoshi amount according to [mode]. Callers enforcing street
      * mode should pass [BalanceDisplayMode.MASKED].
      */

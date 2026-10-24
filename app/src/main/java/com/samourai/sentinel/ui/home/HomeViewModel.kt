@@ -764,18 +764,19 @@ class HomeViewModel : ViewModel() {
         return errorMessage
     }
 
-    fun getFiatBalance(): LiveData<String> {
-
-        val mediatorLiveData = MediatorLiveData<String>()
-
-        mediatorLiveData.addSource(exchangeRateRepository.getRateLive()) {
-            mediatorLiveData.value = getFiatBalance(balance.value, it)
+    // One shared instance, so callers reading .value see what observers see.
+    private val fiatBalance: MediatorLiveData<String> by lazy {
+        MediatorLiveData<String>().apply {
+            addSource(exchangeRateRepository.getRateLive()) {
+                value = getFiatBalance(balance.value, it)
+            }
+            addSource(balance) {
+                value = getFiatBalance(it, exchangeRateRepository.getRateLive().value)
+            }
         }
-        mediatorLiveData.addSource(balance) {
-            mediatorLiveData.value = getFiatBalance(it, exchangeRateRepository.getRateLive().value)
-        }
-        return mediatorLiveData
     }
+
+    fun getFiatBalance(): LiveData<String> = fiatBalance
 
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
         if (rate == null) return "00.00"
