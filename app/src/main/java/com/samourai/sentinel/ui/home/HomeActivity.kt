@@ -462,7 +462,17 @@ class HomeActivity : SentinelActivity() {
             || mode == BalanceDisplayMode.MASKED
             || mode == BalanceDisplayMode.SATS
         if (balance == -1L) {
-            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
+            // #303: the total is not known yet - collections are still loading,
+            // or the first sync has not returned. The layout sets no text on
+            // this view, so leaving it alone showed Home with a blank total;
+            // render a neutral placeholder instead, and keep the fiat line
+            // hidden rather than letting an unknown value show as a figure.
+            binding.homeBalanceBtc.text =
+                if (prefsUtil.streetMode == true || mode == BalanceDisplayMode.MASKED)
+                    BalanceDisplayFormatter.MASKED_TEXT
+                else
+                    getString(R.string.balance_unknown)
+            binding.exchangeRateTxt.visibility = View.INVISIBLE
             return
         }
         if (prefsUtil.streetMode == true || mode == BalanceDisplayMode.MASKED) {
@@ -475,9 +485,14 @@ class HomeActivity : SentinelActivity() {
             binding.exchangeRateTxt.visibility = View.INVISIBLE
         } else {
             updateBalance(balance)
-            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
-            if (!hideFiat) {
-                model.getFiatBalance().value?.let { updateFiat(it) }
+            // #303: a blank fiat value means no rate is available yet. Hide the
+            // line in that case instead of rendering the "00.00" the view model
+            // used to supply.
+            val fiat = model.getFiatBalance().value
+            val showFiat = !hideFiat && !fiat.isNullOrBlank()
+            binding.exchangeRateTxt.visibility = if (showFiat) View.VISIBLE else View.INVISIBLE
+            if (showFiat) {
+                updateFiat(fiat!!)
             }
         }
     }

@@ -777,15 +777,24 @@ class HomeViewModel : ViewModel() {
         return mediatorLiveData
     }
 
+    /**
+     * #303: an unknown rate or balance is "not known yet", not zero.
+     *
+     * This used to return "00.00", which Home rendered during the first sync
+     * over Tor - a fabricated figure, indistinguishable from a genuinely empty
+     * wallet. Blank means "nothing to show" and the view hides the line
+     * instead.
+     */
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
-        if (rate == null) return "00.00"
-        balance ?: return "00.00"
+        if (rate == null) return ""
+        balance ?: return ""
         return try {
             val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
                 .format((balance / 1e8) * rate.rate)
             "$fiatRate ${rate.currency}"
         } catch (e: Exception) {
-            "00.00 ${rate.currency}"
+            Timber.e(e, "Could not format the fiat balance")
+            ""
         }
     }
 
