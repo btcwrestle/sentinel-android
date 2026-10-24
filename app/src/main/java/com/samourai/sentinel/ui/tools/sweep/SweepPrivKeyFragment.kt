@@ -8,7 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -25,6 +25,8 @@ import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.math.MathUtils
 import com.google.android.material.progressindicator.CircularProgressIndicator
@@ -41,6 +43,7 @@ import com.samourai.sentinel.data.PubKeyModel
 import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.data.repository.ExchangeRateRepository
 import com.samourai.sentinel.data.repository.FeeRepository
+import com.samourai.sentinel.data.repository.collapsedNormalPerVb
 import com.samourai.sentinel.data.repository.TransactionsRepository
 import com.samourai.sentinel.databinding.ContentCollectionSelectBinding
 import com.samourai.sentinel.databinding.ContentPubkeySelectBinding
@@ -53,6 +56,7 @@ import com.samourai.sentinel.ui.adapters.PubkeysAdapter
 import com.samourai.sentinel.ui.fragments.AddNewPubKeyBottomSheet
 import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.RecyclerViewItemDividerDecorator
+import com.samourai.sentinel.ui.utils.shouldAdmitScan
 import com.samourai.sentinel.ui.views.GenericBottomSheet
 import com.samourai.sentinel.ui.views.SuccessfulBottomSheet
 import com.samourai.sentinel.util.MonetaryUtil
@@ -85,9 +89,12 @@ import java.text.DecimalFormat
 import kotlin.math.ceil
 
 
-class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = false) : GenericBottomSheet(secure = secure) {
+private const val REQUEST_SCAN_PRIVKEY = "sweep_scan_privkey"
+private const val ARG_PRIVKEY = "sweep_privkey_arg_privkey"
 
-    private val scanPubKeyFragment = ScanPubKeyFragment(privKey)
+class SweepPrivKeyFragment : GenericBottomSheet {
+
+    private val keyEntryFragment: SweepKeyEntryFragment
     private val chooseCollectionFragment = ChooseCollectionFragment()
     private val choosePubkeyFragment = ChoosePubkeyFragment()
     private val previewBottomSheet = PreviewBottomSheet()
@@ -95,6 +102,19 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     var privKeyReader: PrivKeyReader? = null
     private var _binding: FragmentBottomsheetViewPagerBinding? = null
     private val binding get() = _binding!!
+
+    /** #216: restore uses the no-arg constructor. The key rides in arguments. */
+    constructor() : super() {
+        keyEntryFragment = SweepKeyEntryFragment()
+    }
+
+    constructor(privKey: String, secure: Boolean = false) : super(secure) {
+        arguments = (arguments ?: Bundle()).apply { putString(ARG_PRIVKEY, privKey) }
+        keyEntryFragment = SweepKeyEntryFragment(privKey)
+    }
+
+    private val privKey: String
+        get() = arguments?.getString(ARG_PRIVKEY).orEmpty()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -109,7 +129,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         setUpViewPager()
 
-        scanPubKeyFragment.setOnPreviewButtonCall {
+        liveKeyEntry().setOnPreviewButtonCall {
             validate(it)
             pubKeyString = it
         }
@@ -119,8 +139,8 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
             binding.pager.setCurrentItem(2, true)
         }
 
-        chooseCollectionFragment.setOnSelectListener {
-            choosePubkeyFragment.setSelectedCollection(it!!)
+        liveCollection().setOnSelectListener {
+            livePubkey().setSelectedCollection(it!!)
             previewBottomSheet.setSelectedCollection(it)
             if (!it.isImportFromWallet)
                 binding.pager.setCurrentItem(2, true)
@@ -131,7 +151,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
             }
         }
 
-        choosePubkeyFragment.setOnSelectListener {
+        livePubkey().setOnSelectListener {
             this.dismiss()
             previewBottomSheet.setSelectedPubkey(it!!)
             previewBottomSheet.show(requireActivity().supportFragmentManager, previewBottomSheet.tag)
@@ -228,7 +248,7 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
     private fun setUpViewPager() {
 
         val item = arrayListOf<Fragment>()
-        item.add(scanPubKeyFragment)
+        item.add(keyEntryFragment)
         item.add(chooseCollectionFragment)
         item.add(choosePubkeyFragment)
         binding.pager.adapter = object : FragmentStateAdapter(this) {
@@ -244,10 +264,31 @@ class SweepPrivKeyFragment(private val privKey: String = "", secure: Boolean = f
         binding.pager.isUserInputEnabled = false
     }
 
+
+    /** #216: ViewPager2 restores pages under f0/f1/f2. Those are not these fields. */
+    private fun liveKeyEntry(): SweepKeyEntryFragment =
+        childFragmentManager.findFragmentByTag("f0") as? SweepKeyEntryFragment ?: keyEntryFragment
+
+    private fun liveCollection(): ChooseCollectionFragment =
+        childFragmentManager.findFragmentByTag("f1") as? ChooseCollectionFragment ?: chooseCollectionFragment
+
+    private fun livePubkey(): ChoosePubkeyFragment =
+        childFragmentManager.findFragmentByTag("f2") as? ChoosePubkeyFragment ?: choosePubkeyFragment
+
 }
 
 
-class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
+/** #280: the sweep private-key page. Not the pubkey scanner, which keeps this name in ui.fragments. */
+class SweepKeyEntryFragment : Fragment {
+
+    constructor() : super()
+
+    constructor(privKey: String) : super() {
+        arguments = Bundle().apply { putString(ARG_PRIVKEY, privKey) }
+    }
+
+    private val privKey: String
+        get() = arguments?.getString(ARG_PRIVKEY).orEmpty()
 
     private lateinit var pasteBtn: Button
     private lateinit var scanBtn: Button
@@ -255,6 +296,13 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
     private lateinit var textPrivKey: TextInputLayout
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
     private var onPreviewButtonCall: (scanData: String) -> Unit = {}
+
+    // #248/#232: the shared scan-gate state, same names as the #245
+    // surfaces - payload + clock stamp of the last ADMITTED decode
+    // (valid or not): a repeat inside the window never reaches the
+    // private-key field.
+    private var lastDecodePayload: String? = null
+    private var lastDecodeAtMs = 0L
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.scan_private_tool, container, false)
@@ -270,6 +318,32 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
         scanBtn = view.findViewById(R.id.scanPrivKey)
         startSweepBtn = view.findViewById(R.id.sweepStartBtn)
         textPrivKey = view.findViewById(R.id.textPrivateKey)
+
+        parentFragmentManager.setFragmentResultListener(REQUEST_SCAN_PRIVKEY, viewLifecycleOwner) { _, bundle ->
+            val decoded = bundle.getString(ScanPrivKeyFragment.RESULT_TEXT) ?: return@setFragmentResultListener
+            // #248: gate at the consumer, same shape as the #245
+            // surfaces - a repeat of the last admitted payload
+            // inside the window (the same QR still in frame, the
+            // library's same-frame double-fire) is dropped before
+            // it reaches the field.
+            val now = SystemClock.elapsedRealtime()
+            if (!shouldAdmitScan(lastDecodePayload, lastDecodeAtMs, decoded, now)) {
+                return@setFragmentResultListener
+            }
+            lastDecodePayload = decoded
+            lastDecodeAtMs = now
+            if (isPrivateKey(decoded)) {
+                // #248: validate BEFORE the field write - garbage
+                // used to land verbatim in the private-key field
+                // with only the button alpha as feedback.
+                startSweepBtn.alpha = 1f
+                textPrivKey.editText!!.setText(decoded)
+                (parentFragmentManager.findFragmentByTag(ScanPrivKeyFragment.TAG) as? ScanPrivKeyFragment)?.dismiss()
+            } else {
+                startSweepBtn.alpha = 0.6f
+                Toast.makeText(context, "Invalid private key", Toast.LENGTH_LONG).show()
+            }
+        }
 
         val clipboard = context?.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
@@ -289,17 +363,8 @@ class ScanPubKeyFragment(private val privKey: String = "") : Fragment() {
             if (!AndroidUtil.isPermissionGranted(Manifest.permission.CAMERA, appContext))
                 askCameraPermission()
             else {
-                val camera = ScanPrivKeyFragment()
-                camera.show(requireFragmentManager(), "scanner_tag")
-                camera.setOnScanListener {
-                    if (isPrivateKey(it))
-                        startSweepBtn.alpha = 1f
-                    else
-                        startSweepBtn.alpha = 0.6f
-
-                    textPrivKey.editText!!.setText(it)
-                    camera.dismiss()
-                }
+                ScanPrivKeyFragment.newInstance(REQUEST_SCAN_PRIVKEY)
+                    .show(parentFragmentManager, ScanPrivKeyFragment.TAG)
             }
         }
 
@@ -512,14 +577,41 @@ class ChoosePubkeyFragment : Fragment() {
 
 }
 
-class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = null, private var selectedPubKey: PubKeyModel? = null) : GenericBottomSheet() {
+class PreviewBottomSheet : GenericBottomSheet() {
     private var _binding: ContentSweepPreviewBinding? = null
     private val binding get() = _binding!!
 
-    private lateinit var utxoList: MutableList<UnspentOutput>
-    private lateinit var bipFormat: BipFormat
-    private lateinit var sweepPreview: SweepPreview
-    private lateinit var privKeyReader: PrivKeyReader
+    /** #215: restore builds this with the no-arg constructor. The preview the user was looking at rides in arguments. */
+    private val selectedCollection: PubKeyCollection?
+        get() {
+            val args = arguments ?: return null
+            if (!args.containsKey(ARG_LABEL)) return null
+            return PubKeyCollection(
+                collectionLabel = args.getString(ARG_LABEL).orEmpty(),
+                isImportFromWallet = args.getBoolean(ARG_FROM_WALLET)
+            )
+        }
+
+    private var selectedPubKey: PubKeyModel?
+        get() = arguments?.getParcelable<PubKeyModel>(ARG_PUBKEY)
+        set(value) {
+            editArgs {
+                if (value == null) remove(ARG_PUBKEY) else putParcelable(ARG_PUBKEY, value)
+            }
+        }
+
+    private val utxoList: MutableList<UnspentOutput>
+        get() {
+            val json = arguments?.getString(ARG_UTXOS) ?: return mutableListOf()
+            return Gson().fromJson(json, object : TypeToken<MutableList<UnspentOutput>>() {}.type)
+        }
+
+    private val bipFormat: BipFormat
+        get() = bipFormatFromId(arguments?.getString(ARG_BIP))
+            ?: throw IllegalStateException("bipFormat")
+
+    private val privKeyReader: PrivKeyReader
+        get() = PrivKeyReader(arguments?.getString(ARG_WIF).orEmpty(), SentinelState.getNetworkParam())
     private var feeRange: Float? = null
 
     private var feeLow: Long = 0L
@@ -553,11 +645,16 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
         binding.sweepPreviewCircularProgress.visibility = View.GONE
         binding.feeSelector.totalMinerFeeGroup.visibility = View.INVISIBLE
 
+        if (!hasPreviewState()) {
+            dismiss()
+            return view
+        }
+
         preparePreview()
 
         setUpFee()
 
-        if (selectedCollection!!.isImportFromWallet) {
+        if (selectedCollection?.isImportFromWallet == true) {
             binding.changePubkey.setOnClickListener {
                 onChangePubkeyButton()
             }
@@ -582,7 +679,7 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                 } catch (e: ApiService.InvalidResponse) {
                     Timber.e(e, "Sweep broadcast got an invalid response")
                 } catch (e: Exception) {
-                    Log.d("SweepPrivateKey", "Error broadcasting tx: " + e)
+                    Timber.d(e, "Error broadcasting tx")
                 }
 
                 requireActivity().runOnUiThread {
@@ -643,12 +740,9 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                                 }
                                  */
                                 dismiss()
-                                val bottomSheet = SuccessfulBottomSheet(
+                                val bottomSheet = SuccessfulBottomSheet.newInstance(
                                     "Sweep Successful",
                                     response!!,
-                                    onViewReady = {
-                                        it.view
-                                    },
                                 )
                                 bottomSheet.show(
                                     requireActivity().supportFragmentManager,
@@ -687,7 +781,8 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
         }
         var transaction: Transaction? = null
         try {
-            val receiveAddress = getAddress(selectedPubKey!!)
+            val pub = selectedPubKey ?: return null
+            val receiveAddress = getAddress(pub)
             val rbfOptin = false //PrefsUtil.getInstance(context).getValue(PrefsUtil.RBF_OPT_IN, false)
             val blockHeight = SentinelState.blockHeight?.height ?: -1L
             val totalValue = UnspentOutput.sumValue(utxoList)
@@ -703,7 +798,7 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
                 fee = computeFee(bipFormat, utxoList, feePerKb.div(1000.0).toLong())
                 amount = totalValue - fee
             }
-            sweepPreview = SweepPreview(amount, address, bipFormat, fee, utxoList, privKeyReader.key, privKeyReader.params)
+            val sweepPreview = SweepPreview(amount, address, bipFormat, fee, utxoList, privKeyReader.key, privKeyReader.params)
             val params = sweepPreview.params
             val receivers: MutableMap<String, Long> = LinkedHashMap()
             receivers[receiveAddress] = sweepPreview.amount
@@ -785,26 +880,31 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
 
     override fun onResume() {
         super.onResume()
-        preparePreview()
+        if (_binding != null && hasPreviewState()) preparePreview()
     }
 
     fun setPrivKeyReader(privKeyReader: PrivKeyReader) {
-        this.privKeyReader = privKeyReader
+        val key = privKeyReader.key ?: return
+        editArgs { putString(ARG_WIF, key.getPrivateKeyAsWiF(privKeyReader.params)) }
     }
 
     fun setUTXOList(utxoList: MutableList<UnspentOutput>) {
-        this.utxoList = utxoList
+        editArgs { putString(ARG_UTXOS, Gson().toJson(utxoList)) }
     }
 
     fun setBipFormat(bipFormat: BipFormat) {
-        this.bipFormat = bipFormat
+        editArgs { putString(ARG_BIP, bipFormat.id) }
     }
 
     private fun preparePreview() {
-        binding.receiveAddress.text = getAddress(selectedPubKey!!)
-        binding.collectionAndPubkey.text = "${selectedCollection!!.collectionLabel}, ${selectedPubKey!!.label}"
-        binding.fromAddress.text = this.utxoList.get(0).addr
-        binding.amount.text = "${MonetaryUtil.getInstance().getBTCDecimalFormat(UnspentOutput.sumValue(utxoList))} BTC"
+        val pub = selectedPubKey ?: return
+        val collection = selectedCollection ?: return
+        val utxos = utxoList
+        if (utxos.isEmpty()) return
+        binding.receiveAddress.text = getAddress(pub)
+        binding.collectionAndPubkey.text = "${collection.collectionLabel}, ${pub.label}"
+        binding.fromAddress.text = utxos[0].addr
+        binding.amount.text = "${MonetaryUtil.getInstance().getBTCDecimalFormat(UnspentOutput.sumValue(utxos))} BTC"
     }
 
     private fun setUpFee() {
@@ -838,10 +938,12 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
             val hiSf = SuggestedFee()
             hiSf.defaultPerKB = BigInteger.valueOf(feeHigh * 1000L)
             feeRepository.setHighFee(hiSf)
-        } else if (feeLow == feeMed || feeMed == feeMed) {
-            feeMed = (feeLow + feeHigh) / 2L
+        } else if (feeLow == feeMed || feeMed == feeHigh) {
+            // #306: same always-true check as Send (#305). Stored
+            // per-KB value was High. Normal is the average, stored as Normal.
+            feeMed = collapsedNormalPerVb(feeLow, feeMed, feeHigh)
             val miSf = SuggestedFee()
-            miSf.defaultPerKB = BigInteger.valueOf(feeHigh * 1000L)
+            miSf.defaultPerKB = BigInteger.valueOf(feeMed * 1000L)
             feeRepository.setNormalFee(miSf)
         }
         if (feeLow < 1L) {
@@ -948,7 +1050,40 @@ class PreviewBottomSheet(private var selectedCollection: PubKeyCollection? = nul
     }
 
     fun setSelectedCollection(collection: PubKeyCollection) {
-        this.selectedCollection = collection
+        editArgs {
+            putString(ARG_LABEL, collection.collectionLabel)
+            putBoolean(ARG_FROM_WALLET, collection.isImportFromWallet)
+        }
+    }
+
+    private fun hasPreviewState(): Boolean {
+        val utxos = arguments?.getString(ARG_UTXOS)
+        return selectedPubKey != null && selectedCollection != null
+            && !utxos.isNullOrEmpty() && utxos != "[]"
+            && bipFormatFromId(arguments?.getString(ARG_BIP)) != null
+            && !arguments?.getString(ARG_WIF).isNullOrEmpty()
+    }
+
+    private fun editArgs(block: Bundle.() -> Unit) {
+        val bundle = arguments ?: Bundle().also { arguments = it }
+        bundle.block()
+    }
+
+    private fun bipFormatFromId(id: String?): BipFormat? = when (id) {
+        "LEGACY" -> BIP_FORMAT.LEGACY
+        "SEGWIT_COMPAT" -> BIP_FORMAT.SEGWIT_COMPAT
+        "SEGWIT_NATIVE" -> BIP_FORMAT.SEGWIT_NATIVE
+        "TAPROOT" -> BIP_FORMAT.TAPROOT
+        else -> null
+    }
+
+    companion object {
+        private const val ARG_LABEL = "sweep_preview_arg_label"
+        private const val ARG_FROM_WALLET = "sweep_preview_arg_from_wallet"
+        private const val ARG_PUBKEY = "sweep_preview_arg_pubkey"
+        private const val ARG_UTXOS = "sweep_preview_arg_utxos"
+        private const val ARG_BIP = "sweep_preview_arg_bip"
+        private const val ARG_WIF = "sweep_preview_arg_wif"
     }
 }
 
@@ -957,14 +1092,17 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
 
     private lateinit var  mCodeScanner: QRScanner;
     private val appContext: Context by KoinJavaComponent.inject(Context::class.java)
-    private var onScan: (scanData: String) -> Unit = {}
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.content_scan_layout, container, false)
     }
 
-    fun setOnScanListener(callback: (scanData: String) -> Unit) {
-        this.onScan = callback
+    private fun deliver(scanData: String) {
+        val key = arguments?.getString(ARG_REQUEST_KEY) ?: return
+        parentFragmentManager.setFragmentResult(
+            key,
+            Bundle().apply { putString(RESULT_TEXT, scanData) }
+        )
     }
 
 
@@ -976,7 +1114,7 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
 
         mCodeScanner.setQRDecodeListener {
             lifecycleScope.launch {
-                onScan(it)
+                deliver(it)
             }
         }
     }
@@ -991,6 +1129,16 @@ class ScanPrivKeyFragment : BottomSheetDialogFragment() {
     override fun onPause() {
         mCodeScanner.stopScanner()
         super.onPause()
+    }
+
+    companion object {
+        const val ARG_REQUEST_KEY = "scan_privkey_request_key"
+        const val RESULT_TEXT = "scan_privkey_result_text"
+        const val TAG = "scanner_tag"
+
+        fun newInstance(requestKey: String): ScanPrivKeyFragment = ScanPrivKeyFragment().apply {
+            arguments = Bundle().apply { putString(ARG_REQUEST_KEY, requestKey) }
+        }
     }
 
 }

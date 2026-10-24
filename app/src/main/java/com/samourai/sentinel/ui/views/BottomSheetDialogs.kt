@@ -23,6 +23,7 @@ import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import com.samourai.sentinel.R
 import com.samourai.sentinel.ui.home.HomeActivity
+import java.util.UUID
 
 
 /**
@@ -34,14 +35,48 @@ import com.samourai.sentinel.ui.home.HomeActivity
 /**
  * Base BottomSheet class for the whole application
  * Custom themes with rounded corners are applied
+ *
+ * #210: no primary-constructor parameters anymore. Android rebuilds
+ * fragments through their public no-arg constructor whenever the host
+ * activity is recreated (dark-mode / font / locale change, multi-window
+ * resize, or process death while the sheet is showing - all live on
+ * master even though every activity is portrait-locked). Everything a
+ * sheet needs now travels in `arguments`; answers travel back through
+ * the Fragment Result API. The legacy `secure` constructor is kept as a
+ * delegating secondary so subclasses that still pass it (QRBottomSheet,
+ * TransactionsDetails, AddNewPubKey, WalletPairing, Sweep, DojoCredentials)
+ * compile unchanged - it writes the flag into `arguments`, which is what
+ * a restored instance reads, so FLAG_SECURE now SURVIVES recreation
+ * instead of silently dropping with the constructor field.
  */
-open class GenericBottomSheet(private val secure:Boolean = false) : BottomSheetDialogFragment() {
+open class GenericBottomSheet() : BottomSheetDialogFragment() {
+
+    /**
+     * #210: the flag is read from `arguments`, NOT held as a base-class
+     * property - subclasses (QRBottomSheetDialog, TransactionsDetails,
+     * AddNewPubKey...) declare their own `secure` constructor properties,
+     * and a member here collides with every one of them.
+     */
+    private fun isSecure(): Boolean = arguments?.getBoolean(ARG_SECURE, false) == true
+
+    /** #210 bridge for the pre-#210 `GenericBottomSheet(secure)` shape. */
+    constructor(secure: Boolean) : this() {
+        arguments = (arguments ?: Bundle()).apply { putBoolean(ARG_SECURE, secure) }
+    }
 
     override fun getTheme(): Int = R.style.AppTheme_BottomSheet_Theme
 
-        override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // #210: cancelability is part of the showing contract, not of saved
+        // fragment state - re-apply from arguments after every recreation so
+        // a non-cancelable sheet (first-run network choice) stays that way.
+        arguments?.let { isCancelable = it.getBoolean(ARG_CANCELABLE, true) }
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        if (secure)
+        if (isSecure())
             dialog?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
 
@@ -50,35 +85,46 @@ open class GenericBottomSheet(private val secure:Boolean = false) : BottomSheetD
             requireContext(),
             theme
         )
-        if (secure)
+        if (isSecure())
             dialog.window?.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         return dialog
     }
-}
 
-/**
- * GenericAlertBottomSheet is for alert style BottomSheet
- * This will help to make Alert typ BottomSheets
- * @see InputBottomSheet
- * @see ConfirmBottomSheet etc...
- */
-open class GenericAlertBottomSheet(private val onViewReady: (GenericBottomSheet) -> Unit?) : GenericBottomSheet() {
-
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        onViewReady(this)
+    companion object {
+        const val ARG_SECURE = "generic_bottom_sheet_arg_secure"
+        const val ARG_CANCELABLE = "generic_bottom_sheet_arg_cancelable"
     }
-
 }
 
 /**
  * Shows BottomSheet with Input field
  * It will immediately focus input field for better UX
+ *
+ * #210: every presentation option travels in `arguments`, and the sheet
+ * wires itself in onViewCreated (the old base-class onViewReady hook never
+ * ran for this class - its override shadowed it without a super call).
+ * The typed answer is posted to [ARG_REQUEST_KEY] on the parent
+ * FragmentManager via the Fragment Result API, so a recreated sheet still
+ * delivers it to whoever re-registers.
  */
-class InputBottomSheet(private val label: String, onViewReady: (GenericBottomSheet) -> Unit) : GenericAlertBottomSheet(
-    onViewReady
-) {
+class InputBottomSheet() : GenericBottomSheet() {
 
+    private val label: String
+        get() = arguments?.getString(ARG_LABEL) ?: ""
+    private val buttonLabel: String
+        get() = arguments?.getString(ARG_BUTTON_LABEL) ?: "Confirm"
+    private val prefill: String
+        get() = arguments?.getString(ARG_VALUE) ?: ""
+    private val hint: String
+        get() = arguments?.getString(ARG_LABEL_EDIT_TEXT) ?: ""
+    private val maskInput: Boolean
+        get() = arguments?.getBoolean(ARG_MASK_INPUT, false) == true
+    private val maxLen: Int
+        get() = arguments?.getInt(ARG_MAX_LEN, 34) ?: 34
+    private val editable: Boolean
+        get() = arguments?.getBoolean(ARG_EDITABLE, true) == true
+    private val requestKey: String
+        get() = arguments?.getString(ARG_REQUEST_KEY) ?: ""
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -95,8 +141,39 @@ class InputBottomSheet(private val label: String, onViewReady: (GenericBottomShe
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        val inputField = view.findViewById<TextInputEditText>(R.id.bottomSheetInputField)
-        inputField.requestFocus()
+        val textInputLayout = view.findViewById<TextInputLayout>(R.id.bottomSheetInputFieldLayout)
+        val textInput = view.findViewById<TextInputEditText>(R.id.bottomSheetInputField)
+        val positiveButton = view.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn)
+
+        positiveButton?.text = buttonLabel
+        textInputLayout?.hint = hint
+        if (!editable) {
+            textInput?.isFocusable = false
+            textInput?.isFocusableInTouchMode = false
+            positiveButton?.visibility = View.GONE
+            textInputLayout?.setPadding(
+                textInputLayout.paddingLeft,
+                textInputLayout.paddingTop,
+                textInputLayout.paddingRight,
+                100
+            )
+        }
+        textInput?.setText(prefill)
+        if (maskInput) {
+            textInput?.inputType = EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+            textInput?.transformationMethod = PasswordTransformationMethod.getInstance()
+        }
+        textInput?.filters = arrayOf<InputFilter>(InputFilter.LengthFilter(maxLen))
+        positiveButton?.setOnClickListener { _ ->
+            val text = textInput?.text.toString()
+            parentFragmentManager.setFragmentResult(
+                requestKey,
+                Bundle().apply { putString(RESULT_INPUT, text) }
+            )
+            dismiss()
+        }
+
+        textInput?.requestFocus()
         val inputMethodManager = context?.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         inputMethodManager.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
     }
@@ -106,16 +183,67 @@ class InputBottomSheet(private val label: String, onViewReady: (GenericBottomShe
         inputMethodManager.toggleSoftInput(InputMethodManager.HIDE_IMPLICIT_ONLY, 0)
         super.onDismiss(dialog)
     }
+
+    companion object {
+        const val ARG_LABEL = "input_bottom_sheet_arg_label"
+        const val ARG_BUTTON_LABEL = "input_bottom_sheet_arg_button_label"
+        const val ARG_VALUE = "input_bottom_sheet_arg_value"
+        const val ARG_LABEL_EDIT_TEXT = "input_bottom_sheet_arg_label_edit_text"
+        const val ARG_MASK_INPUT = "input_bottom_sheet_arg_mask_input"
+        const val ARG_MAX_LEN = "input_bottom_sheet_arg_max_len"
+        const val ARG_EDITABLE = "input_bottom_sheet_arg_editable"
+        const val ARG_REQUEST_KEY = "input_bottom_sheet_arg_request_key"
+        const val RESULT_INPUT = "input_bottom_sheet_result_input"
+
+        fun newInstance(
+            label: String,
+            buttonLabel: String = "Confirm",
+            value: String = "",
+            labelEditText: String = "",
+            maskInput: Boolean = false,
+            maxLen: Int = 34,
+            editable: Boolean = true,
+            isCancelable: Boolean = true,
+            requestKey: String
+        ): InputBottomSheet = InputBottomSheet().apply {
+            // #210: cancelability travels as an argument; the base class
+            // re-applies it in onCreate on every (re)creation.
+            arguments = Bundle().apply {
+                putString(ARG_LABEL, label)
+                putString(ARG_BUTTON_LABEL, buttonLabel)
+                putString(ARG_VALUE, value)
+                putString(ARG_LABEL_EDIT_TEXT, labelEditText)
+                putBoolean(ARG_MASK_INPUT, maskInput)
+                putInt(ARG_MAX_LEN, maxLen)
+                putBoolean(ARG_EDITABLE, editable)
+                putString(ARG_REQUEST_KEY, requestKey)
+                putBoolean(GenericBottomSheet.ARG_CANCELABLE, isCancelable)
+            }
+        }
+    }
 }
 
 /**
  * Shows Confirmation style Bottomsheet
- * @param label
- * @param onViewReady
+ *
+ * #210: label / message / button texts travel in `arguments`; the yes/no
+ * answer is posted to [ARG_REQUEST_KEY] on the parent FragmentManager via
+ * the Fragment Result API, so a recreated sheet still delivers its answer
+ * to whoever re-registers (see HomeActivity's first-run network choice
+ * for the durable pattern).
  */
-class ConfirmBottomSheet(private val label: String, onViewReady: (GenericBottomSheet) -> Unit) : GenericAlertBottomSheet(
-    onViewReady
-) {
+class ConfirmBottomSheet : GenericBottomSheet() {
+
+    private val label: String
+        get() = arguments?.getString(ARG_LABEL) ?: ""
+    private val message: String
+        get() = arguments?.getString(ARG_MESSAGE) ?: ""
+    private val positiveText: String
+        get() = arguments?.getString(ARG_POSITIVE_TEXT) ?: "Yes"
+    private val negativeText: String
+        get() = arguments?.getString(ARG_NEGATIVE_TEXT) ?: "No"
+    private val requestKey: String
+        get() = arguments?.getString(ARG_REQUEST_KEY) ?: ""
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -130,11 +258,70 @@ class ConfirmBottomSheet(private val label: String, onViewReady: (GenericBottomS
         return view
     }
 
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        val positiveButton = view.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn);
+        val negativeButton = view.findViewById<MaterialButton>(R.id.bottomSheetConfirmNegativeBtn);
+        view?.findViewById<TextView>(R.id.bottomSheetConfirmMessage)?.text = message;
+
+        positiveButton?.text = positiveText
+        negativeButton?.text = negativeText
+
+        negativeButton?.setOnClickListener {
+            parentFragmentManager.setFragmentResult(
+                requestKey,
+                Bundle().apply { putBoolean(RESULT_CONFIRMED, false) }
+            )
+            dismiss()
+        }
+        positiveButton?.setOnClickListener {
+            parentFragmentManager.setFragmentResult(
+                requestKey,
+                Bundle().apply { putBoolean(RESULT_CONFIRMED, true) }
+            )
+            dismiss()
+        }
+    }
+
+    companion object {
+        const val ARG_LABEL = "confirm_bottom_sheet_arg_label"
+        const val ARG_MESSAGE = "confirm_bottom_sheet_arg_message"
+        const val ARG_POSITIVE_TEXT = "confirm_bottom_sheet_arg_positive_text"
+        const val ARG_NEGATIVE_TEXT = "confirm_bottom_sheet_arg_negative_text"
+        const val ARG_REQUEST_KEY = "confirm_bottom_sheet_arg_request_key"
+        const val RESULT_CONFIRMED = "confirm_bottom_sheet_result_confirmed"
+
+        fun newInstance(
+            label: String,
+            message: String = "",
+            positiveText: String = "Yes",
+            negativeText: String = "No",
+            isCancelable: Boolean = true,
+            requestKey: String
+        ): ConfirmBottomSheet = ConfirmBottomSheet().apply {
+            // #210: cancelability travels as an argument; the base class
+            // re-applies it in onCreate on every (re)creation.
+            arguments = Bundle().apply {
+                putString(ARG_LABEL, label)
+                putString(ARG_MESSAGE, message)
+                putString(ARG_POSITIVE_TEXT, positiveText)
+                putString(ARG_NEGATIVE_TEXT, negativeText)
+                putString(ARG_REQUEST_KEY, requestKey)
+                putBoolean(GenericBottomSheet.ARG_CANCELABLE, isCancelable)
+            }
+        }
+    }
 }
 
-class SuccessfulBottomSheet(private val label: String, private val txId: String,onViewReady: (GenericBottomSheet) -> Unit) : GenericAlertBottomSheet(
-    onViewReady
-) {
+/**
+ * #210: label / txId travel in `arguments`.
+ */
+class SuccessfulBottomSheet() : GenericBottomSheet() {
+
+    private val label: String
+        get() = arguments?.getString(ARG_LABEL) ?: ""
+    private val txId: String
+        get() = arguments?.getString(ARG_TX_ID) ?: ""
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -155,9 +342,32 @@ class SuccessfulBottomSheet(private val label: String, private val txId: String,
         super.onDismiss(dialog)
     }
 
+    companion object {
+        const val ARG_LABEL = "successful_bottom_sheet_arg_label"
+        const val ARG_TX_ID = "successful_bottom_sheet_arg_tx_id"
+
+        fun newInstance(label: String, txId: String): SuccessfulBottomSheet =
+            SuccessfulBottomSheet().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_LABEL, label)
+                    putString(ARG_TX_ID, txId)
+                }
+            }
+    }
 }
+
 /**
  * Shows BottomSheet with Input field
+ *
+ * #210: the helpers keep their exact signatures (every existing call site
+ * compiles unchanged), but internally each invocation now uses a unique
+ * request key and a one-shot FragmentResult listener instead of a lambda
+ * captured by the sheet instance. While the activity instance lives, the
+ * behavior is identical to before; after a recreation the restored sheet
+ * rebuilds from arguments, its buttons post a result, and it dismisses
+ * cleanly (no crash, no phantom action). Flows whose answer is
+ * state-derived can re-register a stable key in onCreate to become fully
+ * recreation-proof - see HomeActivity's first-run network choice.
  */
 fun AppCompatActivity.alertWithInput(
     label: String,
@@ -170,35 +380,22 @@ fun AppCompatActivity.alertWithInput(
     onConfirm: (String) -> Unit,
     isEditable: Boolean = true
 ): GenericBottomSheet {
-    val bottomSheet = InputBottomSheet(label, onViewReady = {
-        val view = it.view
-        view?.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn)?.text = buttonLabel
-        view?.findViewById<TextInputLayout>(R.id.bottomSheetInputFieldLayout)?.hint = labelEditText
-        val textInput = view?.findViewById<TextInputEditText>(R.id.bottomSheetInputField);
-        if (!isEditable) {
-            textInput?.isFocusable = false
-            textInput?.isFocusableInTouchMode = false
-            view?.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn)?.visibility = View.GONE
-
-            view?.findViewById<TextInputLayout>(R.id.bottomSheetInputFieldLayout)?.setPadding(
-                view?.findViewById<TextInputLayout>(R.id.bottomSheetInputFieldLayout)?.getPaddingLeft()!!,
-                view?.findViewById<TextInputLayout>(R.id.bottomSheetInputFieldLayout)?.getPaddingTop()!!,
-                view?.findViewById<TextInputLayout>(R.id.bottomSheetInputFieldLayout)?.getPaddingRight()!!,
-                100);
-
-        }
-        textInput?.setText(value)
-        if(maskInput){
-            textInput?.inputType = EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
-            textInput?.transformationMethod = PasswordTransformationMethod.getInstance();
-        }
-        textInput?.filters = arrayOf<InputFilter>(InputFilter.LengthFilter(maxLen))
-        view?.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn)?.setOnClickListener { _ ->
-            val text = textInput?.text.toString()
-            onConfirm.invoke(text)
-            it.dismiss()
-        }
-    })
+    val requestKey = "input_${UUID.randomUUID()}"
+    supportFragmentManager.setFragmentResultListener(requestKey, this) { key, bundle ->
+        supportFragmentManager.clearFragmentResultListener(key)
+        onConfirm(bundle.getString(InputBottomSheet.RESULT_INPUT) ?: "")
+    }
+    val bottomSheet = InputBottomSheet.newInstance(
+        label = label,
+        buttonLabel = buttonLabel,
+        value = value,
+        labelEditText = labelEditText,
+        maskInput = maskInput,
+        maxLen = maxLen,
+        editable = isEditable,
+        isCancelable = isCancelable,
+        requestKey = requestKey
+    )
     bottomSheet.isCancelable = isCancelable
     bottomSheet.show(supportFragmentManager, bottomSheet.tag)
     return bottomSheet
@@ -213,24 +410,19 @@ fun AppCompatActivity.confirm(
     isCancelable: Boolean = true,
     onConfirm: (Boolean) -> Unit
 ): GenericBottomSheet {
-    val bottomSheet = ConfirmBottomSheet(label, onViewReady = { bottomSheet ->
-        val view = bottomSheet.view
-        val positiveButton = view?.findViewById<MaterialButton>(R.id.bottomSheetConfirmPositiveBtn);
-        val negativeButton = view?.findViewById<MaterialButton>(R.id.bottomSheetConfirmNegativeBtn);
-        view?.findViewById<TextView>(R.id.bottomSheetConfirmMessage)?.text = message;
-
-        positiveButton?.text = positiveText
-        negativeButton?.text = negativeText
-
-        negativeButton?.setOnClickListener {
-            onConfirm(false)
-            bottomSheet.dismiss()
-        }
-        positiveButton?.setOnClickListener {
-            onConfirm(true)
-            bottomSheet.dismiss()
-        }
-    })
+    val requestKey = "confirm_${UUID.randomUUID()}"
+    supportFragmentManager.setFragmentResultListener(requestKey, this) { key, bundle ->
+        supportFragmentManager.clearFragmentResultListener(key)
+        onConfirm(bundle.getBoolean(ConfirmBottomSheet.RESULT_CONFIRMED))
+    }
+    val bottomSheet = ConfirmBottomSheet.newInstance(
+        label = label,
+        message = message,
+        positiveText = positiveText,
+        negativeText = negativeText,
+        isCancelable = isCancelable,
+        requestKey = requestKey
+    )
     bottomSheet.isCancelable = isCancelable
     bottomSheet.show(supportFragmentManager, bottomSheet.tag)
     return bottomSheet

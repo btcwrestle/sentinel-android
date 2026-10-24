@@ -36,36 +36,66 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // #220: re-registered on every create. The restored pad posts the
+        // pin through REQUEST_KEY_UNLOCK_PIN; the hash it is checked
+        // against already lives in prefs. Digits typed before the
+        // recreation are gone on purpose.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_UNLOCK_PIN,
+            this
+        ) { _, bundle ->
+            supportFragmentManager.clearFragmentResult(REQUEST_KEY_UNLOCK_PIN)
+            onUnlockPin(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
+        }
         val pinHash = prefsUtil.pinHash
         if (!pinHash.isNullOrEmpty()) {
-            val fragmentManager = supportFragmentManager
-            val lockScreenDialog = LockScreenDialog(lockScreenMessage = "Enter pin code")
-            val transaction = fragmentManager.beginTransaction()
-            transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
-            transaction.add(android.R.id.content, lockScreenDialog).commit()
-            lockScreenDialog.setOnPinEntered {
-                if (AccessFactory.getInstance(this).validateHash(it, pinHash)) {
-                    accessFactory.pin = it
-                    // Mark the process as PIN-protected so payload writes can never
-                    // silently fall back to plaintext.
-                    AccessFactory.getInstance(this).setPinProtected(true)
-                    // Previously runBlocking{} here froze the UI thread (and could ANR)
-                    // right at the point the user is waiting to get in.
-                    lifecycleScope.launch {
-                        delay(100)
-                        dojoUtil.read()
-                        navigate()
-                    }
-                } else {
-                    lockScreenDialog.showError()
-                }
+            // Recreation restores the pad under TAG_UNLOCK_PIN. Adding
+            // another one here is how a font change used to stack two.
+            if (supportFragmentManager.findFragmentByTag(TAG_UNLOCK_PIN) == null) {
+                val lockScreenDialog = LockScreenDialog.newInstance(
+                    message = "Enter pin code",
+                    requestKey = REQUEST_KEY_UNLOCK_PIN,
+                    purpose = LockScreenDialog.PURPOSE_UNLOCK
+                )
+                val transaction = supportFragmentManager.beginTransaction()
+                transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+                transaction.add(android.R.id.content, lockScreenDialog, TAG_UNLOCK_PIN).commit()
             }
         } else {
              navigate()
         }
     }
 
+    private fun onUnlockPin(pin: String) {
+        val pinHash = prefsUtil.pinHash
+        val dialog = supportFragmentManager.findFragmentByTag(TAG_UNLOCK_PIN) as? LockScreenDialog
+        if (pinHash.isNullOrEmpty() || dialog == null) {
+            dialog?.dismiss()
+            return
+        }
+        if (AccessFactory.getInstance(this).validateHash(pin, pinHash)) {
+            accessFactory.pin = pin
+            // Mark the process as PIN-protected so payload writes can never
+            // silently fall back to plaintext.
+            AccessFactory.getInstance(this).setPinProtected(true)
+            // Previously runBlocking{} here froze the UI thread (and could ANR)
+            // right at the point the user is waiting to get in.
+            lifecycleScope.launch {
+                delay(100)
+                dojoUtil.read()
+                navigate()
+            }
+        } else {
+            dialog.showError()
+        }
+    }
+
     private fun navigate() {
+        // #300: the only admit point. PIN success and the no-PIN path
+        // both come through here, and they come through here only
+        // after the lock (when there is one). Restored activities
+        // bounce back until this runs.
+        accessFactory.admitSession()
 
         if (!checkMigration()) {
             feeRepository.init()
@@ -110,5 +140,10 @@ class MainActivity : AppCompatActivity() {
                     super.onBackPressed()
                 }
                 .show()
+    }
+
+    companion object {
+        const val TAG_UNLOCK_PIN = "lock_screen_unlock"
+        const val REQUEST_KEY_UNLOCK_PIN = "lock_screen_unlock_result"
     }
 }

@@ -52,6 +52,16 @@ import timber.log.Timber
  * Tx data will be saved in a separate file
  * transactions that belongs to collection will be stored in a separate file
  */
+
+/**
+ * #226. An empty reconcile deletes every row for the collection.
+ * That is right for a real empty wallet and wrong for a flaky round
+ * whose body parsed but carried no fee table (txs) or omitted
+ * unspent_outputs (the utxo-only fetch). A non-empty list always writes.
+ */
+internal fun emptyReconcileAllowed(itemCount: Int, provenEmpty: Boolean): Boolean =
+    itemCount > 0 || provenEmpty
+
 class TransactionsRepository {
 
     private val txDao: TxDao by inject(TxDao::class.java)
@@ -109,6 +119,9 @@ class TransactionsRepository {
                 ?: return@withContext
             var newTransactions: ArrayList<Tx> = arrayListOf();
             val utxos: ArrayList<Utxo> = arrayListOf();
+            // #226: a fee table is the healthy-round signal. {} is the
+            // flaky shape that wiped local history while utxos survived.
+            var sawFeeTable = false
             val jobs: ArrayList<Deferred<Response>> = arrayListOf()
             collection.pubs.forEach {
                 val item = apiScope.async {
@@ -133,17 +146,22 @@ class TransactionsRepository {
                         }
                         val response: WalletResponse = fromJSON<WalletResponse>(resString)!!
                         Timber.i("fetchFromServer: ${response.info.fees}")
+                        if (!response.info.fees.isNullOrEmpty()) sawFeeTable = true
                         response.info.fees?.let { it1 -> feeRepository.parse(it1) }
                         SentinelState.blockHeight = response.info.latest_block
                         var latestBlockHeight = 1L
                         if (SentinelState.blockHeight != null)
                             latestBlockHeight = SentinelState.blockHeight?.height!!
+                        // #201: no per-tx confirmations write here anymore -
+                        // it targeted rows the reconcile below refreshes
+                        // anyway, and every write invalidated the LiveData
+                        // queries mid-fetch (~105 spurious re-queries per
+                        // round before the old wipe even ran). The computed
+                        // confirmations travel inside each Tx row.
                         val items = response.txs.map { tx ->
                             tx.hash = tx.hash + "-" + collectionId
                             tx.associatedPubKey = pubKeyAssociated.pubKey
                             val txBlockHeight = tx.block_height ?: 0
-                            if (tx.block_height != null)
-                                txDao.updateTxConfirmations(tx.hash, latestBlockHeight.minus(tx.block_height).plus(1))
                             tx.collectionId = collectionId
                             tx.confirmations =
                                 if (latestBlockHeight > 0L && txBlockHeight > 0L)
@@ -195,17 +213,81 @@ class TransactionsRepository {
                     throw  e
                 }
             }
-            withContext(Dispatchers.IO) {
-                utxoDao.deleteByCollection(collectionId)
-                txDao.deleteByCollectionID(collectionId)
-            }
+            // #201: the tx pre-wipe is gone - TxDao.upsertCollectionTx
+            // (called from saveTx below) reconciles inside ONE transaction,
+            // so the tx table never passes through an empty state
+            // mid-sync. #202: the utxo pre-wipe is gone too, same shape -
+            // UtxoDao.upsertCollectionUtxos (called from saveUtxos below)
+            // reconciles the utxo table inside ONE transaction.
 
-            // Whirlpool auto-labels (#6 part 2): runs BEFORE the dup-hash
-            // renaming below (hashes are still uniform txid-collectionId
-            // here, so suffix stripping is unambiguous) and reads the
-            // in-memory list, so it cannot race saveTx. Labels must never
-            // break sync: failures are contained and logged.
-            if (prefsUtil.whirlpoolAutoLabels == true) {
+            // #198: the whirlpool/badbank label engine used to run HERE,
+            // inside the delete->insert window (deletes above, saveTx
+            // below), holding the tx table empty for the whole label
+            // pass. It now launches after saveUtxos on the pre-mangle
+            // capture below - the same move #102 made for the entropy
+            // ingest.
+            // Boltzmann tx entropy (issue #7, #72 fix): compute + cache
+            // per bare txid on the FULL tx (ApiService.getTx -> esplora
+            // adapter), never on a wallet slice - the payload cannot
+            // prove completeness. #102: the ingest no longer runs here -
+            // it ran inside the delete->insert window (deletes above,
+            // saveTx below), holding the tx table empty for the whole
+            // sync. What stays here is the CAPTURE: bare txids, as
+            // strings, pre-mangle (keepTransactionWithVariousPubkeys
+            // below appends -N suffixes to hashes in place - strings,
+            // not Tx references, so the mangle cannot reach the
+            // capture). The ingest launches after saveUtxos, outside
+            // the window.
+            // #105: kill switch. While ENTROPY_FEATURE_ENABLED is
+            // false the capture is null, the launch below never
+            // runs - and the by-lazy ingest means the engine object
+            // is never built while OFF.
+            val entropyTxids = if (ENTROPY_FEATURE_ENABLED && prefsUtil.whirlpoolAutoLabels == true) {
+                LinkedHashSet(newTransactions.map { it.hash.removeSuffix("-$collectionId") })
+            } else null
+            // #198 CAPTURE for the label engine: Tx copies, pre-mangle.
+            // keepTransactionWithVariousPubkeys below appends -N to
+            // hashes IN PLACE on the shared Tx objects - a bare
+            // toList() capture would leak mangled hashes into the
+            // deferred job. Tx is a data class: copy() duplicates the
+            // mutable hash field; inputs/out are val and never
+            // mutated, so shared list references are safe. Null when
+            // the flag is off - the launch below never runs.
+            val labelEngineTxs = if (prefsUtil.whirlpoolAutoLabels == true) {
+                newTransactions.map { it.copy() }
+            } else null
+            newTransactions = keepTransactionWithVariousPubkeys(newTransactions)
+            // #226: empty set still means empty wallet, but only after a
+            // round that carried a fee table. Otherwise skip the write.
+            if (emptyReconcileAllowed(newTransactions.size, sawFeeTable)) {
+                if (newTransactions.isEmpty()) {
+                    Timber.w("fetchFromServer: empty tx round with a fee table; wiping $collectionId")
+                }
+                saveTx(newTransactions, collectionId)
+            } else {
+                Timber.w("fetchFromServer: empty tx round without a fee table; not wiping $collectionId")
+            }
+            if (emptyReconcileAllowed(utxos.size, sawFeeTable)) {
+                if (utxos.isEmpty()) {
+                    Timber.w("fetchFromServer: empty utxo round with a fee table; wiping $collectionId")
+                }
+                saveUtxos(utxos, collectionId)
+            } else {
+                Timber.w("fetchFromServer: empty utxo round without a fee table; not wiping $collectionId")
+            }
+            // #198: the label engine runs AFTER the inserts - the tx
+            // table is populated while labels compute and the tx list
+            // renders as soon as the inserts land; labels follow off
+            // this deferred pass and the UI refreshes when rows land.
+            // Fire-and-forget on apiScope (SupervisorJob): a labelling
+            // failure can never cancel the scope or break sync - the
+            // runCatching containment below is verbatim from the
+            // inline pass. The engine reads only the captured
+            // in-memory list and writes only label rows - never the
+            // tx table - so it cannot race saveTx. The histogram
+            // lines log from inside the job: the sync may already
+            // have returned; the log is the telemetry.
+            labelEngineTxs?.let { captured -> apiScope.launch {
                 runCatching {
                     val accountOfXpub = buildMap<String, Long> {
                         // Account from the key itself (UI-proven XPUB
@@ -229,7 +311,7 @@ class TransactionsRepository {
                         }
                     }
                     val backfillResult =
-                        whirlpoolBackfill.run(newTransactions, collectionId, accountOfXpub)
+                        whirlpoolBackfill.run(captured, collectionId, accountOfXpub)
                     Timber.i("whirlpool backfill: ${backfillResult.processed} processed, ${backfillResult.written} written, ${backfillResult.handsOff} hands-off, ${backfillResult.unclassified} unclassified")
 
                     // Badbank deduction + phase-1 propagation (#46):
@@ -246,7 +328,7 @@ class TransactionsRepository {
                     val badbankOutcomes =
                         HashMap<String, BadbankLabeler.Outcome>()
                     val badbankViews = WhirlpoolBackfill.mergePartialTxs(
-                        newTransactions, collectionId
+                        captured, collectionId
                     ).map { tx ->
                         WhirlpoolTxAdapter.toView(tx, collectionId, accountOfXpub)
                     }
@@ -291,29 +373,7 @@ class TransactionsRepository {
                         "not-descendant=${bb(BadbankLabeler.Outcome.NOT_DESCENDANT_SPEND)}")
                 }
                     .onFailure { Timber.e(it, "whirlpool/badbank labelling failed") }
-            }
-            // Boltzmann tx entropy (issue #7, #72 fix): compute + cache
-            // per bare txid on the FULL tx (ApiService.getTx -> esplora
-            // adapter), never on a wallet slice - the payload cannot
-            // prove completeness. #102: the ingest no longer runs here -
-            // it ran inside the delete->insert window (deletes above,
-            // saveTx below), holding the tx table empty for the whole
-            // sync. What stays here is the CAPTURE: bare txids, as
-            // strings, pre-mangle (keepTransactionWithVariousPubkeys
-            // below appends -N suffixes to hashes in place - strings,
-            // not Tx references, so the mangle cannot reach the
-            // capture). The ingest launches after saveUtxos, outside
-            // the window.
-            // #105: kill switch. While ENTROPY_FEATURE_ENABLED is
-            // false the capture is null, the launch below never
-            // runs - and the by-lazy ingest means the engine object
-            // is never built while OFF.
-            val entropyTxids = if (ENTROPY_FEATURE_ENABLED && prefsUtil.whirlpoolAutoLabels == true) {
-                LinkedHashSet(newTransactions.map { it.hash.removeSuffix("-$collectionId") })
-            } else null
-            newTransactions = keepTransactionWithVariousPubkeys(newTransactions)
-            saveTx(newTransactions, collectionId)
-            saveUtxos(utxos, collectionId)
+            } }
             // #102: the ingest runs AFTER the inserts - the tx table is
             // populated while entropy computes. Fire-and-forget on
             // apiScope (SupervisorJob): an ingest failure can never
@@ -369,35 +429,45 @@ class TransactionsRepository {
         return transactions
     }
 
-    private fun saveTx(transactions: ArrayList<Tx>, collectionId: String) = apiScope.launch {
-        withContext(Dispatchers.IO) {
-            transactions.forEach {
-                txDao.insert(it)
-            }
-        }
+    // #201: was an apiScope.launch doing a per-row insert loop on top of
+    // the pre-wipe - together they emitted an empty list plus ~106
+    // partial lists per round (the flash; and the tab-switch freeze
+    // via the re-query storm). Now: ONE awaited @Transaction reconcile,
+    // TxDao.upsertCollectionTx - one commit, one LiveData emission,
+    // never an empty intermediate state; the tx table is consistent
+    // before fetchFromServer returns (previously the fire-and-forget
+    // launch could still be inserting after the sync returned).
+    // #87 parity with saveUtxos: a collection deleted mid-sync
+    // reconciles to nothing instead of resurrecting rows.
+    private suspend fun saveTx(transactions: ArrayList<Tx>, collectionId: String) {
+        val collection = collectionRepository.findById(collectionId)
+            ?: return
+        txDao.upsertCollectionTx(collectionId, transactions)
     }
 
 
-    private fun saveUtxos(utxos: ArrayList<Utxo>, collectionId: String) = apiScope.launch {
-        // #87: mid-erase (or a deleted collection) findById returns
-        // null - take the same early-skip fetchUTXOS already uses. Nothing
-        // to reconcile, and writing rows for a gone collection would
-        // resurrect data into a freshly wiped wallet.
+    // #202: the utxo-side twin of the #201 saveTx shape. Was an
+    // apiScope.launch wrapping three steps: a read-then-delete
+    // vanished-row reconcile (dead code as wired - both fetch paths
+    // pre-wiped the table before it ran, so it always saw an empty
+    // one), the UtxoMetaUtil blocked-list reconcile, and a per-row
+    // insert loop. The pre-wipes are gone (fetchFromServer and
+    // fetchUTXOS above) and the DB reconcile moved INTO
+    // UtxoDao.upsertCollectionUtxos - one transaction, one commit,
+    // ONE LiveData emission, never an empty intermediate state; the
+    // utxo table is consistent before the sync returns (the old
+    // fire-and-forget launch could still be inserting after the sync
+    // returned, and two overlapping rounds could interleave one
+    // round's inserts with the other's wipe).
+    // #87: mid-erase (or a deleted collection) findById returns
+    // null - take the same early-skip saveTx uses. Nothing to
+    // reconcile, and writing rows for a gone collection would
+    // resurrect data into a freshly wiped wallet.
+    private suspend fun saveUtxos(utxos: ArrayList<Utxo>, collectionId: String) {
         val collection = collectionRepository.findById(collectionId)
-            ?: return@launch
+            ?: return
         withContext(Dispatchers.IO) {
-            utxoDao.getUTXObyCollectionAsList(collectionId)
-                .forEach {
-                    val isExist =
-                        utxos.find { utxo -> (utxo.txHash == it.txHash && it.txOutputN == utxo.txOutputN) }
-                   //if utxos is not present in the new list it will be removed from the local db
-                    if(isExist == null){
-                        if (it.txOutputN != null && it.txHash != null) {
-                            utxoDao.delete(it.txHash!!, it.txOutputN!!)
-                        }
-                    }
-                }
-
+            utxoDao.upsertCollectionUtxos(collectionId, utxos)
             UtxoMetaUtil.getBlockedAssociatedWithPubKeyList(collection.pubs.map { it.pubKey }.toList())
                 .forEach {
                     val isExist =
@@ -407,9 +477,6 @@ class TransactionsRepository {
                         UtxoMetaUtil.remove(it.hash, it.txOutputN)
                     }
                 }
-            utxos.forEach {
-                utxoDao.insert(it)
-            }
         }
     }
 
@@ -431,6 +498,8 @@ class TransactionsRepository {
             val collection = collectionRepository.findById(collectionId)
                 ?: return@withContext
             val utxos: ArrayList<Utxo> = arrayListOf();
+            // #226: an omitted unspent_outputs field is not an empty wallet.
+            var sawUnspentField = false
             val jobs: ArrayList<Deferred<Response>> = arrayListOf()
             collection.pubs.forEach {
                 val item = apiScope.async {
@@ -450,6 +519,7 @@ class TransactionsRepository {
                         val response: WalletResponse = fromJSON<WalletResponse>(resString)!!
 
                         response.unspent_outputs?.let {
+                            sawUnspentField = true
                             val list = response.unspent_outputs.toMutableList().map {
                                 it.pubKey = pubKeyAssociated.pubKey
                                 it.idx = "${it.txHash}:${it.txOutputN}"
@@ -462,18 +532,39 @@ class TransactionsRepository {
                             utxos.addAll(list)
                         }
                     }
-                } catch (e: Exception) { Timber.e(e) }
+                } catch (e: Exception) {
+                    // #287: same wall as fetchFromServer. A swallowed
+                    // failure used to fall through to saveUtxos with an
+                    // empty or partial list.
+                    throw e
+                }
             }
 
-            withContext(Dispatchers.IO) {
-                utxoDao.deleteByCollection(collectionId)
+            // #202: no pre-wipe - saveUtxos below reconciles inside
+            // UtxoDao.upsertCollectionUtxos, one transaction.
+            // #287: this line is reached only when every pubkey job
+            // returned. A throw above skips it, so a failed fetch
+            // cannot delete rows or do-not-spend marks.
+            // #226: a returned job that omitted unspent_outputs is not
+            // an empty wallet. Only a present field (even []) wipes.
+            if (emptyReconcileAllowed(utxos.size, sawUnspentField)) {
+                if (utxos.isEmpty()) {
+                    Timber.w("fetchUTXOS: empty round with an unspent field; wiping $collectionId")
+                }
+                saveUtxos(utxos, collectionId)
+            } else {
+                Timber.w("fetchUTXOS: empty round without an unspent field; not wiping $collectionId")
             }
-
-            saveUtxos(utxos, collectionId)
         } catch (e: ApiNotConfigured) {
+            // #103: degrade, no rethrow. The throw left the loop
+            // before saveUtxos, so nothing is reconciled.
             Timber.e(e)
         } catch (e: Exception) {
+            // #287: rethrow so syncCollections counts the collection
+            // failed. Swallowing here was the Success banner over a
+            // wiped utxo table.
             Timber.e(e)
+            throw e
         }
     }
     }

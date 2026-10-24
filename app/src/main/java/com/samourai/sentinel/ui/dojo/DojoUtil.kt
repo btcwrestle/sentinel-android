@@ -10,7 +10,6 @@ import kotlinx.coroutines.*
 import okhttp3.Response
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
-import timber.log.Timber
 
 /**
  * sentinel-android
@@ -84,18 +83,23 @@ class DojoUtility {
     }
 
     private fun readPayload(): DojoPairing? {
+        // #258: no log here. Debug builds printed the whole pairing
+        // (apikey + onion URL) on every read; the data classes also
+        // redact their toString() now (see DojoPairing.kt), so no
+        // future log line can leak them by accident. One store read,
+        // one return - the old line parsed the payload twice.
         return if (dojoStore.file.exists()) {
-            Timber.d("${dbHandler.getDojoStore().read<DojoPairing>()}")
-            return dbHandler.getDojoStore().read<DojoPairing>()
+            dbHandler.getDojoStore().read<DojoPairing>()
         } else {
             null
         }
     }
 
     fun clearDojo() {
+        // #208: deleteAll covers the primary payload AND its rotated .bak
+        // (which still contains the node API key) under the writers' lock.
         CoroutineScope(Dispatchers.IO).launch {
-            if (dojoStore.file.exists())
-                dojoStore.file.delete()
+            dojoStore.deleteAll()
         }
         dojoPayload = null
         // Clear the credentials too, so a later re-pair cannot accidentally
@@ -109,6 +113,12 @@ class DojoUtility {
         prefsUtil.dojoDisplayName = null
         prefsUtil.dojoDisplayFlag = null
         prefsUtil.dojoDisplayUrl = null
+        // #256: jurisdiction is directory display metadata like the
+        // trio above - it dies with the pairing, never rides a re-pair.
+        prefsUtil.dojoDisplayJurisdiction = null
+        // #250: the directory network label dies with the pairing,
+        // with its snapshot siblings.
+        prefsUtil.dojoDisplayNetwork = null
         prefsUtil.dojoExplorerUrl = null
         prefsUtil.dojoExplorerType = null
     }

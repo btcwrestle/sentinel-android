@@ -1,5 +1,6 @@
 package com.samourai.sentinel.ui.adapters
 
+import android.content.res.ColorStateList
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -32,6 +33,7 @@ CollectionsAdapter : RecyclerView.Adapter<CollectionHolder>() {
     private var onClickListener: (PubKeyCollection) -> Unit = {};
     private var layoutType: LayoutType = LayoutType.ROW;
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
+    private val walletIconTint = ColorStateList.valueOf(0xFFE4E4E4.toInt())
 
     private val diffCallBack = object : DiffUtil.ItemCallback<PubKeyCollection>() {
 
@@ -109,10 +111,13 @@ CollectionsAdapter : RecyclerView.Adapter<CollectionHolder>() {
         holder.view.setOnClickListener {
             onClickListener(collection)
         }
-        if (collection.isImportFromWallet)
-            holder.icon.setImageResource(R.drawable.ic_samourai_logo)
-        else
+        if (collection.isImportFromWallet) {
+            holder.icon.imageTintList = null
+            holder.icon.setImageResource(R.drawable.ic_ashigaru_logo)
+        } else {
+            holder.icon.imageTintList = walletIconTint
             holder.icon.setImageResource(R.drawable.ic_baseline_wallet_24)
+        }
     }
 
     fun setBalance(position: Int): Long {

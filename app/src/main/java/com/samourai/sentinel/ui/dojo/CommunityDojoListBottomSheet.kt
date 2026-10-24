@@ -37,10 +37,13 @@ import java.net.SocketTimeoutException
  * Only ever shown after the caller has put the user through
  * [DojoConfigureBottomSheet]'s privacy warning dialog - this sheet itself assumes
  * that consent has already been given.
+ *
+ * #210: no primary-constructor parameters anymore - the required lambda made
+ * this class non-recreatable (Fragment$InstantiationException on process death
+ * or a ui-mode change while the list was showing). Selection resolves the host
+ * sheet at click time, so a restored list still pairs.
  */
-class CommunityDojoListBottomSheet(
-    private val onDojoSelected: (String) -> Unit
-) : GenericBottomSheet() {
+class CommunityDojoListBottomSheet() : GenericBottomSheet() {
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
 
@@ -76,12 +79,25 @@ class CommunityDojoListBottomSheet(
             } else {
                 // Snapshot directory display metadata now: past this callback
                 // only the pairing JSON travels, and the stored payload has no
-                // name/flag. The node object is already in memory from the
-                // directory fetch (over Tor) - nothing new is requested.
+                // name/flag/jurisdiction. The node object is already in memory
+                // from the directory fetch (over Tor) - nothing new is requested.
                 prefsUtil.dojoDisplayName = node.name?.takeIf { it.isNotBlank() }
                 prefsUtil.dojoDisplayFlag = node.flagEmoji
                 prefsUtil.dojoDisplayUrl = node.payload?.pairing?.url
-                onDojoSelected(json)
+                // #256: jurisdiction rides the same snapshot - a directory
+                // datum, display-only, cleared with the pairing (see
+                // DojoUtility.clearDojo).
+                prefsUtil.dojoDisplayJurisdiction = node.jurisdiction?.takeIf { it.isNotBlank() }
+                // #250: the directory's network declaration rides the
+                // same snapshot - the contract-grade source the pre-pair
+                // dialog's guard reads. Raw here like jurisdiction;
+                // normalizeDeclaredNetwork decides at read time.
+                prefsUtil.dojoDisplayNetwork = node.network?.takeIf { it.isNotBlank() }
+                // #221: the configure sheet is the parent. onScanPayload
+                // validates, stores the payload, and moves to the connect
+                // page, and it toasts on an invalid payload.
+                val host = parentFragment as? DojoConfigureBottomSheet
+                host?.onScanPayload(json)
                 dismiss()
             }
         },
