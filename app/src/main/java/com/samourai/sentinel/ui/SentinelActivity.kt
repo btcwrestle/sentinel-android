@@ -23,6 +23,13 @@ import com.samourai.sentinel.ui.views.swipeLayout.app.SwipeBackActivityHelper
 import org.koin.java.KoinJavaComponent.inject
 import kotlin.math.roundToInt
 
+/**
+ * #300. A process Android restored onto a screen other than the lock
+ * has not been admitted yet. The screen must not run.
+ */
+internal fun shouldBounceUnadmittedSession(sessionAdmitted: Boolean): Boolean =
+    !sessionAdmitted
+
 open class SentinelActivity : AppCompatActivity(), SwipeBackActivityBase {
 
     private val accessFactory: AccessFactory by inject(AccessFactory::class.java);
@@ -30,19 +37,45 @@ open class SentinelActivity : AppCompatActivity(), SwipeBackActivityBase {
     private val displayMetrics: DisplayMetrics by lazy { resources.displayMetrics }
     private lateinit var mHelper: SwipeBackActivityHelper
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    /**
+     * #300: final so a subclass cannot run payload work before the
+     * gate. Android restores whatever activity was on top when the
+     * process died. That activity used to read the PIN-encrypted
+     * payloads (Home's "Could not load collections", #300), export
+     * the still-empty in-memory list (#289), or crash on a null
+     * collection (#291) before MainActivity's lock ever ran.
+     * Subclasses implement [onCreateAdmitted], which is not called
+     * until this process has been admitted.
+     */
+    final override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (shouldBounceUnadmittedSession(accessFactory.isSessionAdmitted)) {
+            startActivity(Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            })
+            finish()
+            return
+        }
         window.statusBarColor = ContextCompat.getColor(this, R.color.v3_primary)
         mHelper = SwipeBackActivityHelper(this)
         mHelper.onActivityCreate();
         overridePendingTransition(R.anim.slide_in, R.anim.no_anim)
         mHelper.swipeBackLayout
             .setScrollThresHold(0.7f)
+        onCreateAdmitted(savedInstanceState)
     }
 
+    /**
+     * Subclass setup. Not called when this process has not passed
+     * the PIN / no-PIN gate. Do not call super.onCreate from here.
+     */
+    protected open fun onCreateAdmitted(savedInstanceState: Bundle?) {}
 
     override fun onPostCreate(savedInstanceState: Bundle?) {
         super.onPostCreate(savedInstanceState)
+        // A bounced activity is finished inside onCreate, before the
+        // helper exists. onPostCreate still runs.
+        if (!::mHelper.isInitialized) return
          mHelper.onPostCreate()
     }
 
@@ -55,7 +88,7 @@ open class SentinelActivity : AppCompatActivity(), SwipeBackActivityBase {
         super.onResume()
         // Prefs are nullable by design (GenericPrefDelegate<T?>); `!!` here crashed
         // on a fresh install and after clearAll().
-        if (prefsUtil.pinHash?.isNotBlank() == true && accessFactory.isTimedOut) {
+        if (prefsUtil.isPinConfigured() && accessFactory.isTimedOut) {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
             })

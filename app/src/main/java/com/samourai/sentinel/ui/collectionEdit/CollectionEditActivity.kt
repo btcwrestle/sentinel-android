@@ -65,8 +65,7 @@ class CollectionEditActivity : SentinelActivity() {
     private var pressedX: Float = 0.0F
     private var pressedY: Float = 0.0F
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityCollectionEditBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
@@ -276,7 +275,7 @@ class CollectionEditActivity : SentinelActivity() {
             override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
 
                 fun  viewPubKey(pubKeyModel: PubKeyModel, position: Int){
-                    val dialog =  QRBottomSheetDialog(
+                    val dialog =  QRBottomSheetDialog.newInstance(
                         pubKeyModel.pubKey,
                         pubKeyModel.label,
                         pubKeyModel.label,

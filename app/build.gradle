@@ -189,6 +189,10 @@ implementation 'it.unimi.dsi:fastutil:8.3.0'   // boltzmann public API exposes f
     implementation "androidx.webkit:webkit:1.4.0"
     implementation "androidx.room:room-runtime:$room_version"
     ksp "androidx.room:room-compiler:$room_version"
+    // SQLCipher opens the Room file. The passphrase is a Keystore-wrapped
+    // random key, not the PIN.
+    implementation 'net.zetetic:sqlcipher-android:4.17.0'
+    testImplementation 'io.github.willena:sqlite-jdbc:3.53.4.0'
 
     // optional - Kotlin Extensions and Coroutines support for Room
     implementation "androidx.room:room-ktx:$room_version"
@@ -205,6 +209,7 @@ implementation 'it.unimi.dsi:fastutil:8.3.0'   // boltzmann public API exposes f
 
     //Test Libs
     testImplementation "junit:junit:4.13.2"
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
     // The android.jar used for unit tests stubs org.json to throw
     // "not mocked", so tests that parse JSON need the real implementation.
     testImplementation 'org.json:json:20240303'

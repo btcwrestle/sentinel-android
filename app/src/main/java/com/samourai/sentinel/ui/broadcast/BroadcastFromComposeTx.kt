@@ -13,17 +13,21 @@ class BroadcastFromComposeTx : SentinelActivity() {
     private lateinit var binding: ActivityBroadcastUnsignedTxBinding
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
 
-        super.onCreate(savedInstanceState)
         binding = ActivityBroadcastUnsignedTxBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
+        supportFragmentManager.setFragmentResultListener(REQUEST_SCAN_SIGNED_TX, this) { _, bundle ->
+            val decoded = bundle.getString(CameraFragmentBottomSheet.RESULT_TEXT) ?: return@setFragmentResultListener
+            val intent = Intent(applicationContext, BroadcastTx::class.java).putExtra("signedTxHex", decoded)
+            startActivity(intent)
+            (supportFragmentManager.findFragmentByTag(TAG_SCAN_SIGNED_TX) as? CameraFragmentBottomSheet)?.dismiss()
+        }
         val qrString: String = intent.getStringExtra("qrString").toString()
-        var signedTxHex: String
 
         binding.showQrCode.setOnClickListener { _ ->
-            val dialog = QRBottomSheetDialog(
+            val dialog = QRBottomSheetDialog.newInstance(
                     qrString,
                     "Unsigned Transaction",
                     qrString)
@@ -33,16 +37,15 @@ class BroadcastFromComposeTx : SentinelActivity() {
 
         binding.launchQRScanner.setOnClickListener { _ ->
             binding.stepView.setStep(3)
-            val camera = CameraFragmentBottomSheet()
-            camera.show(supportFragmentManager, camera.tag)
-            camera.setQrCodeScanLisenter {
-                signedTxHex = it
-                val intent = Intent(applicationContext, BroadcastTx::class.java).putExtra("signedTxHex", signedTxHex)
-                startActivity(intent)
-                camera.dismiss()
-            }
+            CameraFragmentBottomSheet.newInstance(REQUEST_SCAN_SIGNED_TX)
+                .show(supportFragmentManager, TAG_SCAN_SIGNED_TX)
         }
 
 
+    }
+
+    companion object {
+        private const val REQUEST_SCAN_SIGNED_TX = "broadcast_scan_signed_tx"
+        private const val TAG_SCAN_SIGNED_TX = "scan_signed_tx"
     }
 }

@@ -41,6 +41,13 @@ class CollectionRepository {
     private var isPayloadUsable = false
 
     /**
+     * #289: false until this process has successfully read the payload
+     * (or the user has explicitly reset). An export of the in-memory
+     * list before that is an empty backup that reports success.
+     */
+    fun isPayloadLoaded(): Boolean = isPayloadUsable
+
+    /**
      * Serializes every write to the single payload file.
      *
      * The previous `@Synchronized fun sync()` only guarded the *launching* of the

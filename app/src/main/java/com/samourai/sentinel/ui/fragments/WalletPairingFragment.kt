@@ -38,7 +38,17 @@ import timber.log.Timber
 import java.util.concurrent.CancellationException
 
 
-class WalletPairingFragment(private val payload: String = "", secure: Boolean = false) : GenericBottomSheet(secure = secure) {
+class WalletPairingFragment : GenericBottomSheet {
+
+    /** #216: restore uses the no-arg constructor. The payload is in arguments. */
+    constructor() : super()
+
+    constructor(payload: String, secure: Boolean = false) : super(secure) {
+        arguments = (arguments ?: Bundle()).apply { putString(ARG_PAYLOAD, payload) }
+    }
+
+    private val payload: String
+        get() = arguments?.getString(ARG_PAYLOAD).orEmpty()
 
     private var _binding: FragmentBottomsheetViewPagerBinding? = null
     private val binding get() = _binding!!
@@ -69,12 +79,12 @@ class WalletPairingFragment(private val payload: String = "", secure: Boolean = 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         setUpViewPager()
 
-        passwordFragment.setPayload(payload.trim())
-        passwordFragment.setOnSelectListener {
-            loadingFragment.setCollection(it!!)
+        livePassword().setPayload(payload.trim())
+        livePassword().setOnSelectListener {
+            liveLoading().setCollection(it!!)
             binding.pager.currentItem = 1
         }
-        loadingFragment.setSuccessCheck {
+        liveLoading().setSuccessCheck {
             apiScope.launch {
                 try {
                     exchangeRateRepository.fetch()
@@ -137,6 +147,17 @@ class WalletPairingFragment(private val payload: String = "", secure: Boolean = 
 
         }
         binding.pager.isUserInputEnabled = false
+    }
+
+    /** #216: ViewPager2 restores pages under f0/f1. Those are not these fields. */
+    private fun livePassword(): PasswordFragment =
+        childFragmentManager.findFragmentByTag("f0") as? PasswordFragment ?: passwordFragment
+
+    private fun liveLoading(): LoadingFragment =
+        childFragmentManager.findFragmentByTag("f1") as? LoadingFragment ?: loadingFragment
+
+    companion object {
+        private const val ARG_PAYLOAD = "wallet_pairing_arg_payload"
     }
 }
 

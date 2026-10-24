@@ -174,12 +174,15 @@ class TransactionsFragment : Fragment() {
             true
         }
 
-        binding.collectionBalanceFiat.visibility = if (prefsUtil.fiatDisabled!!) View.INVISIBLE else View.VISIBLE
+        binding.collectionBalanceFiat.visibility =
+            if (BalanceDisplayFormatter.showsFiat(
+                    BalanceDisplayMode.fromString(prefsUtil.balanceDisplayMode),
+                    prefsUtil.streetMode == true,
+                    prefsUtil.fiatDisabled == true
+                )
+            ) View.VISIBLE else View.GONE
         fiatBalanceLiveData.observe(viewLifecycleOwner, Observer {
-            if (isAdded) {
-                binding.collectionBalanceFiat.text = it
-                setBalance(-1)
-            }
+            if (isAdded) setBalance(indexPubSelected.value?.minus(1) ?: -1)
         })
         transactionsViewModel.getMessage().observe(
             this.viewLifecycleOwner
@@ -280,27 +283,33 @@ class TransactionsFragment : Fragment() {
                 BalanceDisplayMode.fromString(prefsUtil.balanceDisplayMode)
         binding.collectionBalanceBtc.text =
             BalanceDisplayFormatter.format(sats, mode)
-        binding.collectionBalanceFiat.text =
-            if (mode == BalanceDisplayMode.MASKED)
-                BalanceDisplayFormatter.MASKED_TEXT
-            else
-                getFiatBalance(sats, exchangeRateRepository.getRateLive().value)
+        val showFiat = BalanceDisplayFormatter.showsFiat(
+            mode, prefsUtil.streetMode == true, prefsUtil.fiatDisabled == true
+        )
+        val fiat = if (!showFiat || mode == BalanceDisplayMode.MASKED) {
+            ""
+        } else {
+            getFiatBalance(sats, exchangeRateRepository.getRateLive().value)
+        }
+        if (!showFiat || fiat.isBlank()) {
+            binding.collectionBalanceFiat.text = ""
+            binding.collectionBalanceFiat.visibility = View.GONE
+        } else {
+            binding.collectionBalanceFiat.text = fiat
+            binding.collectionBalanceFiat.visibility = View.VISIBLE
+        }
     }
 
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
-        if (rate != null) {
-            balance?.let {
-                return try {
-                    val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
-                        .format((balance / 1e8) * rate.rate)
-                    "$fiatRate ${rate.currency}"
-                } catch (e: Exception) {
-                    "00.00 ${rate.currency}"
-                }
-            }
-            return "00.00"
-        } else {
-            return "00.00"
+        if (prefsUtil.fiatDisabled == true) return ""
+        if (rate == null || rate.rate <= 0L) return ""
+        balance ?: return ""
+        return try {
+            val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
+                .format((balance / 1e8) * rate.rate)
+            "$fiatRate ${rate.currency}"
+        } catch (e: Exception) {
+            ""
         }
     }
 
@@ -328,7 +337,10 @@ class TransactionsFragment : Fragment() {
         val pubsChanged = fingerprint != lastPubsFingerprint
         this.collection = collection
         this.lastPubsFingerprint = fingerprint
-        if (isAdded) {
+        // #217: a restored fragment is added before its view exists.
+        // The binding work waits for onViewCreated, which calls the
+        // private initViewModel once this field is set.
+        if (view != null) {
             transactionsViewModel.setCollection(collection)
             if (!pagerWired) {
                 // Emission arrived after attach but before onViewCreated.
@@ -425,7 +437,7 @@ class TransactionsFragment : Fragment() {
 
         ) : FragmentStateAdapter(fragment) {
         override fun createFragment(position: Int): Fragment {
-            return TransactionsListFragment(position, collection)
+            return TransactionsListFragment.newInstance(position, collection)
         }
 
         override fun getItemCount(): Int {

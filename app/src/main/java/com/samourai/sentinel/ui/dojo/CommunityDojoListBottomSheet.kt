@@ -40,19 +40,10 @@ import java.net.SocketTimeoutException
  *
  * #210: no primary-constructor parameters anymore - the required lambda made
  * this class non-recreatable (Fragment$InstantiationException on process death
- * or a ui-mode change while the list was showing). The one construction site
- * (DojoConfigureBottomSheet, via childFragmentManager) keeps compiling through
- * the legacy bridge constructor, and a selection now resolves the host sheet at
- * click time - the #181 event-time pattern - so a restored list still pairs.
+ * or a ui-mode change while the list was showing). Selection resolves the host
+ * sheet at click time, so a restored list still pairs.
  */
 class CommunityDojoListBottomSheet() : GenericBottomSheet() {
-
-    /** #210 bridge for the pre-#210 `CommunityDojoListBottomSheet(onDojoSelected)` shape. */
-    private var legacyOnDojoSelected: ((String) -> Unit)? = null
-
-    constructor(onDojoSelected: (String) -> Unit) : this() {
-        legacyOnDojoSelected = onDojoSelected
-    }
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
 
@@ -102,18 +93,11 @@ class CommunityDojoListBottomSheet() : GenericBottomSheet() {
                 // dialog's guard reads. Raw here like jurisdiction;
                 // normalizeDeclaredNetwork decides at read time.
                 prefsUtil.dojoDisplayNetwork = node.network?.takeIf { it.isNotBlank() }
-                // #210: resolve the host sheet at click time - the old
-                // constructor lambda died with the instance on every
-                // recreation. The configure sheet's existing #181 entry point
-                // takes it from here (validate -> payload -> connect page,
-                // its own toast on invalid); the legacy lambda remains as the
-                // fallback for any host that is not the configure sheet.
+                // #221: the configure sheet is the parent. onScanPayload
+                // validates, stores the payload, and moves to the connect
+                // page, and it toasts on an invalid payload.
                 val host = parentFragment as? DojoConfigureBottomSheet
-                if (host != null) {
-                    host.onScanPayload(json)
-                } else {
-                    legacyOnDojoSelected?.invoke(json)
-                }
+                host?.onScanPayload(json)
                 dismiss()
             }
         },
