@@ -20,8 +20,8 @@ import androidx.preference.PreferenceFragmentCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.samourai.sentinel.R
 import com.samourai.sentinel.core.access.AccessFactory
-import com.samourai.sentinel.data.db.dao.TxDao
-import com.samourai.sentinel.data.db.dao.UtxoDao
+import com.samourai.sentinel.data.db.SentinelCollectionStore
+import com.samourai.sentinel.data.db.SentinelRoomDb
 import com.samourai.sentinel.data.repository.Bip329Exporter
 import com.samourai.sentinel.data.repository.Bip329Importer
 import com.samourai.sentinel.ui.fragments.ImportLabelsScanBottomSheet
@@ -70,8 +70,6 @@ import java.util.Locale
 class MainSettingsFragment : PreferenceFragmentCompat() {
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java);
-    private val txDao: TxDao by inject(TxDao::class.java);
-    private val utxoDao: UtxoDao by inject(UtxoDao::class.java);
     private val accessFactory: AccessFactory by inject(AccessFactory::class.java);
     private val collectionRepository: CollectionRepository by inject(CollectionRepository::class.java);
     private val exchangeRateRepository: ExchangeRateRepository by inject(ExchangeRateRepository::class.java);
@@ -79,6 +77,8 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private val bip329Importer: Bip329Importer by inject(Bip329Importer::class.java);
     private val bip329Exporter: Bip329Exporter by inject(Bip329Exporter::class.java);
     private val dojoUtility: DojoUtility by inject(DojoUtility::class.java);
+    private val dbHandler: SentinelCollectionStore by inject(SentinelCollectionStore::class.java);
+    private val roomDb: SentinelRoomDb by inject(SentinelRoomDb::class.java);
     private val settingsScope = CoroutineScope(context = Dispatchers.Main)
     private var exportedBackUp: String? = null
 
@@ -308,6 +308,54 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
 
     }
 
+    /**
+     * Deletes every on-disk copy of every payload under `app_wallet`:
+     * primary, rotated `.bak` and any staged `.tmp`, for all four stores.
+     *
+     * A late write can still land after this. Both
+     * [CollectionRepository.reset] and [UtxoMetaUtil.clearAll] persist
+     * asynchronously, so an empty payload may be recreated moments later.
+     * That is harmless: `writeToFile` rotates a `.bak` only while the primary
+     * still exists, and by then it does not - so what reappears is the
+     * cleared state with nothing behind it.
+     */
+    private fun erasePayloadFiles() {
+        listOf(
+            dbHandler.getCollectionStore(),
+            dbHandler.getDojoStore(),
+            dbHandler.getUtxoMetaData(),
+            dbHandler.getFee()
+        ).forEach { record ->
+            try {
+                if (!record.deleteAll()) {
+                    Timber.w("Erase: copies of ${record.name} remain on disk")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Erase: could not delete payload ${record.name}")
+            }
+        }
+    }
+
+    /**
+     * Reclaims the pages the erase freed.
+     *
+     * Deleting rows leaves their contents in the WAL and in unused pages of
+     * the database file, where they are still recoverable from a device
+     * backup. Checkpoint the WAL and VACUUM so an erase is an erase. Failure
+     * is logged rather than propagated - the data is already gone logically,
+     * and a failed VACUUM must not turn a completed wipe into an error.
+     */
+    private fun compactDatabase() {
+        try {
+            roomDb.openHelper.writableDatabase.apply {
+                execSQL("PRAGMA wal_checkpoint(TRUNCATE)")
+                execSQL("VACUUM")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Erase: could not compact the database")
+        }
+    }
+
     private fun clearWallet() {
         (activity as AppCompatActivity).confirm(label = "Are you sure?",
                 message = "All collections will be erased, Dojo/server disconnected and settings reset",
@@ -319,8 +367,13 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                             try {
                                 SentinelTorManager.stop()
                                 withContext(Dispatchers.IO) {
-                                    utxoDao.delete()
-                                    txDao.delete()
+                                    // #298: clearAllTables() instead of
+                                    // deleting the two tables by hand. The old
+                                    // pair missed tx_entropy, which kept a txid
+                                    // from the erased wallet, and would miss
+                                    // any table added later; Room's version is
+                                    // driven by the @Database entity list.
+                                    roomDb.clearAllTables()
                                     dojoUtility.clearDojo()
                                     prefsUtil.clearAll()
                                     // Clear the PIN state BEFORE reset() so the
@@ -330,6 +383,24 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                                     AccessFactory.getInstance(null).setPinProtected(false)
                                     collectionRepository.reset()
                                     UtxoMetaUtil.clearAll()
+                                    // #298: and now the files. Clearing the
+                                    // in-memory state above is not enough:
+                                    // every write rotates the previous payload
+                                    // to <name>.bak, so an erase left
+                                    // collections.payload.bak holding the real
+                                    // xpubs encrypted under the old PIN, plus
+                                    // fee.payload.bak and
+                                    // utxo.meta.payload.bak. deleteAll() takes
+                                    // the primary, the .bak and any staged
+                                    // .tmp, under the same lock the writers
+                                    // hold - the approach #208 already used
+                                    // for the Dojo payload.
+                                    erasePayloadFiles()
+                                    // #298: reclaim the pages the deletes
+                                    // freed, so the old rows cannot be read
+                                    // out of the WAL or unused pages of the db
+                                    // file.
+                                    compactDatabase()
                                     // #164: no second stop() here - the pre-wipe
                                     // stop above already owns the shutdown; a
                                     // posthumous second call re-published STOPPING
