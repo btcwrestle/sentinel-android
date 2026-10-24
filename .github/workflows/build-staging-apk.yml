@@ -216,7 +216,7 @@ jobs:
             fi
           done
           if [ "$missing" -ne 0 ]; then
-            echo "Tag builds require the release signing secrets listed above."
+            echo "::error::Refusing to publish ${GITHUB_REF_NAME}. Missing release signing secret(s). Set ANDROID_RELEASE_KEYSTORE_BASE64, ANDROID_RELEASE_STORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS, and ANDROID_RELEASE_KEY_PASSWORD. This tag build will not publish an APK."
             exit 1
           fi
 
@@ -247,11 +247,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/* && -z "${CI_RELEASE_KEYSTORE:-}" ]]; then
-            echo "CI_RELEASE_KEYSTORE is not set for this tag build."
-            exit 1
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [[ -z "${CI_RELEASE_KEYSTORE:-}" ]]; then
+              echo "::error::Refusing to publish ${GITHUB_REF_NAME}. CI_RELEASE_KEYSTORE is not set, so the APK would be unsigned."
+              exit 1
+            fi
+            version_name="${GITHUB_REF_NAME#v}"
+            if [[ -z "$version_name" || "$version_name" == "$GITHUB_REF_NAME" ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} must start with v."
+              exit 1
+            fi
+            ./gradlew --stacktrace :app:assembleStagingRelease \
+              -Psentinel.versionName="$version_name"
+          else
+            ./gradlew --stacktrace :app:assembleStagingRelease
           fi
-          ./gradlew --stacktrace :app:assembleStagingRelease
 
       - name: Check staging release APK
         shell: bash
@@ -282,12 +292,43 @@ jobs:
           fi
 
           base=$(basename "$apk")
+          badging=$("$aapt" dump badging "$apk")
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             if [ "$base" != "app-staging-release.apk" ]; then
               echo "::error::Tag publish expects a signed app-staging-release.apk (got $base)."
               exit 1
             fi
             "$apksigner" verify --print-certs "$apk"
+
+            # Same packing as sentinelVersionCode in app/build.gradle.
+            version_name="${GITHUB_REF_NAME#v}"
+            parts=()
+            while read -r n; do
+              parts+=("$n")
+            done < <(grep -oE '[0-9]+' <<< "$version_name")
+            major=${parts[0]:-0}
+            minor=${parts[1]:-0}
+            patch=${parts[2]:-0}
+            sequence=${parts[3]:-0}
+            if (( major > 200 || minor > 99 || patch > 99 || sequence > 999 )); then
+              echo "::error::Tag version ${version_name} does not fit versionCode."
+              exit 1
+            fi
+            version_code=$(( major * 10000000 + minor * 100000 + patch * 1000 + sequence ))
+            if (( version_code < 57 )); then
+              echo "::error::versionCode ${version_code} for ${version_name} is below 57."
+              exit 1
+            fi
+            if ! grep -F "versionName='${version_name}'" <<< "$badging" >/dev/null; then
+              echo "::error::APK versionName does not match ${version_name}."
+              echo "$badging" | grep '^package:' || true
+              exit 1
+            fi
+            if ! grep -F "versionCode='${version_code}'" <<< "$badging" >/dev/null; then
+              echo "::error::APK versionCode is not ${version_code}."
+              echo "$badging" | grep '^package:' || true
+              exit 1
+            fi
           fi
 
           mkdir -p release-artifacts
@@ -319,6 +360,11 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
       - name: Download APK artifact
         uses: actions/download-artifact@v8
         with:
@@ -348,9 +394,36 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == *..* || "$GITHUB_REF_NAME" == */* ]]; then
+            echo "::error::Tag name ${GITHUB_REF_NAME} is not a single path segment."
+            exit 1
+          fi
+
+          notes="$(mktemp)"
+          custom="release-notes/${GITHUB_REF_NAME}.md"
+          if [[ -f "$custom" ]]; then
+            cat "$custom" > "$notes"
+            printf '\n\n' >> "$notes"
+          fi
+          gh api --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            -f target_commitish="$GITHUB_SHA" \
+            --jq '.body // ""' >> "$notes"
+
+          # A hyphen after the version (including -dojobay.) is a pre-release
+          # suffix. Tags with no suffix are full releases.
+          version_name="${GITHUB_REF_NAME#v}"
+          prerelease=()
+          if [[ "$version_name" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+
           gh release create "$GITHUB_REF_NAME" \
             release-assets/*.apk \
             release-assets/SHA256SUMS.txt \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --prerelease
+            --notes-file "$notes" \
+            --verify-tag \
+            "${prerelease[@]}"

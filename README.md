@@ -108,20 +108,37 @@ Manual and imported labels always win over automatic ones.
 
 ## Releases
 
-Tagging a `v*` tag runs the release workflow. The tag job builds the staging
-release variant (`assembleStagingRelease`), signs it with the CI release
-keystore, and publishes that APK plus a SHA256SUMS.txt to GitHub Releases.
-The release variant is minified with R8. It installs as **Sentinel Beta**
-(applicationId `com.samourai.sentinel.staging`) and coexists with a production
-Sentinel install.
+Push a `v*` tag. Do not edit `versionName` or `versionCode` by hand.
+`v5.1.3-dojobay.N` builds the staging release variant, sets `versionName`
+to `5.1.3-dojobay.N` (the tag with the leading `v` removed), signs the APK,
+and attaches that APK plus `SHA256SUMS.txt` to the GitHub Release.
 
-The staging debug APK is still built for internal testing and uploaded as a
-short-lived Actions artifact. It is not attached to Releases.
+`versionCode` is packed from the tag so each later `N` installs as an update,
+and it never drops below the staging versionCode already shipped (57):
 
-First pipeline release: v5.1.3-dojobay.1 (staged as a prerelease; the app reports
-5.1.2 internally — the release-line decision is tracked in #66). Packages
-signed with a different certificate cannot update an existing install; uninstall
-that package before installing one signed by the release key.
+    major * 10000000 + minor * 100000 + patch * 1000 + sequence
+
+`sequence` is the fourth number (`N` in `dojobay.N`) and must stay at or
+below 999. `v5.1.3-dojobay.5` is versionCode `50103005`. The scheme is
+commented in `app/build.gradle`.
+
+A tag with a pre-release suffix — a hyphen after the version numbers,
+including `-dojobay.` — is a GitHub pre-release. A tag with no suffix is a
+full release. The release body is GitHub's generated notes since the
+previous tag. If `release-notes/<tag>.md` is in the tagged commit, that
+file is placed at the top. See `release-notes/README.md`.
+
+Branch and local builds keep the checked-in version name plus a short git
+revision, and they are not published. The release variant is minified with
+R8. It installs as **Sentinel Beta** (`com.samourai.sentinel.staging`) and
+coexists with a production Sentinel install.
+
+The staging debug APK is still built for internal testing and uploaded as
+an Actions artifact. It is not attached to Releases.
+
+The first install signed by the release certificate cannot replace a
+package signed by a different certificate. Uninstall that package once;
+later tags update in place.
 
 ### Release signing secrets
 
