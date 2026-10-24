@@ -17,7 +17,9 @@ import com.samourai.sentinel.api.ApiService
 import com.samourai.sentinel.core.NetworkClassifier
 import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.core.access.AccessFactory
+import com.samourai.sentinel.core.access.PinVault
 import com.samourai.sentinel.data.PubKeyCollection
+import com.samourai.sentinel.data.db.appWalletPayloads
 import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.databinding.ActivityImportBackUpBinding
 import com.samourai.sentinel.tor.EnumTorState
@@ -396,7 +398,11 @@ class ImportBackUpActivity : SentinelActivity() {
                         return@launch
                     }
 
-                    if (payload.second.get("pinEnabled").equals(true)) {
+                    // Older backups include a PIN verifier. Confirm it before
+                    // writing. A device that does not already have one then
+                    // stores that PIN in the current key format.
+                    val legacyPinHash = payload.second.optString("pinHash", "")
+                    if (payload.second.optBoolean("pinEnabled", false) && legacyPinHash.isNotEmpty()) {
                         if (supportFragmentManager.findFragmentByTag(TAG_IMPORT_PIN) != null) {
                             setImportBusy(false)
                             return@launch
@@ -407,11 +413,11 @@ class ImportBackUpActivity : SentinelActivity() {
                             purpose = LockScreenDialog.PURPOSE_IMPORT
                         )
                         importPinContinuation = { entered ->
-                            if (AccessFactory.getInstance(this@ImportBackUpActivity).validateHash(entered,
-                                    payload.second.get("pinHash").toString()
+                            if (AccessFactory.getInstance(this@ImportBackUpActivity).validateHash(
+                                    entered,
+                                    legacyPinHash
                                 )) {
                                 importPinContinuation = null
-                                AccessFactory.getInstance(this@ImportBackUpActivity).pin = entered
                                 lockScreenDialog.dismiss()
 
                                 // Hoisted OUT of the launch body: the
@@ -421,6 +427,10 @@ class ImportBackUpActivity : SentinelActivity() {
                                 var dojoPairingFailed = false
                                 viewModel.viewModelScope.launch(Dispatchers.IO + importExceptionHandler) {
                                     try {
+                                        PinVault(prefsUtil).protectFreshImport(
+                                            entered,
+                                            appWalletPayloads(filesDir)
+                                        )
                                         withContext(Dispatchers.Main) {
                                             binding.importPasswordInputLayout.visibility = View.INVISIBLE
                                             binding.importSentinelBackUpLayout.visibility = View.VISIBLE
