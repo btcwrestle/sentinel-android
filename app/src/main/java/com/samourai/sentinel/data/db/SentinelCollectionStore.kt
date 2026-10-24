@@ -2,6 +2,7 @@ package com.samourai.sentinel.data.db
 
 import android.content.Context
 import org.koin.java.KoinJavaComponent.inject
+import java.io.File
 
 
 class SentinelCollectionStore {
@@ -26,4 +27,15 @@ class SentinelCollectionStore {
         return PayloadRecord(storeLocation, "fee.payload")
     }
 
+}
+
+/** Every payload file whose bytes follow the PIN / data-key format. */
+fun appWalletPayloads(filesDir: File): List<PayloadRecord> {
+    val dir = "${filesDir.path}/app_wallet"
+    return listOf(
+        PayloadRecord(dir, "collections.payload"),
+        PayloadRecord(dir, "dojo.payload"),
+        PayloadRecord(dir, "utxo.meta.payload"),
+        PayloadRecord(dir, "fee.payload")
+    )
 }

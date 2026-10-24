@@ -2,6 +2,7 @@ package com.samourai.sentinel.ui.dojo
 
 import com.samourai.sentinel.api.TlsPolicy
 import com.samourai.sentinel.api.okHttp.await
+import com.samourai.sentinel.util.OkHttpLogRedaction
 import com.samourai.sentinel.helpers.fromJSON
 import com.samourai.sentinel.tor.SentinelTorManager
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,8 @@ object CommunityDojoRepository {
         val proxy = awaitProxy(maxWaitMs)
             ?: throw IllegalStateException("Tor is not connected")
 
+        // #304: directory client, not ApiService.buildClient.
+        OkHttpLogRedaction.install()
         val builder = OkHttpClient.Builder()
             .proxy(proxy)
             // #242: the fetch client was Tor-gated but installed no
