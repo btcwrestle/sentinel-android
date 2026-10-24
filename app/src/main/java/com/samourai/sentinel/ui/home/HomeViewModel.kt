@@ -345,6 +345,9 @@ class HomeViewModel : ViewModel() {
             // Publish cached collections IMMEDIATELY so the user sees their
             // wallets while any network work happens in the background.
             resultLiveData.value = collections
+            // Header total is the same cached sum the rows already show.
+            // updateBalance() otherwise waits for the first fetchUTXOS.
+            updateBalance()
 
             // #175/#174: an empty wallet with no endpoint configured has
             // no work that needs Tor - no WaitingForTor banner, no round,
