@@ -242,15 +242,11 @@ class PayloadRecord(private val location: String, val name: String) {
         if (key != null && key.isNotEmpty()) {
             return PayloadCipher.encrypt(value, key)
         }
-        val pin = access.pin
-        if (!pin.isNullOrEmpty()) {
-            return AESUtil.encryptSHA256(value, CharSequenceX(pin), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
-        }
-        // Writing plaintext while a PIN is configured produces a file that can
-        // never be decrypted on the next launch. Fail loudly instead.
-        if (access.isPinProtected) {
+        // A PIN-configured process writes with the data key. The previous
+        // format is still readable, but new bytes are not written that way.
+        if (access.isPinProtected || !access.pin.isNullOrEmpty()) {
             throw PayloadReadException(
-                "Refusing to write $name unencrypted while a PIN is configured"
+                "Refusing to write $name without the data key while a PIN is configured"
             )
         }
         return value

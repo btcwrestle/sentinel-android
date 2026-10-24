@@ -107,6 +107,23 @@ public class AccessFactory {
         isPinProtected = protectedFlag;
     }
 
+    /**
+     * #300: true only after this process has passed MainActivity's
+     * unlock (or the no-PIN path). A new process starts false, so an
+     * activity Android restores before the PIN cannot read payloads.
+     * Static on purpose: the Koin instance and getInstance() must agree,
+     * and both already share the PIN fields this way.
+     */
+    private static boolean sessionAdmitted = false;
+
+    public boolean isSessionAdmitted() {
+        return sessionAdmitted;
+    }
+
+    public void admitSession() {
+        sessionAdmitted = true;
+    }
+
 
     public void updatePin() {
         lastPin = System.currentTimeMillis();

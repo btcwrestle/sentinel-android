@@ -174,12 +174,15 @@ class TransactionsFragment : Fragment() {
             true
         }
 
-        binding.collectionBalanceFiat.visibility = if (prefsUtil.fiatDisabled!!) View.INVISIBLE else View.VISIBLE
+        binding.collectionBalanceFiat.visibility =
+            if (BalanceDisplayFormatter.showsFiat(
+                    BalanceDisplayMode.fromString(prefsUtil.balanceDisplayMode),
+                    prefsUtil.streetMode == true,
+                    prefsUtil.fiatDisabled == true
+                )
+            ) View.VISIBLE else View.INVISIBLE
         fiatBalanceLiveData.observe(viewLifecycleOwner, Observer {
-            if (isAdded) {
-                binding.collectionBalanceFiat.text = it
-                setBalance(-1)
-            }
+            if (isAdded) setBalance(indexPubSelected.value?.minus(1) ?: -1)
         })
         transactionsViewModel.getMessage().observe(
             this.viewLifecycleOwner
@@ -285,6 +288,11 @@ class TransactionsFragment : Fragment() {
                 BalanceDisplayFormatter.MASKED_TEXT
             else
                 getFiatBalance(sats, exchangeRateRepository.getRateLive().value)
+        binding.collectionBalanceFiat.visibility =
+            if (BalanceDisplayFormatter.showsFiat(
+                    mode, prefsUtil.streetMode == true, prefsUtil.fiatDisabled == true
+                )
+            ) View.VISIBLE else View.INVISIBLE
     }
 
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
@@ -328,7 +336,10 @@ class TransactionsFragment : Fragment() {
         val pubsChanged = fingerprint != lastPubsFingerprint
         this.collection = collection
         this.lastPubsFingerprint = fingerprint
-        if (isAdded) {
+        // #217: a restored fragment is added before its view exists.
+        // The binding work waits for onViewCreated, which calls the
+        // private initViewModel once this field is set.
+        if (view != null) {
             transactionsViewModel.setCollection(collection)
             if (!pagerWired) {
                 // Emission arrived after attach but before onViewCreated.
@@ -425,7 +436,7 @@ class TransactionsFragment : Fragment() {
 
         ) : FragmentStateAdapter(fragment) {
         override fun createFragment(position: Int): Fragment {
-            return TransactionsListFragment(position, collection)
+            return TransactionsListFragment.newInstance(position, collection)
         }
 
         override fun getItemCount(): Int {

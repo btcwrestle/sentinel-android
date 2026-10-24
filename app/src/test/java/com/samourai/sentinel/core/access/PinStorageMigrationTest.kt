@@ -4,8 +4,10 @@ import com.samourai.sentinel.data.db.PayloadCipher
 import com.samourai.sentinel.data.db.PayloadReadException
 import com.samourai.sentinel.data.db.PayloadRecord
 import com.samourai.sentinel.util.Hash
+import com.samourai.wallet.crypto.AESUtil
 import com.samourai.wallet.crypto.AesGcm
 import com.samourai.wallet.crypto.AuthTagException
+import com.samourai.wallet.util.CharSequenceX
 import org.bouncycastle.util.encoders.Base64
 import org.json.JSONObject
 import org.junit.After
@@ -41,14 +43,10 @@ class PinStorageMigrationTest {
         val collectionsPlain = """{"collections":[{"id":"wallet-1"}]}"""
         val dojoPlain = """{"pairing":{"url":"http://dojo.example","apikey":"node-key"}}"""
 
-        access.pin = PIN
-        access.setPinProtected(true)
-        collections.writeToFile(collectionsPlain)
-        dojo.writeToFile(dojoPlain)
+        writeLegacy(collections, collectionsPlain)
+        writeLegacy(dojo, dojoPlain)
         assertTrue(collections.file.readText().startsWith("U2FsdGVkX1"))
         assertTrue(dojo.file.readText().startsWith("U2FsdGVkX1"))
-        access.pin = null
-        access.setPinProtected(false)
 
         val store = MemoryPinMaterialStore()
         store.pinHash = legacyPinHash(PIN)
@@ -184,12 +182,8 @@ class PinStorageMigrationTest {
         val dir = tempDir()
         val record = PayloadRecord(dir.absolutePath, "collections.payload")
         val plain = """{"collections":[{"id":"legacy-enable"}]}"""
-        access.pin = PIN
-        access.setPinProtected(true)
-        record.writeToFile(plain)
+        writeLegacy(record, plain)
         val previous = record.file.readText()
-        access.pin = null
-        access.setPinProtected(false)
 
         val store = MemoryPinMaterialStore()
         store.pinHash = legacyPinHash(PIN)
@@ -212,6 +206,21 @@ class PinStorageMigrationTest {
         vault.markPayloadsCurrent()
         assertTrue(store.pinHash.isNullOrBlank())
         assertEquals(plain, record.decrypt(record.file.readText()))
+    }
+
+    @Test
+    fun writeRefusesPayloadWhenPinIsSetWithoutDataKey() {
+        val dir = tempDir()
+        val record = PayloadRecord(dir.absolutePath, "collections.payload")
+        access.pin = PIN
+        access.setPinProtected(true)
+        try {
+            record.writeToFile("""{"collections":[]}""")
+            fail("payload was written without a data key")
+        } catch (e: PayloadReadException) {
+            assertTrue(e.message!!.contains("data key"))
+        }
+        assertFalse(record.file.exists())
     }
 
     @Test
@@ -243,6 +252,17 @@ class PinStorageMigrationTest {
         dir.delete()
         dir.mkdirs()
         return dir
+    }
+
+    private fun writeLegacy(record: PayloadRecord, plain: String) {
+        record.file.parentFile?.mkdirs()
+        record.file.writeText(
+            AESUtil.encryptSHA256(
+                plain,
+                CharSequenceX(PIN),
+                AESUtil.DefaultPBKDF2HMACSHA256Iterations
+            )
+        )
     }
 
     private fun legacyPinHash(pin: String): String {

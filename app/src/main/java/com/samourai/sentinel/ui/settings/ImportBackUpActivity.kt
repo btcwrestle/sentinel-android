@@ -77,8 +77,7 @@ class ImportBackUpActivity : SentinelActivity() {
         Timber.e(t, "import failed")
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityImportBackUpBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)

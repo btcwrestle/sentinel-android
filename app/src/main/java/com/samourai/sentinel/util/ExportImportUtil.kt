@@ -30,6 +30,9 @@ import org.koin.java.KoinJavaComponent.inject
  *
  */
 
+class CollectionsNotLoadedException :
+    IllegalStateException("Collections have not been loaded in this process")
+
 class ExportImportUtil {
 
     private val txDao: TxDao by inject(TxDao::class.java);
@@ -41,6 +44,12 @@ class ExportImportUtil {
 
 
     fun makePayload(): JSONObject {
+        // #289: a process restored straight into Settings has never
+        // called CollectionRepository.read(). The snapshot is empty
+        // and the export used to report success anyway.
+        if (!collectionRepository.isPayloadLoaded()) {
+            throw CollectionsNotLoadedException()
+        }
         return JSONObject().apply {
             put("collections", JSONArray(collectionRepository.collectionsSnapshot().toJSON()))
             // export() leaves out unlock material and session tokens.

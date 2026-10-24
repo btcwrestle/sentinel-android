@@ -9,6 +9,7 @@ import androidx.fragment.app.FragmentTransaction
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.samourai.sentinel.R
+import com.samourai.sentinel.core.access.AccessFactory
 import com.samourai.sentinel.core.access.PinVault
 import com.samourai.sentinel.core.access.UnlockResult
 import com.samourai.sentinel.data.db.appWalletPayloads
@@ -31,6 +32,7 @@ class MainActivity : AppCompatActivity() {
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java);
     private val dojoUtil: DojoUtility by inject(DojoUtility::class.java);
+    private val accessFactory: AccessFactory by inject(AccessFactory::class.java);
     private val feeRepository: FeeRepository by inject(FeeRepository::class.java);
 
     private var dontDeleteFile = false;
@@ -109,6 +111,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun navigate() {
+        // #300: the only admit point. PIN success and the no-PIN path
+        // both come through here, and they come through here only
+        // after the lock (when there is one). Restored activities
+        // bounce back until this runs.
+        accessFactory.admitSession()
 
         if (!checkMigration()) {
             feeRepository.init()
