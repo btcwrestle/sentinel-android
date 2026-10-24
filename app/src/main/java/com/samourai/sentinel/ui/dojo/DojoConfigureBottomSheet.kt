@@ -36,6 +36,7 @@ import com.samourai.sentinel.ui.utils.AndroidUtil
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.utils.shouldAdmitScan
 import com.samourai.sentinel.ui.views.GenericBottomSheet
+import com.samourai.sentinel.util.OkHttpLogRedaction
 import com.samourai.sentinel.util.apiScope
 import kotlinx.coroutines.Dispatchers
 import androidx.lifecycle.lifecycleScope
@@ -110,6 +111,8 @@ fun pairingTorDecision(
  * kills an onion circuit build that can legitimately take minutes.
  */
 fun buildPairingClient(torProxy: Proxy): OkHttpClient {
+    // #304: this client does not go through ApiService.buildClient.
+    OkHttpLogRedaction.install()
     val builder = OkHttpClient.Builder()
     TlsPolicy.install(builder)
     builder.callTimeout(0, TimeUnit.MILLISECONDS)
@@ -659,25 +662,35 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
             client.newCall(request).enqueue(object : Callback {
 
                 override fun onResponse(call: Call, response: Response) {
-                    val body = response.body?.string() ?: "{}"
-                    if (response.code == 401 || (response.isSuccessful && !body.contains("authorizations"))) {
-                        Timber.d("Unauthorized: wrong API key")
-                        // #261: newly reachable AFTER consent - the
-                        // deliberate wording lives in dismissAllOrToast.
-                        dismissAllOrToast(false)
-                    }
-                    else if (response.isSuccessful) {
-                        // #261: consent is already spent - the Pair tap
-                        // preceded this response - so a 200 commits
-                        // directly. The gate has nothing left to decide
-                        // here (its old arm was the dialog, which now
-                        // opens on selection); the pairing and the auth
-                        // body ride the mainHandler closure into
-                        // commitPairing(), the exact commit body #234
-                        // gated and #256 receipted.
-                        mainHandler.post { commitPairing(pairing, JSONObject(body)) }
-                    }  else {
-                        dismissAllOrToast(false)
+                    // #293: this callback does not use Call.await. string()
+                    // closes on the success path; the finally covers a
+                    // throw before that, and a null body (close is a no-op).
+                    try {
+                        val body = response.body?.string() ?: "{}"
+                        if (response.code == 401 || (response.isSuccessful && !body.contains("authorizations"))) {
+                            Timber.d("Unauthorized: wrong API key")
+                            // #261: newly reachable AFTER consent - the
+                            // deliberate wording lives in dismissAllOrToast.
+                            dismissAllOrToast(false)
+                        }
+                        else if (response.isSuccessful) {
+                            // #261: consent is already spent - the Pair tap
+                            // preceded this response - so a 200 commits
+                            // directly. The gate has nothing left to decide
+                            // here (its old arm was the dialog, which now
+                            // opens on selection); the pairing and the auth
+                            // body ride the mainHandler closure into
+                            // commitPairing(), the exact commit body #234
+                            // gated and #256 receipted.
+                            mainHandler.post { commitPairing(pairing, JSONObject(body)) }
+                        }  else {
+                            dismissAllOrToast(false)
+                        }
+                    } finally {
+                        try {
+                            response.body?.close()
+                        } catch (_: Exception) {
+                        }
                     }
                 }
 
@@ -1044,14 +1057,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     private fun showCommunityDojoList() {
-        CommunityDojoListBottomSheet { selectedPayload ->
-            if (dojoUtil.validate(selectedPayload)) {
-                payload = selectedPayload
-                binding.pager.setCurrentItem(2, true)
-            } else {
-                Toast.makeText(requireContext(), getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
-            }
-        }.show(childFragmentManager, "community_dojo_list")
+        CommunityDojoListBottomSheet().show(childFragmentManager, "community_dojo_list")
     }
 
     private fun setUpTor() {

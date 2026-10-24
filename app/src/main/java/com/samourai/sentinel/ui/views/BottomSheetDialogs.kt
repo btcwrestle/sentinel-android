@@ -106,10 +106,6 @@ open class GenericBottomSheet() : BottomSheetDialogFragment() {
  * The typed answer is posted to [ARG_REQUEST_KEY] on the parent
  * FragmentManager via the Fragment Result API, so a recreated sheet still
  * delivers it to whoever re-registers.
- *
- * The legacy (label, onViewReady) constructor is kept as a bridge for the
- * one remaining direct call site (TransactionsDetailsBottomSheet's label
- * editor); it stores the lambda for this instance's lifetime only.
  */
 class InputBottomSheet() : GenericBottomSheet() {
 
@@ -129,14 +125,6 @@ class InputBottomSheet() : GenericBottomSheet() {
         get() = arguments?.getBoolean(ARG_EDITABLE, true) == true
     private val requestKey: String
         get() = arguments?.getString(ARG_REQUEST_KEY) ?: ""
-
-    /** #210 bridge: legacy shape for pre-#210 direct constructions. */
-    private var legacyViewReady: ((GenericBottomSheet) -> Unit)? = null
-
-    constructor(label: String, onViewReady: (GenericBottomSheet) -> Unit) : this() {
-        arguments = (arguments ?: Bundle()).apply { putString(ARG_LABEL, label) }
-        legacyViewReady = onViewReady
-    }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -184,9 +172,6 @@ class InputBottomSheet() : GenericBottomSheet() {
             )
             dismiss()
         }
-        // #210 bridge: invoked after self-wiring so a legacy lambda can
-        // still override any of the defaults above, exactly as before.
-        legacyViewReady?.invoke(this)
 
         textInput?.requestFocus()
         val inputMethodManager = context?.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -329,24 +314,9 @@ class ConfirmBottomSheet : GenericBottomSheet() {
 }
 
 /**
- * #210: label / txId travel in `arguments`. The legacy constructor is kept
- * as a bridge so BroadcastTx and the sweep preview (crypto-critical, this
- * PR deliberately does not touch that file) compile unchanged; it converts
- * to arguments, and the legacy lambda is stored for this instance's
- * lifetime only - both remaining call sites pass no-ops, so a restored
- * sheet simply doesn't invoke it. Follow-up migrates both to newInstance.
+ * #210: label / txId travel in `arguments`.
  */
 class SuccessfulBottomSheet() : GenericBottomSheet() {
-
-    private var legacyViewReady: ((GenericBottomSheet) -> Unit)? = null
-
-    constructor(label: String, txId: String, onViewReady: (GenericBottomSheet) -> Unit) : this() {
-        arguments = (arguments ?: Bundle()).apply {
-            putString(ARG_LABEL, label)
-            putString(ARG_TX_ID, txId)
-        }
-        legacyViewReady = onViewReady
-    }
 
     private val label: String
         get() = arguments?.getString(ARG_LABEL) ?: ""
@@ -362,11 +332,6 @@ class SuccessfulBottomSheet() : GenericBottomSheet() {
         view.findViewById<TextView>(R.id.dialogTitle).text = label
         view.findViewById<TextView>(R.id.transactionID).text = txId
         return view
-    }
-
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        legacyViewReady?.invoke(this)
     }
 
     override fun onDismiss(dialog: DialogInterface) {

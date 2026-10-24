@@ -1,16 +1,16 @@
 package com.samourai.sentinel.core.access;
 
 import android.content.Context;
-import android.util.Log;
+
+import androidx.annotation.Nullable;
 
 import com.samourai.sentinel.util.Hash;
 
 import org.jetbrains.annotations.NotNull;
 
-import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 
 //import android.util.Log;
 
@@ -25,6 +25,7 @@ public class AccessFactory {
     private static boolean isLoggedIn = false;
     private static String _pin = "";
     private static boolean isPinProtected = false;
+    private static byte[] dataKey = null;
 
     private static AccessFactory instance = null;
 
@@ -44,11 +45,35 @@ public class AccessFactory {
     }
 
 
+    /**
+     * Previous PIN verifier. New installs do not store one. Still used to
+     * recognise a correct PIN while an older install is migrated.
+     */
     public boolean validateHash(@NotNull String pin, String pinHash) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         byte[] b = digest.digest(pin.getBytes(StandardCharsets.UTF_8));
         Hash hash = new Hash(b);
         return hash.toString().equals(pinHash);
+    }
+
+    /**
+     * Unlocked payload key for this process. Null until a PIN is entered,
+     * and null when payload files are stored without a PIN.
+     */
+    @Nullable
+    public byte[] getDataKey() {
+        return dataKey;
+    }
+
+    public void setDataKey(@Nullable byte[] key) {
+        if (dataKey != null && dataKey != key) {
+            Arrays.fill(dataKey, (byte) 0);
+        }
+        dataKey = key;
+    }
+
+    public void clearDataKey() {
+        setDataKey(null);
     }
 
     public String getPin() {
@@ -80,6 +105,23 @@ public class AccessFactory {
 
     public void setPinProtected(boolean protectedFlag) {
         isPinProtected = protectedFlag;
+    }
+
+    /**
+     * #300: true only after this process has passed MainActivity's
+     * unlock (or the no-PIN path). A new process starts false, so an
+     * activity Android restores before the PIN cannot read payloads.
+     * Static on purpose: the Koin instance and getInstance() must agree,
+     * and both already share the PIN fields this way.
+     */
+    private static boolean sessionAdmitted = false;
+
+    public boolean isSessionAdmitted() {
+        return sessionAdmitted;
+    }
+
+    public void admitSession() {
+        sessionAdmitted = true;
     }
 
 

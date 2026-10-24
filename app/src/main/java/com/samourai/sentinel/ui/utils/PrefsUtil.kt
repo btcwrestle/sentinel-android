@@ -20,6 +20,19 @@ const val FIRST_RUN = "1stRun"
 const val SIM_IMSI = "IMSI"
 const val ENABLE_TOR = "ENABLE_TOR"
 const val PIN_HASH = "pinHash"
+
+/**
+ * Not written into a backup. Unlock material stays on the device, and
+ * session tokens are re-issued after a Dojo restore. [pinEnabled] is
+ * omitted with them so a restore does not claim a PIN it cannot open.
+ */
+val PREFS_OMITTED_FROM_BACKUP = setOf(
+    "pinHash",
+    "pinEnabled",
+    "pinKeyMaterial",
+    "authorization",
+    "refreshToken",
+)
 const val XPUB = "xpub"
 const val SCRAMBLE_PIN = "scramblePin"
 const val HAPTIC_PIN = "hapticPin"
@@ -38,11 +51,17 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
     var haptics by booleanPref(defaultValue = false)
     var streetMode by booleanPref(defaultValue = false)
     var balanceDisplayMode by stringPref(defaultValue = "BTC")
-    var pinHash by stringPref(defaultValue = "")
+    // commitWrite: the wrapped key has to be durable before payload files
+    // are rewritten, and apply() can still be sitting in a buffer if the
+    // process is killed in that window.
+    var pinHash by stringPref(defaultValue = "", commitWrite = true)
+    // Argon2id wrap of the payload data key. Empty until a PIN is set
+    // with the current format (or an older install is migrated).
+    var pinKeyMaterial by stringPref(defaultValue = "", commitWrite = true)
     var displaySecure by booleanPref(defaultValue = false)
     var scramblePin by booleanPref(defaultValue = false)
     var fiatDisabled by booleanPref(defaultValue = false)
-    var pinEnabled by booleanPref(defaultValue = false)
+    var pinEnabled by booleanPref(defaultValue = false, commitWrite = true)
     var authorization by stringPref(defaultValue = "")
     var exchangeSelection by stringPref(defaultValue = "coingecko.com")
     var exchangeRate by longPref(defaultValue = 1L)
@@ -96,6 +115,11 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
         return !this.apiEndPointTor.isNullOrEmpty() && !this.apiEndPoint.isNullOrEmpty()
     }
 
+    /** True when an unlock step is required, including an install that still has the previous verifier. */
+    fun isPinConfigured(): Boolean {
+        return !pinKeyMaterial.isNullOrBlank() || !pinHash.isNullOrBlank()
+    }
+
 
     /**
      * Creates json object using reflection
@@ -104,6 +128,9 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
         val clazz = this.javaClass.kotlin
         val payload = JSONObject()
         clazz.declaredMemberProperties.forEach {
+            if (it.name in PREFS_OMITTED_FROM_BACKUP) {
+                return@forEach
+            }
             // Deliberate omission, not JSONObject.NULL (#81 residue):
             // org.json's put(name, null) removes the mapping, so
             // null-valued string prefs (apiEndPoint, apiEndPointTor,
@@ -121,9 +148,10 @@ class PrefsUtil(context: Context) : Preferences(context, "${context.packageName}
      */
     fun import(payload: JSONObject): JSONObject {
         val clazz = this.javaClass.kotlin
+        val skip = PREFS_OMITTED_FROM_BACKUP + setOf("apiEndPoint", "apiEndPointTor")
         payload.keys().forEach { key ->
             clazz.declaredMemberProperties.forEach {
-                if(it.name == key && it.name != "apiEndPoint" && it.name != "apiEndPointTor" && it.name != "authorization"){
+                if (it.name == key && it.name !in skip) {
                     if (it is KMutableProperty<*>) {
                         try {
                             it.setter.call(this@PrefsUtil,payload[key])
@@ -175,8 +203,12 @@ abstract class Preferences(private var context: Context, private val name: Strin
         StringSet
     }
 
-    inner class GenericPrefDelegate<T>(prefKey: String? = null, private val defaultValue: T?, val type: StorableType) :
-            PrefDelegate<T?>(prefKey) {
+    inner class GenericPrefDelegate<T>(
+        prefKey: String? = null,
+        private val defaultValue: T?,
+        val type: StorableType,
+        private val commitWrite: Boolean = false
+    ) : PrefDelegate<T?>(prefKey) {
         override fun getValue(thisRef: Any?, property: KProperty<*>): T? =
                 when (type) {
                     StorableType.String ->
@@ -196,33 +228,29 @@ abstract class Preferences(private var context: Context, private val name: Strin
 
         override fun setValue(thisRef: Any?, property: KProperty<*>, value: T?) {
             listeners.forEach { it.onSharedPrefChanged(property) }
+            val editor = prefs.edit()
+            val key = prefKey ?: property.name
             when (type) {
-                StorableType.String -> {
-                    prefs.edit().putString(prefKey ?: property.name, value as String?).apply()
+                StorableType.String -> editor.putString(key, value as String?)
+                StorableType.Int -> editor.putInt(key, value as Int)
+                StorableType.Float -> editor.putFloat(key, value as Float)
+                StorableType.Boolean -> editor.putBoolean(key, value as Boolean)
+                StorableType.Long -> editor.putLong(key, value as Long)
+                StorableType.StringSet -> editor.putStringSet(key, value as Set<String>)
+            }
+            if (commitWrite) {
+                if (!editor.commit()) {
+                    throw IllegalStateException("Could not store $key")
                 }
-                StorableType.Int -> {
-                    prefs.edit().putInt(prefKey ?: property.name, value as Int).apply()
-                }
-                StorableType.Float -> {
-                    prefs.edit().putFloat(prefKey ?: property.name, value as Float).apply()
-                }
-                StorableType.Boolean -> {
-                    prefs.edit().putBoolean(prefKey ?: property.name, value as Boolean).apply()
-                }
-                StorableType.Long -> {
-                    prefs.edit().putLong(prefKey ?: property.name, value as Long).apply()
-                }
-                StorableType.StringSet -> {
-                    prefs.edit().putStringSet(prefKey
-                            ?: property.name, value as Set<String>).apply()
-                }
+            } else {
+                editor.apply()
             }
         }
 
     }
 
-    fun stringPref(prefKey: String? = null, defaultValue: String? = null) =
-            GenericPrefDelegate(prefKey, defaultValue, StorableType.String)
+    fun stringPref(prefKey: String? = null, defaultValue: String? = null, commitWrite: Boolean = false) =
+            GenericPrefDelegate(prefKey, defaultValue, StorableType.String, commitWrite)
 
     fun intPref(prefKey: String? = null, defaultValue: Int = 0) =
             GenericPrefDelegate(prefKey, defaultValue, StorableType.Int)
@@ -230,8 +258,8 @@ abstract class Preferences(private var context: Context, private val name: Strin
     fun floatPref(prefKey: String? = null, defaultValue: Float = 0f) =
             GenericPrefDelegate(prefKey, defaultValue, StorableType.Float)
 
-    fun booleanPref(prefKey: String? = null, defaultValue: Boolean = false) =
-            GenericPrefDelegate(prefKey, defaultValue, StorableType.Boolean).let { it }
+    fun booleanPref(prefKey: String? = null, defaultValue: Boolean = false, commitWrite: Boolean = false) =
+            GenericPrefDelegate(prefKey, defaultValue, StorableType.Boolean, commitWrite)
 
     fun longPref(prefKey: String? = null, defaultValue: Long = 0L) =
             GenericPrefDelegate(prefKey, defaultValue, StorableType.Long)

@@ -15,8 +15,7 @@ import com.samourai.sentinel.ui.SentinelActivity
 class ToolsActivity : SentinelActivity(), PreferenceFragmentCompat.OnPreferenceStartFragmentCallback {
 
     private lateinit var binding: ToolsActivityLayoutBinding
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ToolsActivityLayoutBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)

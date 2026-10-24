@@ -1,8 +1,12 @@
 package com.samourai.sentinel.util
 
+import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import timber.log.Timber
 import timber.log.Timber.DebugTree
+import java.util.logging.Filter
+import java.util.logging.LogRecord
+import java.util.logging.Logger
 
 /**
  * Redaction at the logging boundary (#264/#96).
@@ -62,6 +66,39 @@ object LogRedaction {
      */
     private val AT_TOKEN = Regex("\\bat=[^&\\s\"']+")
 
+    /**
+     * The same access token as JSON: `"at":"..."`, plus the auth-body
+     * fields `access_token` and `refresh_token`. The query rule above
+     * does not match this shape. The key is kept so the line stays
+     * readable; only the value is replaced.
+     */
+    private val JSON_TOKEN_FIELD = Regex(
+        "\"(at|access_token|refresh_token)\"\\s*:\\s*\"[^\"]*\""
+    )
+
+    /**
+     * Subscribe payloads put the watched value in `"addr"`. Mask the
+     * whole field so the format (address, xpub, or anything else)
+     * does not matter.
+     */
+    private val JSON_ADDR_FIELD = Regex("\"addr\"\\s*:\\s*\"[^\"]*\"")
+
+    /**
+     * Bech32 addresses (bc1 / tb1 / bcrt1). The 14-char data floor
+     * leaves short fragments like "bc1q" alone. Case-insensitive:
+     * BIP173 allows an all-uppercase form.
+     */
+    private val BECH32_ADDR = Regex(
+        "\\b(?:bcrt1|bc1|tb1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{14,}\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Base58 addresses (mainnet 1/3, testnet m/n/2). Total length
+     * 26-35. Shorter digit runs stay visible.
+     */
+    private val BASE58_ADDR = Regex("\\b[13mn2][1-9A-HJ-NP-Za-km-z]{25,34}\\b")
+
     /** Applies every rule, in order, to one log line. */
     fun redact(message: String): String =
         message
@@ -69,6 +106,12 @@ object LogRedaction {
             .replace(HEX_64, "HEX_REDACTED")
             .replace(XPUB, "XPUB_REDACTED")
             .replace(AT_TOKEN, "at=REDACTED")
+            .replace(JSON_TOKEN_FIELD) { match ->
+                "\"${match.groupValues[1]}\":\"REDACTED\""
+            }
+            .replace(JSON_ADDR_FIELD, "\"addr\":\"REDACTED\"")
+            .replace(BECH32_ADDR, "ADDR_REDACTED")
+            .replace(BASE58_ADDR, "ADDR_REDACTED")
 }
 
 /**
@@ -100,5 +143,50 @@ class MaskedHttpLogger : HttpLoggingInterceptor.Logger {
 class MaskingDebugTree : DebugTree() {
     override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
         super.log(priority, tag, LogRedaction.redact(message), t)
+    }
+}
+
+/**
+ * #304: OkHttp's connection-pool leak warning does not cross Timber,
+ * [MaskedHttpLogger], or any `android.util.Log` call this app owns.
+ * `RealConnectionPool` calls `Platform.logCloseableLeak`, and
+ * `Platform.log` writes `java.util.logging` logger `okhttp3.OkHttpClient`.
+ * On Android, OkHttp's `AndroidLog` bridges that logger to logcat with
+ * tag `okhttp.OkHttpClient` and `useParentHandlers = false`. The record
+ * is filtered before any handler runs (including that bridge), so
+ * redacting here covers the leak line and every other message on the
+ * same logger (callback failures, the "set level to FINE" hint).
+ *
+ * The filter mutates the record and still returns true: the warning
+ * stays, the Dojo URL does not. Silencing the logger would hide the
+ * leak that #293 exists to remove.
+ */
+object OkHttpLogRedaction {
+    private val redacting = Filter { record ->
+        try {
+            redact(record)
+        } catch (_: Exception) {
+            // A failure here must not publish the original record.
+            record.message = "okhttp log redaction failed"
+            record.thrown = null
+        }
+        true
+    }
+
+    /** Idempotent. Safe to call from every Dojo client builder. */
+    fun install() {
+        Logger.getLogger(OkHttpClient::class.java.name).filter = redacting
+    }
+
+    internal fun redact(record: LogRecord) {
+        record.message?.let { raw ->
+            val redacted = LogRedaction.redact(raw)
+            if (redacted != raw) record.message = redacted
+        }
+        val thrown = record.thrown ?: return
+        val rendered = thrown.stackTraceToString()
+        val redacted = LogRedaction.redact(rendered)
+        if (redacted == rendered) return
+        record.thrown = Throwable(redacted).also { it.stackTrace = emptyArray() }
     }
 }
