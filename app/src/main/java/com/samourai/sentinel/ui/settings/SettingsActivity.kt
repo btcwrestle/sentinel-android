@@ -3,6 +3,7 @@ package com.samourai.sentinel.ui.settings
 import android.content.Intent
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.transition.Fade
@@ -31,6 +32,28 @@ class SettingsActivity : SentinelActivity(),
             showFragment(MainSettingsFragment())
         }
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
+    }
+
+    /**
+     * #296: hides or restores everything behind the PIN pad for accessibility
+     * services.
+     *
+     * The pad is added to android.R.id.content, so it sits as a sibling of
+     * this activity's content root rather than replacing it. It covers the
+     * screen visually, but the preference rows and the toolbar's "Navigate
+     * up" stayed in the accessibility tree as clickable nodes - a TalkBack
+     * user could reach, and potentially activate, controls they cannot see,
+     * and text-based UI automation matched them too.
+     *
+     * NO_HIDE_DESCENDANTS on the content root takes the whole screen behind
+     * the pad out of the tree in one step, leaving only the pad reachable.
+     * That matches the launch lock screen, where MainActivity happens to have
+     * nothing behind the pad to expose.
+     */
+    fun setContentHiddenFromAccessibility(hidden: Boolean) {
+        binding.root.importantForAccessibility =
+            if (hidden) View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            else View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
     }
 
     private fun showFragment(fragment: PreferenceFragmentCompat) {
