@@ -27,6 +27,7 @@ import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.webview.ExplorerRepository
 import com.samourai.sentinel.util.LogRedaction
 import com.samourai.sentinel.util.MaskingDebugTree
+import com.samourai.sentinel.util.OkHttpLogRedaction
 import com.samourai.sentinel.util.MonetaryUtil
 import com.samourai.sentinel.util.apiScope
 import com.samourai.sentinel.util.dataBaseScope
@@ -47,6 +48,12 @@ class SentinelApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // #304: before any OkHttpClient. The leak warning is logged
+        // later, on the pool thread, but the filter has to be in place
+        // first. Client builders install again; this covers paths that
+        // never go through them (WebUtil).
+        OkHttpLogRedaction.install()
 
         setUpChannels()
         initializeDI()
