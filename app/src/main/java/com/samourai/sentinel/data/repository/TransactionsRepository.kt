@@ -52,6 +52,16 @@ import timber.log.Timber
  * Tx data will be saved in a separate file
  * transactions that belongs to collection will be stored in a separate file
  */
+
+/**
+ * #226. An empty reconcile deletes every row for the collection.
+ * That is right for a real empty wallet and wrong for a flaky round
+ * whose body parsed but carried no fee table (txs) or omitted
+ * unspent_outputs (the utxo-only fetch). A non-empty list always writes.
+ */
+internal fun emptyReconcileAllowed(itemCount: Int, provenEmpty: Boolean): Boolean =
+    itemCount > 0 || provenEmpty
+
 class TransactionsRepository {
 
     private val txDao: TxDao by inject(TxDao::class.java)
@@ -109,6 +119,9 @@ class TransactionsRepository {
                 ?: return@withContext
             var newTransactions: ArrayList<Tx> = arrayListOf();
             val utxos: ArrayList<Utxo> = arrayListOf();
+            // #226: a fee table is the healthy-round signal. {} is the
+            // flaky shape that wiped local history while utxos survived.
+            var sawFeeTable = false
             val jobs: ArrayList<Deferred<Response>> = arrayListOf()
             collection.pubs.forEach {
                 val item = apiScope.async {
@@ -133,6 +146,7 @@ class TransactionsRepository {
                         }
                         val response: WalletResponse = fromJSON<WalletResponse>(resString)!!
                         Timber.i("fetchFromServer: ${response.info.fees}")
+                        if (!response.info.fees.isNullOrEmpty()) sawFeeTable = true
                         response.info.fees?.let { it1 -> feeRepository.parse(it1) }
                         SentinelState.blockHeight = response.info.latest_block
                         var latestBlockHeight = 1L
@@ -243,8 +257,24 @@ class TransactionsRepository {
                 newTransactions.map { it.copy() }
             } else null
             newTransactions = keepTransactionWithVariousPubkeys(newTransactions)
-            saveTx(newTransactions, collectionId)
-            saveUtxos(utxos, collectionId)
+            // #226: empty set still means empty wallet, but only after a
+            // round that carried a fee table. Otherwise skip the write.
+            if (emptyReconcileAllowed(newTransactions.size, sawFeeTable)) {
+                if (newTransactions.isEmpty()) {
+                    Timber.w("fetchFromServer: empty tx round with a fee table; wiping $collectionId")
+                }
+                saveTx(newTransactions, collectionId)
+            } else {
+                Timber.w("fetchFromServer: empty tx round without a fee table; not wiping $collectionId")
+            }
+            if (emptyReconcileAllowed(utxos.size, sawFeeTable)) {
+                if (utxos.isEmpty()) {
+                    Timber.w("fetchFromServer: empty utxo round with a fee table; wiping $collectionId")
+                }
+                saveUtxos(utxos, collectionId)
+            } else {
+                Timber.w("fetchFromServer: empty utxo round without a fee table; not wiping $collectionId")
+            }
             // #198: the label engine runs AFTER the inserts - the tx
             // table is populated while labels compute and the tx list
             // renders as soon as the inserts land; labels follow off
@@ -468,6 +498,8 @@ class TransactionsRepository {
             val collection = collectionRepository.findById(collectionId)
                 ?: return@withContext
             val utxos: ArrayList<Utxo> = arrayListOf();
+            // #226: an omitted unspent_outputs field is not an empty wallet.
+            var sawUnspentField = false
             val jobs: ArrayList<Deferred<Response>> = arrayListOf()
             collection.pubs.forEach {
                 val item = apiScope.async {
@@ -487,6 +519,7 @@ class TransactionsRepository {
                         val response: WalletResponse = fromJSON<WalletResponse>(resString)!!
 
                         response.unspent_outputs?.let {
+                            sawUnspentField = true
                             val list = response.unspent_outputs.toMutableList().map {
                                 it.pubKey = pubKeyAssociated.pubKey
                                 it.idx = "${it.txHash}:${it.txOutputN}"
@@ -499,16 +532,39 @@ class TransactionsRepository {
                             utxos.addAll(list)
                         }
                     }
-                } catch (e: Exception) { Timber.e(e) }
+                } catch (e: Exception) {
+                    // #287: same wall as fetchFromServer. A swallowed
+                    // failure used to fall through to saveUtxos with an
+                    // empty or partial list.
+                    throw e
+                }
             }
 
             // #202: no pre-wipe - saveUtxos below reconciles inside
             // UtxoDao.upsertCollectionUtxos, one transaction.
-            saveUtxos(utxos, collectionId)
+            // #287: this line is reached only when every pubkey job
+            // returned. A throw above skips it, so a failed fetch
+            // cannot delete rows or do-not-spend marks.
+            // #226: a returned job that omitted unspent_outputs is not
+            // an empty wallet. Only a present field (even []) wipes.
+            if (emptyReconcileAllowed(utxos.size, sawUnspentField)) {
+                if (utxos.isEmpty()) {
+                    Timber.w("fetchUTXOS: empty round with an unspent field; wiping $collectionId")
+                }
+                saveUtxos(utxos, collectionId)
+            } else {
+                Timber.w("fetchUTXOS: empty round without an unspent field; not wiping $collectionId")
+            }
         } catch (e: ApiNotConfigured) {
+            // #103: degrade, no rethrow. The throw left the loop
+            // before saveUtxos, so nothing is reconciled.
             Timber.e(e)
         } catch (e: Exception) {
+            // #287: rethrow so syncCollections counts the collection
+            // failed. Swallowing here was the Success banner over a
+            // wiped utxo table.
             Timber.e(e)
+            throw e
         }
     }
     }

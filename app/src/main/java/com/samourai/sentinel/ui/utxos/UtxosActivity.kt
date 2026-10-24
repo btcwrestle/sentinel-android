@@ -23,13 +23,20 @@ class UtxosActivity : SentinelActivity() {
     private lateinit var binding: ActivityUtxosBinding
     private var indexPubSelected = -1
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityUtxosBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
         setSupportActionBar(findViewById(R.id.toolbar))
         checkIntent()
+        // #291: a missing collection used to finish() and then fall
+        // through to collection!!. The #300 gate keeps this method
+        // from running before the process is admitted; a stale id in
+        // an admitted process still has to return.
+        if (collection == null) {
+            if (!isFinishing) finish()
+            return
+        }
         setUpToolbar()
 
         val utxoViewModel: UtxoActivityViewModel by viewModels(factoryProducer = { UtxoActivityViewModel.getFactory(collection!!) })

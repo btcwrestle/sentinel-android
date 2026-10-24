@@ -237,3 +237,19 @@ class FeeRepository : FeeUtil() {
         suggestedFee = fee
     }
 }
+
+/**
+ * #305 / #306. sat/vB.
+ *
+ * Adjacent tiers that collapsed (Low==Med, or Med==High, but not all
+ * three) take Normal as the Low/High average. Three distinct tiers
+ * keep the server Normal. The all-equal 0.85/1.15 spread is the
+ * caller's other branch and must not be passed in as if it were this
+ * case.
+ *
+ * Callers store the returned value times 1000 as per-KB. The pre-fix
+ * branches stored High, so a user who picked Normal paid the High rate
+ * whenever the tiers were not identical.
+ */
+fun collapsedNormalPerVb(low: Long, med: Long, high: Long): Long =
+    if (low == med || med == high) (low + high) / 2L else med

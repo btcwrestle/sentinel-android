@@ -1057,14 +1057,7 @@ class DojoConfigureBottomSheet : GenericBottomSheet() {
     }
 
     private fun showCommunityDojoList() {
-        CommunityDojoListBottomSheet { selectedPayload ->
-            if (dojoUtil.validate(selectedPayload)) {
-                payload = selectedPayload
-                binding.pager.setCurrentItem(2, true)
-            } else {
-                Toast.makeText(requireContext(), getString(R.string.invalid_pairing_payload), Toast.LENGTH_SHORT).show()
-            }
-        }.show(childFragmentManager, "community_dojo_list")
+        CommunityDojoListBottomSheet().show(childFragmentManager, "community_dojo_list")
     }
 
     private fun setUpTor() {

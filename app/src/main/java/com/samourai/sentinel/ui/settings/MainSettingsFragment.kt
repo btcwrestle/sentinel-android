@@ -20,8 +20,7 @@ import androidx.preference.PreferenceFragmentCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.samourai.sentinel.R
 import com.samourai.sentinel.core.access.AccessFactory
-import com.samourai.sentinel.data.db.dao.TxDao
-import com.samourai.sentinel.data.db.dao.UtxoDao
+import com.samourai.sentinel.data.db.SentinelRoomDb
 import com.samourai.sentinel.data.repository.Bip329Exporter
 import com.samourai.sentinel.data.repository.Bip329Importer
 import com.samourai.sentinel.ui.fragments.ImportLabelsScanBottomSheet
@@ -40,6 +39,7 @@ import com.samourai.sentinel.ui.views.LockScreenDialog
 import com.samourai.sentinel.ui.views.alertWithInput
 import com.samourai.sentinel.ui.views.confirm
 import com.samourai.sentinel.ui.webview.ExplorerRepository
+import com.samourai.sentinel.util.CollectionsNotLoadedException
 import com.samourai.sentinel.util.ExportImportUtil
 import com.samourai.sentinel.util.Hash
 import com.samourai.sentinel.util.UtxoMetaUtil
@@ -52,6 +52,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
+import timber.log.Timber
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.File
@@ -68,8 +69,7 @@ import java.util.Locale
 class MainSettingsFragment : PreferenceFragmentCompat() {
 
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java);
-    private val txDao: TxDao by inject(TxDao::class.java);
-    private val utxoDao: UtxoDao by inject(UtxoDao::class.java);
+    private val roomDb: SentinelRoomDb by inject(SentinelRoomDb::class.java);
     private val accessFactory: AccessFactory by inject(AccessFactory::class.java);
     private val collectionRepository: CollectionRepository by inject(CollectionRepository::class.java);
     private val exchangeRateRepository: ExchangeRateRepository by inject(ExchangeRateRepository::class.java);
@@ -317,8 +317,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                             try {
                                 SentinelTorManager.stop()
                                 withContext(Dispatchers.IO) {
-                                    utxoDao.delete()
-                                    txDao.delete()
+                                    roomDb.eraseStoredRows()
                                     dojoUtility.clearDojo()
                                     prefsUtil.clearAll()
                                     // Clear the PIN state BEFORE reset() so the
@@ -466,7 +465,20 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
     private fun export() {
         fun makeExportPayload(copyToClipBoard: Boolean) {
             settingsScope.launch(Dispatchers.IO) {
-                val payload = ExportImportUtil().makePayload()
+                val payload = try {
+                    ExportImportUtil().makePayload()
+                } catch (e: CollectionsNotLoadedException) {
+                    // #289: do not offer a password for an empty snapshot.
+                    Timber.e(e, "export refused: collections not loaded")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "Backup not created. Unlock the wallet and try again.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@launch
+                }
                 withContext(Dispatchers.Main) {
                     (activity as SentinelActivity).alertWithInput(labelEditText = "Password",
                             buttonLabel = "Encrypt",

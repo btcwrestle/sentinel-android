@@ -91,6 +91,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun navigate() {
+        // #300: the only admit point. PIN success and the no-PIN path
+        // both come through here, and they come through here only
+        // after the lock (when there is one). Restored activities
+        // bounce back until this runs.
+        accessFactory.admitSession()
 
         if (!checkMigration()) {
             feeRepository.init()

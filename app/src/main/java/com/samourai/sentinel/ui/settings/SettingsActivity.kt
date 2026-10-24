@@ -22,8 +22,7 @@ class SettingsActivity : SentinelActivity(),
     private lateinit var binding: SettingsActivityBinding
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = SettingsActivityBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
