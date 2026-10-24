@@ -35,6 +35,7 @@ import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.home.HomeActivity
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
+import com.samourai.sentinel.ui.utils.startDocumentPickerForResult
 import com.samourai.sentinel.ui.views.BalanceHelpDialog
 import com.samourai.sentinel.ui.views.LockScreenDialog
 import com.samourai.sentinel.ui.views.alertWithInput
@@ -517,7 +518,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                             val current = Calendar.getInstance().time
                             val formatter = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault())
                             intent.putExtra(Intent.EXTRA_TITLE, "sentinel_backup_${formatter.format(current)}.txt")
-                            startActivityForResult(intent, REQ_CODE_WRITE_BACKUP)
+                            startDocumentPickerForResult(intent, REQ_CODE_WRITE_BACKUP)
                         }
                     })
                 }
@@ -548,7 +549,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                 Intent.EXTRA_MIME_TYPES,
                 arrayOf("application/json", "text/plain", "application/octet-stream")
         )
-        startActivityForResult(intent, REQ_CODE_IMPORT_LABELS)
+        startDocumentPickerForResult(intent, REQ_CODE_IMPORT_LABELS)
     }
 
     private fun exportLabels() {
@@ -556,7 +557,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         intent.addCategory(Intent.CATEGORY_OPENABLE)
         intent.type = "application/octet-stream"
         intent.putExtra(Intent.EXTRA_TITLE, "labels.jsonl")
-        startActivityForResult(intent, REQ_CODE_EXPORT_LABELS)
+        startDocumentPickerForResult(intent, REQ_CODE_EXPORT_LABELS)
     }
 
     private fun importLabelsFrom(uri: Uri) {
