@@ -6,6 +6,93 @@ apply plugin: 'kotlin-android'
 apply plugin: 'com.google.devtools.ksp'
 apply plugin: 'kotlin-parcelize'
 
+// Tagged staging builds (see .github/workflows/build-staging-apk.yml).
+// CI passes -Psentinel.versionName=<tag without the leading v>, or the
+// same value in SENTINEL_VERSION_NAME. Local and branch builds keep the
+// checked-in name plus a short git revision (or "dev" when git is absent).
+//
+// versionCode for a tag is packed so each later tag installs as an update
+// and never drops below the staging versionCode already shipped (57):
+//   major * 10000000 + minor * 100000 + patch * 1000 + sequence
+// sequence is the fourth numeric group (N in v5.1.3-dojobay.N). Further
+// groups are ignored. sequence must be <= 999, or it collides with the
+// next patch. Examples:
+//   v5.1.3-dojobay.5 -> versionName 5.1.3-dojobay.5, versionCode 50103005
+//   v5.1.3-dojobay.6 -> versionName 5.1.3-dojobay.6, versionCode 50103006
+//   v6.0.0           -> versionName 6.0.0,           versionCode 60000000
+def stagingVersionFloor = 57
+def productionVersionCodeLocal = 55
+def stagingBaseVersionName = '5.1.3-dojobay.4'
+def productionBaseVersionName = '5.1.2'
+
+def sentinelShortRevision = {
+    try {
+        def out = new ByteArrayOutputStream()
+        def err = new ByteArrayOutputStream()
+        def result = exec {
+            commandLine 'git', 'rev-parse', '--short=7', 'HEAD'
+            standardOutput = out
+            errorOutput = err
+            ignoreExitValue = true
+        }
+        def sha = out.toString('UTF-8').trim()
+        if (result.exitValue == 0 && sha) {
+            return sha
+        }
+    } catch (Exception ignored) {
+    }
+    return 'dev'
+}
+
+def sentinelVersionCode = { String versionName, int floor ->
+    def matcher = (versionName =~ /(\d+)/)
+    def parts = []
+    while (matcher.find()) {
+        parts.add(matcher.group(1) as int)
+    }
+    int major = parts.size() > 0 ? parts[0] : 0
+    int minor = parts.size() > 1 ? parts[1] : 0
+    int patch = parts.size() > 2 ? parts[2] : 0
+    int sequence = parts.size() > 3 ? parts[3] : 0
+    if (major > 200 || minor > 99 || patch > 99 || sequence > 999) {
+        throw new GradleException(
+                "Version '${versionName}' does not fit versionCode " +
+                        "(major <= 200, minor <= 99, patch <= 99, sequence <= 999).")
+    }
+    int code = major * 10000000 + minor * 100000 + patch * 1000 + sequence
+    if (code < floor) {
+        throw new GradleException(
+                "versionCode ${code} for '${versionName}' is below the minimum ${floor}.")
+    }
+    return code
+}
+
+def taggedVersionRaw = findProperty('sentinel.versionName')
+if (taggedVersionRaw == null) {
+    taggedVersionRaw = providers.environmentVariable('SENTINEL_VERSION_NAME').orNull
+}
+def taggedVersionName = taggedVersionRaw?.toString()?.trim()
+if (!taggedVersionName) {
+    taggedVersionName = null
+}
+
+def revisionSuffix = sentinelShortRevision()
+def stagingVersionName
+def stagingVersionCode
+def resolvedProductionVersionName
+def resolvedProductionVersionCode
+if (taggedVersionName != null) {
+    stagingVersionName = taggedVersionName
+    stagingVersionCode = sentinelVersionCode(taggedVersionName, stagingVersionFloor)
+    resolvedProductionVersionName = taggedVersionName
+    resolvedProductionVersionCode = stagingVersionCode
+} else {
+    stagingVersionName = "${stagingBaseVersionName}-${revisionSuffix}"
+    stagingVersionCode = stagingVersionFloor
+    resolvedProductionVersionName = "${productionBaseVersionName}-${revisionSuffix}"
+    resolvedProductionVersionCode = productionVersionCodeLocal
+}
+
 android {
     compileSdkVersion 35
     flavorDimensions "versionCode"
@@ -13,11 +100,20 @@ android {
         applicationId "com.samourai.sentinel"
         minSdkVersion 24
         targetSdkVersion 33
-        versionCode 55
-        versionName '5.1.2'
+        versionCode stagingVersionCode
+        versionName stagingVersionName
         multiDexEnabled = true
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+    // Release signing. Absent locally: assemble*Release stays unsigned.
+    // CI tag builds set these after decoding ANDROID_RELEASE_KEYSTORE_BASE64
+    // (see build-staging-apk.yml and the README). No keystore is committed.
+    def releaseStore = providers.environmentVariable("CI_RELEASE_KEYSTORE").getOrNull()
+    def releaseStorePass = providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").getOrNull()
+    def releaseAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").getOrNull()
+    def releaseKeyPass = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").getOrNull()
+    def hasReleaseKey = releaseStore && releaseStorePass && releaseAlias && releaseKeyPass && file(releaseStore).exists()
+
     signingConfigs {
         // Stable signing for CI-built test APKs so that successive builds
         // can update over each other instead of failing signature checks.
@@ -31,6 +127,16 @@ android {
                 keyPassword "android"
             }
         }
+        // Not named "release": AGP would attach a signingConfigs.release
+        // to the release build type even when the keystore is missing.
+        ciRelease {
+            if (hasReleaseKey) {
+                storeFile file(releaseStore)
+                storePassword releaseStorePass
+                keyAlias releaseAlias
+                keyPassword releaseKeyPass
+            }
+        }
     }
 
     buildTypes {
@@ -42,8 +148,14 @@ android {
         }
 
         release {
-            minifyEnabled false
+            // BuildConfig.DEBUG follows this flag. SentinelApplication plants
+            // MaskingDebugTree only when DEBUG is true.
+            debuggable false
+            minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseKey) {
+                signingConfig signingConfigs.ciRelease
+            }
         }
     }
     packagingOptions {
@@ -55,20 +167,20 @@ android {
             minSdkVersion 24
             applicationId 'com.samourai.sentinel'
             targetSdkVersion 33
-            versionCode 55
-            versionName '5.1.2'
+            versionCode resolvedProductionVersionCode
+            versionName resolvedProductionVersionName
             resValue "string", "app_name", "Sentinel"
-            resValue "string", "version_name", "5.1.2"
+            resValue "string", "version_name", resolvedProductionVersionName
         }
         staging {
             applicationId 'com.samourai.sentinel.staging'
             targetSdkVersion 33
-            versionCode 57
-            versionName '5.1.3-dojobay.4'
+            versionCode stagingVersionCode
+            versionName stagingVersionName
             // Labelled "Beta" so testers can tell it apart from a real Sentinel
             // install on the same device (separate applicationId above).
             resValue "string", "app_name", "Sentinel Beta"
-            resValue "string", "version_name", "5.1.3-dojobay.4"
+            resValue "string", "version_name", stagingVersionName
         }
     }
     compileOptions {
