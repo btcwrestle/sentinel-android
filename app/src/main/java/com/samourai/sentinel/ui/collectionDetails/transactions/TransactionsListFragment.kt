@@ -10,8 +10,6 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.paging.LivePagedListBuilder
-import androidx.paging.PagedList
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.samourai.sentinel.R
@@ -19,6 +17,7 @@ import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.PubKeyModel
 import com.samourai.sentinel.data.Tx
 import com.samourai.sentinel.data.db.dao.TxDao
+import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.data.repository.LabelRepository
 import com.samourai.sentinel.data.repository.TransactionsRepository
 import com.samourai.sentinel.ui.fragments.TransactionsDetailsBottomSheet
@@ -31,17 +30,20 @@ import org.koin.java.KoinJavaComponent
 import timber.log.Timber
 
 /**
- * sentinel-android
+ * #217: the old primary constructor (position, collection) has no
+ * zero-argument form. FragmentManager restores by class name plus
+ * that constructor, so a recreated Collection Details screen crashed
+ * inside Activity.onCreate, before #300's lock gate could run.
+ * Position and collection id travel in the arguments Bundle, which
+ * the FragmentManager already saves. The collection itself is loaded
+ * back from the repository when the list is first shown.
  */
-
-class TransactionsListFragment(
-    private val position: Int,
-    private val collection: PubKeyCollection,
-) : Fragment() {
+class TransactionsListFragment : Fragment() {
 
     private val transactionAdapter: TransactionAdapter = TransactionAdapter()
     private val prefs: PrefsUtil by KoinJavaComponent.inject(PrefsUtil::class.java)
     private val labelRepository: LabelRepository by KoinJavaComponent.inject(LabelRepository::class.java)
+    private val repository: CollectionRepository by KoinJavaComponent.inject(CollectionRepository::class.java)
 
     class TransactionsViewModel(val pubKeyCollection: PubKeyCollection, val position: Int) : ViewModel() {
         private fun getPubKeyModelByLabel(label: String): PubKeyModel {
@@ -53,20 +55,18 @@ class TransactionsListFragment(
         }
 
         private val txDao: TxDao by KoinJavaComponent.inject(TxDao::class.java)
-        val txLiveData: LiveData<PagedList<Tx>> = if (position == 0)
-            LivePagedListBuilder(
-                txDao.getTxAssociatedToCollection(pubKeyCollection.id), 12
-            ).build()
+        // #284: Room LiveData, same invalidation path as the sync reconcile.
+        // A PagedList built while this table was still empty (balance is
+        // published per pubkey BEFORE saveTx) stayed empty until this
+        // fragment was destroyed and recreated.
+        val txLiveData: LiveData<List<Tx>> = if (position == 0)
+            txDao.observeCollectionTx(pubKeyCollection.id)
         else if (pubKeyCollection.isImportFromWallet && position == 1)
-            LivePagedListBuilder(
-                txDao.getPaginatedTx(pubKeyCollection.id,
-                    listOf(getPubKeyModelByLabel("Deposit BIP84").pubKey,
-                        getPubKeyModelByLabel("Deposit BIP49").pubKey,
-                        getPubKeyModelByLabel("Deposit BIP44").pubKey)), 12
-            ).build()
-        else LivePagedListBuilder(
-            txDao.getPaginatedTx(pubKeyCollection.id, pubKeyCollection.pubs[position - 1].pubKey), 12
-        ).build()
+            txDao.observeTxForPubKeys(pubKeyCollection.id,
+                listOf(getPubKeyModelByLabel("Deposit BIP84").pubKey,
+                    getPubKeyModelByLabel("Deposit BIP49").pubKey,
+                    getPubKeyModelByLabel("Deposit BIP44").pubKey))
+        else txDao.observeTxForPubKey(pubKeyCollection.id, pubKeyCollection.pubs[position - 1].pubKey)
 
         class TransactionsViewModelFactory(private val pubKeyCollection: PubKeyCollection, private val position: Int) : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -85,7 +85,15 @@ class TransactionsListFragment(
     }
 
 
-    private val transactionViewModel: TransactionsViewModel by viewModels(factoryProducer = { TransactionsViewModel.getFactory(collection, position) })
+    private val transactionViewModel: TransactionsViewModel by viewModels(factoryProducer = {
+        val args = requireArguments()
+        val position = args.getInt(ARG_POSITION)
+        val id = args.getString(ARG_COLLECTION_ID)
+            ?: error("TransactionsListFragment missing collection id")
+        val collection = repository.findById(id)
+            ?: error("TransactionsListFragment collection $id is not loaded")
+        TransactionsViewModel.getFactory(collection, position)
+    })
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.fragment_transactions_segement, container, false)
@@ -102,17 +110,40 @@ class TransactionsListFragment(
         val decorator = RecyclerViewItemDividerDecorator(ContextCompat.getDrawable(requireContext(), R.drawable.divider_tx)!!)
         transactionsRecycler.addItemDecoration(decorator)
         transactionAdapter.setOnclickListener {
-            val dojoConfigureBottomSheet = TransactionsDetailsBottomSheet(it, secure = prefs.displaySecure!!)
+            val dojoConfigureBottomSheet = TransactionsDetailsBottomSheet.newInstance(it, secure = prefs.displaySecure!!)
             dojoConfigureBottomSheet.show(childFragmentManager, dojoConfigureBottomSheet.tag)
         }
 
-        transactionViewModel.txLiveData.observe(this.viewLifecycleOwner) {
-            transactionAdapter.submitList(it)
+        transactionViewModel.txLiveData.observe(this.viewLifecycleOwner) { txs ->
+            // commit callback: ListAdapter applies the diff async. Ask for
+            // another measure once rows exist so a pager that measured this
+            // page at 0 (pre-#284 wrap_content) cannot freeze that height.
+            transactionAdapter.submitList(txs) {
+                transactionsRecycler.requestLayout()
+            }
         }
 
         labelRepository.observeTxLabelMap().observe(this.viewLifecycleOwner) { map ->
             transactionAdapter.txLabels = map
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        transactionAdapter.notifyDataSetChanged()
+    }
+
+    companion object {
+        private const val ARG_POSITION = "position"
+        private const val ARG_COLLECTION_ID = "collectionId"
+
+        fun newInstance(position: Int, collection: PubKeyCollection): TransactionsListFragment =
+            TransactionsListFragment().apply {
+                arguments = Bundle().apply {
+                    putInt(ARG_POSITION, position)
+                    putString(ARG_COLLECTION_ID, collection.id)
+                }
+            }
     }
 
 }

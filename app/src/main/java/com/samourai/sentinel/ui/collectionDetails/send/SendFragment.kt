@@ -36,6 +36,7 @@ import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.PubKeyModel
 import com.samourai.sentinel.data.repository.ExchangeRateRepository
 import com.samourai.sentinel.data.repository.FeeRepository
+import com.samourai.sentinel.data.repository.collapsedNormalPerVb
 import com.samourai.sentinel.databinding.FragmentSpendBinding
 import com.samourai.sentinel.send.SuggestedFee
 import com.samourai.sentinel.ui.SentinelActivity
@@ -70,7 +71,6 @@ class SendFragment : Fragment() {
     private var isBTCEditing = false
     private var isFiatEditing = false
     private var amount: Double = 0.0
-    private var transactionComposer = TransactionComposer()
     private var rate: ExchangeRateRepository.Rate = ExchangeRateRepository.Rate("", 0)
     private val exchangeRateRepository: ExchangeRateRepository by inject(ExchangeRateRepository::class.java)
     private var address: String = ""
@@ -116,6 +116,25 @@ class SendFragment : Fragment() {
     @RequiresApi(Build.VERSION_CODES.R)
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        parentFragmentManager.setFragmentResultListener(REQUEST_SCAN_PAYMENT, viewLifecycleOwner) { _, bundle ->
+            val decoded = bundle.getString(CameraFragmentBottomSheet.RESULT_TEXT) ?: return@setFragmentResultListener
+            if (FormatsUtilGeneric.getInstance().isBitcoinUri(decoded)) {
+                fragmentSpendBinding.btcAddress.setText(FormatsUtilGeneric.getInstance().getBitcoinAddress(decoded))
+                val satsAmount = java.lang.Double.valueOf(FormatsUtilGeneric.getInstance().getBitcoinAmount(decoded))
+                fragmentSpendBinding.btcEditText.setText(MonetaryUtil.getInstance().getBTCDecimalFormat(satsAmount.toLong()))
+            } else if (decoded.length < 100) {
+                fragmentSpendBinding.btcAddress.setText(decoded)
+            }
+            (parentFragmentManager.findFragmentByTag(TAG_SCAN) as? CameraFragmentBottomSheet)?.dismiss()
+        }
+        parentFragmentManager.setFragmentResultListener(REQUEST_SCAN_ADDRESS, viewLifecycleOwner) { _, bundle ->
+            val decoded = bundle.getString(CameraFragmentBottomSheet.RESULT_TEXT) ?: return@setFragmentResultListener
+            if (decoded.length < 100) {
+                fragmentSpendBinding.btcAddress.setText(decoded)
+            }
+            (parentFragmentManager.findFragmentByTag(TAG_SCAN) as? CameraFragmentBottomSheet)?.dismiss()
+        }
 
         decimalFormatBTC.minimumIntegerDigits = 1
         decimalFormatBTC.minimumFractionDigits = 8
@@ -276,18 +295,8 @@ class SendFragment : Fragment() {
                 ) {
                     this.askCameraPermission()
                 } else {
-                    val camera = CameraFragmentBottomSheet()
-                    camera.setQrCodeScanLisenter {
-                        if (FormatsUtilGeneric.getInstance().isBitcoinUri(it)) {
-                            fragmentSpendBinding.btcAddress.setText(FormatsUtilGeneric.getInstance().getBitcoinAddress(it))
-                            val satsAmount = java.lang.Double.valueOf(FormatsUtilGeneric.getInstance().getBitcoinAmount(it))
-                            fragmentSpendBinding.btcEditText.setText(MonetaryUtil.getInstance().getBTCDecimalFormat(satsAmount.toLong()))
-                        } else if (it.length < 100) {
-                            fragmentSpendBinding.btcAddress.setText(it)
-                        }
-                        camera.dismiss()
-                    }
-                    camera.show(parentFragmentManager, camera.tag)
+                    CameraFragmentBottomSheet.newInstance(REQUEST_SCAN_PAYMENT)
+                        .show(parentFragmentManager, TAG_SCAN)
                 }
             }
             true
@@ -328,14 +337,8 @@ class SendFragment : Fragment() {
     private fun showAddressScanner() {
         // Guard against the fragment being detached while the permission dialog was up.
         if (!isAdded) return
-        val camera = CameraFragmentBottomSheet()
-        camera.setQrCodeScanLisenter {
-            if (it.length < 100) {
-                fragmentSpendBinding.btcAddress.setText(it)
-            }
-            camera.dismiss()
-        }
-        camera.show(parentFragmentManager, camera.tag)
+        CameraFragmentBottomSheet.newInstance(REQUEST_SCAN_ADDRESS)
+            .show(parentFragmentManager, TAG_SCAN)
     }
 
 
@@ -556,15 +559,6 @@ class SendFragment : Fragment() {
             fragmentSpendBinding.fragmentComposeTx.pubKeySelector.setAdapter(adapter)
             val selectPubKeyModel = pubKeySelector.pubs[newIndex-1]
             viewModel.setPublicKey(selectPubKeyModel, viewLifecycleOwner, mCollection!!)
-            if (mCollection!!.isImportFromWallet && selectPubKeyModel.label.equals("Deposit")) {
-                transactionComposer.setPubKey(listOf(
-                    getPubKeyModelByLabel("Deposit BIP84"),
-                    getPubKeyModelByLabel("Deposit BIP49"),
-                    getPubKeyModelByLabel("Deposit BIP44")
-                ))
-            } else {
-                transactionComposer.setPubKey(listOf(selectPubKeyModel))
-            }
             setBalance(mCollection!!.pubs[newIndex-1])
             fragmentSpendBinding.fragmentComposeTx.pubKeySelector.setText(mCollection!!.pubs.get(newIndex-1).label, false)
 
@@ -632,15 +626,6 @@ class SendFragment : Fragment() {
                 val selectPubKeyModel = getPubKeyModelByLabel(items[index])
                 viewModel.setPublicKey(selectPubKeyModel, viewLifecycleOwner, mCollection!!)
 
-                if (mCollection!!.isImportFromWallet && selectPubKeyModel.label.equals("Deposit")) {
-                    transactionComposer.setPubKey(listOf(
-                        getPubKeyModelByLabel("Deposit BIP84"),
-                        getPubKeyModelByLabel("Deposit BIP49"),
-                        getPubKeyModelByLabel("Deposit BIP44")
-                    ))
-                } else {
-                    transactionComposer.setPubKey(listOf(selectPubKeyModel))
-                }
                 setBalance(getPubKeyModelByLabel(items[index]))
 
                 view?.isEnabled = true
@@ -729,10 +714,12 @@ class SendFragment : Fragment() {
             val hiSf = SuggestedFee()
             hiSf.defaultPerKB = BigInteger.valueOf(feeHigh * 1000L)
             feeRepository.setHighFee(hiSf)
-        } else if (feeLow == feeMed || feeMed == feeMed) {
-            feeMed = (feeLow + feeHigh) / 2L
+        } else if (feeLow == feeMed || feeMed == feeHigh) {
+            // #305: the old check compared a tier to itself, so it always
+            // ran, and the stored per-KB value was High. Normal is the average.
+            feeMed = collapsedNormalPerVb(feeLow, feeMed, feeHigh)
             val miSf = SuggestedFee()
-            miSf.defaultPerKB = BigInteger.valueOf(feeHigh * 1000L)
+            miSf.defaultPerKB = BigInteger.valueOf(feeMed * 1000L)
             feeRepository.setNormalFee(miSf)
         }
         if (feeLow < 1L) {
@@ -809,5 +796,11 @@ class SendFragment : Fragment() {
                 fragmentSpendBinding.fragmentBroadcastTx.psbtQRCode.setContent(UR.fromBytes(RegistryType.CRYPTO_PSBT.type,Hex.decode(uri)));
             }
         }
+    }
+
+    companion object {
+        private const val REQUEST_SCAN_PAYMENT = "send_scan_payment"
+        private const val REQUEST_SCAN_ADDRESS = "send_scan_address"
+        private const val TAG_SCAN = "scan_address"
     }
 }

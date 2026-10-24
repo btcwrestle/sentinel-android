@@ -38,8 +38,7 @@ class UtxoDetailsActivity : SentinelActivity() {
     val df = DecimalFormat("#")
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityUtxoDetailsBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)

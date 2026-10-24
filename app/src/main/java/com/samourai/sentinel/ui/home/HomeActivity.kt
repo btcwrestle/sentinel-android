@@ -25,6 +25,7 @@ import com.samourai.sentinel.core.ConnectionIndicator
 import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.core.SyncState
 import com.samourai.sentinel.ui.views.ConnectionIndicatorController
+import com.samourai.sentinel.data.repository.CollectionRepository
 import com.samourai.sentinel.databinding.ActivityHomeBinding
 import com.samourai.sentinel.service.WebSocketHandler
 import com.samourai.sentinel.service.WebSocketService
@@ -34,6 +35,7 @@ import com.samourai.sentinel.ui.SentinelActivity
 import com.samourai.sentinel.ui.adapters.CollectionsAdapter
 import com.samourai.sentinel.ui.collectionDetails.CollectionDetailsActivity
 import com.samourai.sentinel.ui.dojo.DojoConfigureBottomSheet
+import com.samourai.sentinel.ui.dojo.PubKeyRescanner
 import com.samourai.sentinel.ui.fragments.AddNewPubKeyBottomSheet
 import com.samourai.sentinel.ui.settings.NetworkActivity
 import com.samourai.sentinel.ui.settings.SettingsActivity
@@ -45,9 +47,7 @@ import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.sentinel.ui.utils.RecyclerViewItemDividerDecorator
 import com.samourai.sentinel.ui.utils.SlideInItemAnimator
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
-import com.samourai.sentinel.data.repository.CollectionRepository
-import com.samourai.sentinel.ui.dojo.PubKeyRescanner
-import com.samourai.sentinel.ui.views.confirm
+import com.samourai.sentinel.ui.views.ConfirmBottomSheet
 import com.samourai.sentinel.util.AppUtil
 import com.samourai.sentinel.util.BalanceDisplayFormatter
 import com.samourai.sentinel.util.BalanceDisplayMode
@@ -80,8 +80,7 @@ class HomeActivity : SentinelActivity() {
     // the indicator LiveData is one shared mediator for the process now.
     private var indicatorObserver: Observer<ConnectionIndicator>? = null
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreateAdmitted(savedInstanceState: Bundle?) {
         binding = ActivityHomeBinding.inflate(layoutInflater)
         val view = binding.root
         window.statusBarColor = ContextCompat.getColor(this, R.color.mpm_black)
@@ -91,6 +90,29 @@ class HomeActivity : SentinelActivity() {
         setSupportActionBar(binding.toolbarHome)
 
         title = ""
+
+        // #210: durable listener for the first-run network choice. The
+        // sheet delivers its answer through the Fragment Result API, and
+        // this registration re-runs on every create - so the sheet that
+        // Android restores after a recreation (process death, ui-mode or
+        // font change; activities are portrait-locked, so rotation is not
+        // the trigger here) still completes first-run setup when the user
+        // taps Mainnet/Testnet.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_FIRST_RUN_NETWORK,
+            this
+        ) { _, bundle ->
+            onFirstRunNetworkChoice(bundle.getBoolean(ConfirmBottomSheet.RESULT_CONFIRMED))
+        }
+        // #220: same shape as the network choice. A restored Dojo sheet
+        // posts here; this registration runs on every create.
+        supportFragmentManager.setFragmentResultListener(
+            REQUEST_KEY_DOJO_SETUP,
+            this
+        ) { _, _ ->
+            supportFragmentManager.clearFragmentResult(REQUEST_KEY_DOJO_SETUP)
+            onDojoSetupFinished()
+        }
 
         binding.toolbarIcon.setOnClickListener {
             showToolOptions(it)
@@ -132,8 +154,8 @@ class HomeActivity : SentinelActivity() {
         })
 
         model.getBalance().observe(this) {
-            updateBalance(it)
             balance = it
+            applyBalanceDisplayMode()
         }
 
         // Tap the balance to cycle BTC -> sats -> masked -> BTC.
@@ -143,9 +165,7 @@ class HomeActivity : SentinelActivity() {
             collectionsAdapter.notifyDataSetChanged()
         }
 
-        binding.exchangeRateTxt.visibility = if (prefsUtil.fiatDisabled == true) View.INVISIBLE else View.VISIBLE
-
-        model.getFiatBalance().observe(this, { updateFiat(it) })
+        model.getFiatBalance().observe(this) { applyBalanceDisplayMode() }
 
         binding.fab.setBackgroundResource(R.drawable.background_gradient);
 
@@ -204,10 +224,10 @@ class HomeActivity : SentinelActivity() {
         fetch(model)
 
         if (SentinelState.isTorRequired()) {
-            SentinelTorManager.getTorStateLiveData().observe(this, {
+            SentinelTorManager.getTorStateLiveData().observe(this, ({
                 if (it.state == EnumTorState.ON)
                     WebSocketService.start(applicationContext)
-            })
+            }))
         } else {
             WebSocketService.start(applicationContext)
         }
@@ -438,8 +458,15 @@ class HomeActivity : SentinelActivity() {
      * (BTC / sats / masked). Street mode always wins and masks everything.
      */
     private fun applyBalanceDisplayMode() {
-        if (balance == -1L) return
         val mode = currentDisplayMode()
+        val hideFiat = prefsUtil.streetMode == true
+            || prefsUtil.fiatDisabled == true
+            || mode == BalanceDisplayMode.MASKED
+            || mode == BalanceDisplayMode.SATS
+        if (balance == -1L) {
+            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
+            return
+        }
         if (prefsUtil.streetMode == true || mode == BalanceDisplayMode.MASKED) {
             binding.homeBalanceBtc.text = BalanceDisplayFormatter.MASKED_TEXT
             binding.exchangeRateTxt.visibility = View.INVISIBLE
@@ -450,9 +477,8 @@ class HomeActivity : SentinelActivity() {
             binding.exchangeRateTxt.visibility = View.INVISIBLE
         } else {
             updateBalance(balance)
-            binding.exchangeRateTxt.visibility =
-                if (prefsUtil.fiatDisabled == true) View.INVISIBLE else View.VISIBLE
-            if (prefsUtil.fiatDisabled != true) {
+            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
+            if (!hideFiat) {
                 model.getFiatBalance().value?.let { updateFiat(it) }
             }
         }
@@ -460,34 +486,43 @@ class HomeActivity : SentinelActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (prefsUtil.streetMode == true) {
-            binding.homeBalanceBtc.text = "********"
-            binding.exchangeRateTxt.text = "********"
-        }
-        if (balance != -1L)
-            updateBalance(balance)
-
         applyBalanceDisplayMode()
-
-        binding.exchangeRateTxt.visibility = if (prefsUtil.fiatDisabled == true) View.INVISIBLE else View.VISIBLE
+        collectionsAdapter.notifyDataSetChanged()
     }
 
     private fun setUp() {
         if (prefsUtil.firstRun == true && AppUtil.getInstance(applicationContext).isSideLoaded) {
-            this.confirm(label = "Choose network",
+            // #210: the network choice sheet is built from arguments via the
+            // factory and answers through a STABLE request key, so the flow
+            // survives recreation end to end. Dedupe: a recreation re-runs
+            // setUp() while the restored sheet is already in the
+            // FragmentManager under this tag - showing a second copy would
+            // stack two identical sheets.
+            if (supportFragmentManager.findFragmentByTag(TAG_FIRST_RUN_NETWORK_SHEET) == null) {
+                ConfirmBottomSheet.newInstance(
+                    label = "Choose network",
                     positiveText = "Mainnet",
                     negativeText = "Testnet",
                     isCancelable = false,
-                    onConfirm = { confirm ->
-                        prefsUtil.firstRun = false
-                        if (!confirm) {
-                            prefsUtil.testnet = true
-                        }
-                        showServerConfig()
-                    })
+                    requestKey = REQUEST_KEY_FIRST_RUN_NETWORK
+                ).show(supportFragmentManager, TAG_FIRST_RUN_NETWORK_SHEET)
+            }
         } else {
             showServerConfig()
         }
+    }
+
+    /**
+     * #210: state-derived outcome of the first-run network choice -
+     * deliberately free of captured context, so the durable listener can
+     * call it from whichever activity instance happens to be alive.
+     */
+    private fun onFirstRunNetworkChoice(mainnet: Boolean) {
+        prefsUtil.firstRun = false
+        if (!mainnet) {
+            prefsUtil.testnet = true
+        }
+        showServerConfig()
     }
 
     private fun showServerConfig() {
@@ -502,32 +537,39 @@ class HomeActivity : SentinelActivity() {
     }
 
     private fun showDojoSetUpBottomSheet() {
-        val dojoConfigureBottomSheet = DojoConfigureBottomSheet()
-        dojoConfigureBottomSheet.show(supportFragmentManager, dojoConfigureBottomSheet.tag)
-        dojoConfigureBottomSheet.setDojoConfigurationListener(object : DojoConfigureBottomSheet.DojoConfigurationListener {
-            override fun onDismiss() {
-                if (!prefsUtil.isAPIEndpointEnabled()) {
-                    //showServerConfig()
-                    Toast.makeText(applicationContext, "No Dojo connected", Toast.LENGTH_SHORT).show()
-                } else {
-                    // This sheet is only ever reached from the first-time setup
-                    // flow (setUp() / showServerConfig()), so a successful
-                    // connection here is always the user's first Dojo. Public
-                    // keys added before it was connected were never imported
-                    // anywhere, so offer to register them now.
-                    // collectionsSnapshot() rather than the sealed backing
-                    // list: iterating it cannot race the first sync.
-                    val collections = collectionRepository.collectionsSnapshot()
-                    if (collections.any { it.pubs.isNotEmpty() }) {
-                        PubKeyRescanner.confirmAndRescan(
-                            this@HomeActivity,
-                            collections.flatMap { it.pubs },
-                            collections.map { it.id }
-                        )
-                    }
-                }
+        // #220: the restored sheet is already in the FragmentManager.
+        // Showing another stacks a second wizard over the one the
+        // durable listener is waiting on.
+        if (supportFragmentManager.findFragmentByTag(TAG_DOJO_SETUP) != null) return
+        DojoConfigureBottomSheet.newInstance(
+            requestKey = REQUEST_KEY_DOJO_SETUP
+        ).show(supportFragmentManager, TAG_DOJO_SETUP)
+    }
+
+    /**
+     * #220: state-derived. Success is "pairing live, endpoints set"
+     * (#159); the body re-reads prefs rather than closing over the sheet.
+     */
+    private fun onDojoSetupFinished() {
+        if (!prefsUtil.isAPIEndpointEnabled()) {
+            Toast.makeText(applicationContext, "No Dojo connected", Toast.LENGTH_SHORT).show()
+        } else {
+            // This sheet is only ever reached from the first-time setup
+            // flow (setUp() / showServerConfig()), so a successful
+            // connection here is always the user's first Dojo. Public
+            // keys added before it was connected were never imported
+            // anywhere, so offer to register them now.
+            // collectionsSnapshot() rather than the sealed backing
+            // list: iterating it cannot race the first sync.
+            val collections = collectionRepository.collectionsSnapshot()
+            if (collections.any { it.pubs.isNotEmpty() }) {
+                PubKeyRescanner.confirmAndRescan(
+                    this@HomeActivity,
+                    collections.flatMap { it.pubs },
+                    collections.map { it.id }
+                )
             }
-        })
+        }
     }
 
     private fun updateBalance(it: Long) {
@@ -581,7 +623,7 @@ class HomeActivity : SentinelActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         // NOTE: grantResults can be EMPTY when the dialog is cancelled - never index it directly.
         when (requestCode) {
-            Companion.CAMERA_PERMISSION -> {
+            SentinelActivity.Companion.CAMERA_PERMISSION -> {
                 when (permissionResultOf(grantResults)) {
                     PermissionResult.GRANTED -> Unit
                     PermissionResult.DENIED ->
@@ -592,7 +634,7 @@ class HomeActivity : SentinelActivity() {
                 if (connectingDojo) showDojoSetUpBottomSheet() else showPubKeyBottomSheet()
             }
 
-            Companion.NOTIF_PERMISSION -> {
+            SentinelActivity.Companion.NOTIF_PERMISSION -> {
                 when (permissionResultOf(grantResults)) {
                     PermissionResult.GRANTED ->
                         Toast.makeText(this, "Notification permissions granted.", Toast.LENGTH_SHORT).show()
@@ -666,5 +708,16 @@ class HomeActivity : SentinelActivity() {
             webSocketHandler.connect()
         } catch (ex: Exception) {
         }
+    }
+
+    companion object {
+        // #210: stable identity for the first-run network-choice sheet and
+        // its result - a stable TAG enables the recreation dedupe in
+        // setUp(); a stable REQUEST_KEY enables the durable listener
+        // registered in onCreate.
+        const val TAG_FIRST_RUN_NETWORK_SHEET = "first_run_network_choice_sheet"
+        const val REQUEST_KEY_FIRST_RUN_NETWORK = "first_run_network_choice_result"
+        const val TAG_DOJO_SETUP = "home_dojo_setup_sheet"
+        const val REQUEST_KEY_DOJO_SETUP = "home_dojo_setup_result"
     }
 }

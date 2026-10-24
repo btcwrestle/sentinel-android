@@ -18,9 +18,18 @@ import com.samourai.sentinel.util.PrefsUtil;
 
 
 public class CameraFragmentBottomSheet extends BottomSheetDialogFragment {
+    public static final String ARG_REQUEST_KEY = "camera_bottom_sheet_request_key";
+    public static final String RESULT_TEXT = "camera_bottom_sheet_result_text";
+
     private CodeScanner mCodeScanner;
 
-    private ListenQRScan listenQRScan;
+    public static CameraFragmentBottomSheet newInstance(String requestKey) {
+        CameraFragmentBottomSheet sheet = new CameraFragmentBottomSheet();
+        Bundle args = new Bundle();
+        args.putString(ARG_REQUEST_KEY, requestKey);
+        sheet.setArguments(args);
+        return sheet;
+    }
 
 
     @Override
@@ -29,11 +38,10 @@ public class CameraFragmentBottomSheet extends BottomSheetDialogFragment {
         CodeScannerView scannerView = view.findViewById(R.id.scanner_view);
         mCodeScanner = new CodeScanner(getActivity().getApplicationContext(), scannerView);
         mCodeScanner.setAutoFocusEnabled(true);
-        mCodeScanner.setDecodeCallback(result -> getActivity().runOnUiThread(() -> {
-            if (this.listenQRScan != null) {
-                this.listenQRScan.onDetect(result.getText());
-            }
-        }));
+        mCodeScanner.setDecodeCallback(result -> {
+            if (getActivity() == null) return;
+            getActivity().runOnUiThread(() -> deliver(result.getText()));
+        });
         scannerView.setOnClickListener(view1 -> mCodeScanner.startPreview());
         return view;
     }
@@ -52,8 +60,19 @@ public class CameraFragmentBottomSheet extends BottomSheetDialogFragment {
         mCodeScanner.startPreview();
     }
 
-    public void setQrCodeScanLisenter(ListenQRScan listenQRScan) {
-        this.listenQRScan = listenQRScan;
+    /**
+     * #218: the decoded text is posted to the request key this sheet was
+     * opened with. The host re-registers that key after a recreation, so
+     * the scan is not dropped with the old listener field.
+     */
+    private void deliver(String text) {
+        Bundle args = getArguments();
+        if (args == null || !isAdded()) return;
+        String key = args.getString(ARG_REQUEST_KEY);
+        if (key == null) return;
+        Bundle result = new Bundle();
+        result.putString(RESULT_TEXT, text);
+        getParentFragmentManager().setFragmentResult(key, result);
     }
 
     @Override
@@ -66,10 +85,6 @@ public class CameraFragmentBottomSheet extends BottomSheetDialogFragment {
     public void onDestroy() {
         mCodeScanner.releaseResources();
         super.onDestroy();
-    }
-
-    public interface ListenQRScan {
-        void onDetect(String code);
     }
 
     @Override

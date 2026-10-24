@@ -172,6 +172,34 @@
 
                 </LinearLayout>
 
+                <LinearLayout
+                    android:id="@+id/txDetailsUtxoLabelsRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="@dimen/spacing_middle"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Output labels" />
+
+                    <com.google.android.material.chip.ChipGroup
+                        android:id="@+id/txDetailsUtxoLabelsChips"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        app:chipSpacingHorizontal="4dp" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginTop="@dimen/spacing_middle"
+                        android:background="@color/md_grey_800" />
+
+                </LinearLayout>
+
 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

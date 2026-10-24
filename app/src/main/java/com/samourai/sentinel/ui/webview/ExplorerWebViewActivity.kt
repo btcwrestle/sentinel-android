@@ -23,6 +23,7 @@ import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.utils.showFloatingSnackBar
 import timber.log.Timber
+import java.net.InetSocketAddress
 
 
 class ExplorerWebViewActivity : AppCompatActivity() {
@@ -58,10 +59,23 @@ class ExplorerWebViewActivity : AppCompatActivity() {
         }
         //Check webkit supports proxy
         if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            if (SentinelTorManager.getTorState().state == EnumTorState.ON) {
-                setProxy()
-            } else {
-                load()
+            // #241: plain ON is published at boot=5, before the SOCKS
+            // listener exists (#135) - the old setProxy() at plain ON
+            // interpolated a null proxy into the rule ("SOCKS:/null": a
+            // rule pointing at a literal host named "null"), and the old
+            // else-arm loaded STARTING sessions direct too. Fail closed
+            // until fully ready; the Tor observer's ON arm below completes
+            // the load once the listener is live.
+            when {
+                SentinelTorManager.isTorReady() -> setProxy()
+                SentinelTorManager.getTorState().state == EnumTorState.OFF ->
+                    // Tor explicitly disabled: direct is the expected mode.
+                    load()
+                else -> {
+                    // STARTING / ON-before-listener: defer, show the same
+                    // progress the page load uses - fetch nothing.
+                    binding.progressWeb.visibility = View.VISIBLE
+                }
             }
         } else {
             this.showFloatingSnackBar(binding.webView, text = "Your android does not support proxy enabled WebView", actionText = "Continue", actionClick = {
@@ -73,8 +87,24 @@ class ExplorerWebViewActivity : AppCompatActivity() {
 
     private fun setProxy() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            // #241: null must never reach the rule - callers gate on
+            // isTorReady(); this re-reads and fails closed.
+            val proxy = SentinelTorManager.getProxy() ?: run {
+                Timber.w("Explorer proxy deferred: SOCKS listener not yet published (#241)")
+                return
+            }
+            // androidx.webkit expects "socks://host:port" - the old
+            // "SOCKS:/" + address() built "SOCKS:///127.0.0.1:9050" from
+            // InetSocketAddress's leading slash (and "SOCKS:/null" on the
+            // boot=5 window). Build the rule from the parsed fields.
+            val address = proxy.address() as? InetSocketAddress ?: return
+            // #252 regression fix: .hostName resolves. Android drops the
+            // constructor's host string once it resolves, so the getter
+            // falls through to a reverse-DNS lookup - a network call on
+            // the main thread, NetworkOnMainThreadException at launch.
+            // hostString never resolves and exists since API 24 (= minSdk).
             val proxyConfig = ProxyConfig.Builder()
-                .addProxyRule("SOCKS:/${SentinelTorManager.getProxy()?.address().toString()}")
+                .addProxyRule("socks://${address.hostString}:${address.port}")
                 .build()
             ProxyController.getInstance().setProxyOverride(proxyConfig, {
                 load()
@@ -124,7 +154,13 @@ class ExplorerWebViewActivity : AppCompatActivity() {
                 }
                 EnumTorState.ON -> {
                     icon?.setTint(ContextCompat.getColor(applicationContext, R.color.md_green_600))
-                    load()
+                    // #241: ON fires at boot=5; only route through the proxy
+                    // at full readiness. Until then this screen fetches
+                    // nothing - the next state emission (listener published,
+                    // boot=100) completes the load through the proxy.
+                    if (SentinelTorManager.isTorReady()) {
+                        setProxy()
+                    }
                 }
                 EnumTorState.OFF -> {
                     menu.findItem(R.id.menu_web_tor).icon =

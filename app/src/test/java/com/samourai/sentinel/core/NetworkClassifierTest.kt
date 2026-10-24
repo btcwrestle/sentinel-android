@@ -183,4 +183,81 @@ class NetworkClassifierTest {
             )
         )
     }
+
+    /**
+     * #250: the URL whisper — the pairing payload's only in-payload
+     * network evidence. Testnet Dojos mount under a /test path
+     * segment (observed fixture: http://…onion/test/v2); mainnet
+     * mounts at the root (observed: http://…onion/v2/ — trailing
+     * slash). Synthetic hosts, matching the repo's fixture pattern
+     * (DojoPairingParseTest): no real onions.
+     */
+    @Test
+    fun `url with test segment whispers testnet`() {
+        assertEquals(
+            DerivedNetwork.TESTNET,
+            NetworkClassifier.fromUrl("http://synthetic.onion/test/v2")
+        )
+    }
+
+    @Test
+    fun `mainnet root mount with trailing slash is silent`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion/v2/"))
+    }
+
+    @Test
+    fun `mainnet root mount without trailing slash is silent`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion/v2"))
+    }
+
+    @Test
+    fun `test segment is matched case-insensitively`() {
+        assertEquals(
+            DerivedNetwork.TESTNET,
+            NetworkClassifier.fromUrl("http://synthetic.onion/TEST/v2")
+        )
+    }
+
+    @Test
+    fun `attest is not a test segment`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion/attest/v2"))
+    }
+
+    @Test
+    fun `contest is not a test segment`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion/contest/v2"))
+    }
+
+    @Test
+    fun `test segment without a version still whispers`() {
+        assertEquals(
+            DerivedNetwork.TESTNET,
+            NetworkClassifier.fromUrl("http://synthetic.onion/test")
+        )
+    }
+
+    @Test
+    fun `query string cannot whisper`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion/v2?next=/test"))
+    }
+
+    @Test
+    fun `fragment cannot whisper`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion/v2#/test"))
+    }
+
+    @Test
+    fun `null url is no evidence`() {
+        assertEquals(null, NetworkClassifier.fromUrl(null))
+    }
+
+    @Test
+    fun `unparseable url is no evidence`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://syn thetic.onion/test/v2"))
+    }
+
+    @Test
+    fun `blank path is silent`() {
+        assertEquals(null, NetworkClassifier.fromUrl("http://synthetic.onion"))
+    }
 }

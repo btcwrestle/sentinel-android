@@ -11,6 +11,7 @@ import com.samourai.sentinel.tor.EnumTorState
 import com.samourai.sentinel.tor.SentinelTorManager
 import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.utils.PrefsUtil
+import com.samourai.sentinel.util.MaskedHttpLogger
 import com.samourai.sentinel.util.apiScope
 import com.samourai.wallet.api.backend.beans.UnspentOutput
 import com.samourai.wallet.api.backend.beans.WalletResponse
@@ -26,12 +27,9 @@ import okhttp3.logging.HttpLoggingInterceptor
 import org.json.JSONObject
 import org.koin.java.KoinJavaComponent.inject
 import timber.log.Timber
+import java.net.URI
 import java.util.Arrays
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.HostnameVerifier
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 
 /**
@@ -175,6 +173,7 @@ open class ApiService {
             .build()
         return client.newCall(request).await()
     }
+
 
     suspend fun checkImportStatus(pubKey: String) = withContext(Dispatchers.IO) {
         buildClient(excludeAuthenticator = true)
@@ -457,6 +456,17 @@ open class ApiService {
             null
         }
 
+        /**
+         * #229: true when the endpoint's parsed host ends in .onion.
+         * Parsed via java.net.URI - never a substring match (the old WebUtil
+         * gate treated "https://example.com/onion" as an onion). Unparseable
+         * or missing URL fails closed (false).
+         */
+        private fun isOnionEndpoint(url: String?): Boolean {
+            val host = url?.let { runCatching { URI(it).host }.getOrNull() }
+            return host?.lowercase()?.endsWith(".onion") == true
+        }
+
         fun buildClient(
             excludeApiKey: Boolean = false, url: String?,
             apiService: ApiService?,
@@ -464,8 +474,14 @@ open class ApiService {
             excludeAuthenticator: Boolean = false,
         ): OkHttpClient {
             val builder = OkHttpClient.Builder()
+            // #264/#96 (Arc B): the #258 silencer is retired. The wire
+            // logger returns at Level.BASIC - request and response lines
+            // only; headers and bodies never log (addresses, payload
+            // JSON, raw tx hex) - through MaskedHttpLogger, which rides
+            // Timber's masking seam and redacts the onion host, the
+            // "at" token, and the xpub in wallet URLs itself.
             if (BuildConfig.DEBUG) {
-                builder.addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.HEADERS))
+                builder.addInterceptor(HttpLoggingInterceptor(MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC))
             }
             builder.callTimeout(60, TimeUnit.SECONDS)
             builder.readTimeout(90, TimeUnit.SECONDS)
@@ -474,6 +490,24 @@ open class ApiService {
                 if (!excludeAuthenticator)
                     builder.authenticator(TokenAuthenticator(apiService))
             }
+
+            // #229/#135: if reaching this endpoint requires Tor (Tor-required
+            // mode, or the endpoint itself is an onion), refuse to build a
+            // direct client while Tor is not fully ready. ON alone is not
+            // enough - it is published at boot=5, before the SOCKS listener
+            // exists (#135), and a proxy-less client both leaks (clearnet
+            // direct connection) and fails anyway (system DNS on .onion).
+            // Mirrors the WebSocketHandler.connect() gate. Fails closed
+            // through the existing ApiNotConfigured degrade paths (#125).
+            val endpointNeedsTor = SentinelState.isTorRequired() || isOnionEndpoint(url)
+            if (endpointNeedsTor && !SentinelTorManager.isTorReady()) {
+                Timber.w(
+                    "buildClient: endpoint needs Tor but Tor is not ready " +
+                        "(state=${SentinelTorManager.getTorState().state}) - failing closed"
+                )
+                throw ApiNotConfigured()
+            }
+
             if (SentinelTorManager.getTorState().state == EnumTorState.ON) {
                 // Over Tor, building a circuit to an onion service can take several
                 // minutes on a poor connection. A 90s callTimeout was aborting
@@ -484,8 +518,19 @@ open class ApiService {
                 builder.readTimeout(180, TimeUnit.SECONDS)
                 builder.writeTimeout(180, TimeUnit.SECONDS)
                 builder.connectTimeout(180, TimeUnit.SECONDS)
-                getHostNameVerifier(builder)
-                builder.proxy(SentinelTorManager.getProxy())
+                // #229: the SOCKS proxy is only live once bootstrap completes.
+                // builder.proxy(null) would have meant a DIRECT connection - a
+                // de-anonymization leak for a user who asked for Tor. Fail
+                // closed instead; callers already degrade on ApiNotConfigured.
+                val torProxy = SentinelTorManager.getProxy()
+                    ?: throw ApiNotConfigured()
+                builder.proxy(torProxy)
+                // #229: host-scoped TLS. Clearnet HTTPS over Tor keeps FULL
+                // normal verification (an exit node cannot forge a valid
+                // certificate - that is the entire fix); relaxation now applies
+                // only to .onion peers, decided per connection inside the
+                // policy - not per client build as before.
+                TlsPolicy.install(builder)
             }
 
             /**
@@ -520,40 +565,6 @@ open class ApiService {
                 } catch (_:Exception) {}
             }
             return builder.build()
-        }
-
-        @Throws(Exception::class)
-        protected fun getHostNameVerifier(clientBuilder: OkHttpClient.Builder) {
-
-            // Create a trust manager that does not validate certificate chains
-            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-                override fun checkClientTrusted(
-                    chain: Array<java.security.cert.X509Certificate>,
-                    authType: String
-                ) {
-                }
-
-                override fun checkServerTrusted(
-                    chain: Array<java.security.cert.X509Certificate>,
-                    authType: String
-                ) {
-                }
-
-                override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> {
-                    return arrayOf()
-                }
-            })
-
-            // Install the all-trusting trust manager
-            val sslContext = SSLContext.getInstance("SSL")
-            sslContext.init(null, trustAllCerts, java.security.SecureRandom())
-
-            // Create an ssl socket factory with our all-trusting manager
-            val sslSocketFactory = sslContext.socketFactory
-
-
-            clientBuilder.sslSocketFactory(sslSocketFactory, trustAllCerts[0] as X509TrustManager)
-            clientBuilder.hostnameVerifier(HostnameVerifier { _, _ -> true })
         }
     }
 

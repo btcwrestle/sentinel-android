@@ -31,7 +31,35 @@ import org.koin.java.KoinJavaComponent.inject
  *
  * @author Sarath
  */
-class LockScreenDialog(private val lockScreenMessage: String = "") : DialogFragment() {
+
+/**
+ * #210: the prompt text travels in `arguments` instead of a constructor
+ * field, so a recreated dialog keeps its prompt.
+ * #220: the pin itself never travels in `arguments` (that bundle is saved).
+ * The check button posts it once, through [ARG_REQUEST_KEY], to whoever
+ * re-registered a listener. A restored pad has an empty digit buffer;
+ * the user types again. [setOnPinEntered] remains only for a caller that
+ * still uses the message-only constructor — none of the #220 flows do.
+ * FLAG_SECURE is already set on the host activity's window, so it
+ * survives recreation unchanged.
+ */
+class LockScreenDialog() : DialogFragment() {
+
+    private val lockScreenMessage: String
+        get() = arguments?.getString(ARG_MESSAGE) ?: ""
+
+    private val requestKey: String
+        get() = arguments?.getString(ARG_REQUEST_KEY) ?: ""
+
+    /** #220: set / remove / confirm / unlock / import. Not a secret. */
+    val purpose: String
+        get() = arguments?.getString(ARG_PURPOSE) ?: ""
+
+    /** #210 bridge for the pre-#210 `LockScreenDialog(lockScreenMessage)` shape. */
+    constructor(lockScreenMessage: String) : this() {
+        arguments = (arguments ?: Bundle()).apply { putString(ARG_MESSAGE, lockScreenMessage) }
+    }
+
     private val prefsUtil: PrefsUtil by inject(PrefsUtil::class.java)
     private var userInput = StringBuilder()
     private var strPassphrase = ""
@@ -60,7 +88,16 @@ class LockScreenDialog(private val lockScreenMessage: String = "") : DialogFragm
         super.onViewCreated(view, savedInstanceState)
         requireActivity().window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         binding.pinEntryView.setConfirmClickListener {
-            onConfirm.let { it?.invoke(userInput.toString()) }
+            val pin = userInput.toString()
+            val key = requestKey
+            if (key.isNotEmpty()) {
+                parentFragmentManager.setFragmentResult(
+                    key,
+                    Bundle().apply { putString(RESULT_PIN, pin) }
+                )
+            } else {
+                onConfirm?.invoke(pin)
+            }
         }
         binding.lockScreenText.text = lockScreenMessage
         prefsUtil.scramblePin?.let { binding.pinEntryView.setScramble(it) }
@@ -140,5 +177,27 @@ class LockScreenDialog(private val lockScreenMessage: String = "") : DialogFragm
         errorShake.duration = 420
         errorShake.interpolator = CycleInterpolator(4F)
         binding.pinEntryMaskLayout.startAnimation(errorShake)
+    }
+
+    companion object {
+        const val ARG_MESSAGE = "lock_screen_dialog_arg_message"
+        const val ARG_REQUEST_KEY = "lock_screen_dialog_arg_request_key"
+        const val ARG_PURPOSE = "lock_screen_dialog_arg_purpose"
+        const val RESULT_PIN = "lock_screen_dialog_result_pin"
+
+        const val PURPOSE_UNLOCK = "unlock"
+        const val PURPOSE_SET = "set"
+        const val PURPOSE_REMOVE = "remove"
+        const val PURPOSE_CONFIRM = "confirm"
+        const val PURPOSE_IMPORT = "import"
+
+        fun newInstance(message: String, requestKey: String, purpose: String): LockScreenDialog =
+            LockScreenDialog().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_MESSAGE, message)
+                    putString(ARG_REQUEST_KEY, requestKey)
+                    putString(ARG_PURPOSE, purpose)
+                }
+            }
     }
 }

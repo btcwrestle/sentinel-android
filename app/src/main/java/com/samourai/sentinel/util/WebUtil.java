@@ -3,13 +3,12 @@ package com.samourai.sentinel.util;
 import android.content.Context;
 
 import com.samourai.sentinel.BuildConfig;
+import com.samourai.sentinel.api.TlsPolicy;
+import com.samourai.sentinel.tor.SentinelTorManager;
 
+import java.net.Proxy;
+import java.net.URI;
 import java.util.concurrent.TimeUnit;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 import okhttp3.FormBody;
 import okhttp3.MediaType;
@@ -24,7 +23,6 @@ public class WebUtil {
 
     private static WebUtil instance = null;
     private Context context = null;
-
 
     private WebUtil(Context context) {
         this.context = context;
@@ -45,6 +43,20 @@ public class WebUtil {
     private static final int DefaultRequestRetry = 2;
     private static final int DefaultRequestTimeout = 60000;
 
+    /**
+     * #229: parsed-host onion check. The old gate was URL.contains("onion"),
+     * a substring match, so "https://example.com/onion" also triggered the
+     * trust-all relaxation. Unparseable URL fails closed (false).
+     */
+    private static boolean isOnionUrl(String URL) {
+        try {
+            String host = URI.create(URL).getHost();
+            return host != null && host.toLowerCase().endsWith(".onion");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public String postURL(String URL, String urlParameters) throws Exception {
 
         if ( PrefsUtil.getInstance(context).getValue(PrefsUtil.ENABLE_TOR, false)) {
@@ -58,8 +70,15 @@ public class WebUtil {
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
 
+        // #240: policy on every builder, per the issue's acceptance - the
+        // per-connection decision inside TlsPolicy keeps clearnet strict;
+        // .onion would get the scoped relaxation.
+        TlsPolicy.INSTANCE.install(builder);
+
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back - bodies carry raw
+            // tx hex and payload JSON. BASIC lines ride MaskedHttpLogger.
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -79,18 +98,22 @@ public class WebUtil {
     public String postURL(String URL, FormBody args) throws Exception {
 
 
-
         if ( PrefsUtil.getInstance(context).getValue(PrefsUtil.ENABLE_TOR, false)) {
             return tor_postURL(URL,args);
         }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
+        // #240: policy on every builder (see postURL above). The 60-HOUR
+        // timeouts below are the inherited upstream shape - preserved
+        // verbatim, flagged in the PR body as a follow-up candidate.
+        TlsPolicy.INSTANCE.install(builder);
         builder.connectTimeout(60,TimeUnit.HOURS);
         builder.readTimeout(60,TimeUnit.HOURS);
         builder.readTimeout(60,TimeUnit.HOURS);
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -119,8 +142,12 @@ public class WebUtil {
                 .retryOnConnectionFailure(true)
                 .readTimeout(90, TimeUnit.SECONDS);
 
+        // #240: policy on every builder (see postURL above).
+        TlsPolicy.INSTANCE.install(builder);
+
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -140,17 +167,28 @@ public class WebUtil {
 
     private String tor_getURL(String URL) throws Exception {
 
+        // #240: this builder's Tor routing was commented out against the
+        // pre-#135 TorManager API - every Tor-mode GET left DIRECT, the
+        // same leak class #233 closed for the pairing client. Fail
+        // closed: nothing proxy-less leaves a Tor-routed arm.
+        Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
+        if (torProxy == null) {
+            throw new IllegalStateException("Tor-routed GET with no live SOCKS proxy (#240)");
+        }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-//                .proxy(TorManager.getInstance(this.context).getProxy())
+                .proxy(torProxy)
                 .connectTimeout(90, TimeUnit.SECONDS)
                 .readTimeout(90, TimeUnit.SECONDS);
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
-        if (URL.contains("onion")) {
-            getHostNameVerifier(builder);
+        // #229: host-scoped policy instead of trust-all; clearnet HTTPS now
+        // keeps normal verification even in the Tor code path.
+        if (isOnionUrl(URL)) {
+            TlsPolicy.INSTANCE.install(builder);
         }
 
         Request request = new Request.Builder()
@@ -169,24 +207,30 @@ public class WebUtil {
 
     public String tor_postURL(String URL, String args) throws Exception {
 
-
         final MediaType JSON
                 = MediaType.parse("application/json; charset=utf-8");
         RequestBody body = RequestBody.create(JSON, args.toString());
 
 
+        // #240: proxy restored (see tor_getURL) - fail closed, never direct.
+        Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
+        if (torProxy == null) {
+            throw new IllegalStateException("Tor-routed POST with no live SOCKS proxy (#240)");
+        }
+
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-//                .proxy(TorManager.getInstance(this.context).getProxy())
+                .proxy(torProxy)
                 .connectTimeout(90, TimeUnit.SECONDS)
                 .readTimeout(90, TimeUnit.SECONDS);
 
-        if (URL.contains("onion")) {
-            getHostNameVerifier(builder);
-            builder.connectTimeout(90, TimeUnit.SECONDS);
+        // #229: host-scoped policy instead of trust-all (same gate fix).
+        if (isOnionUrl(URL)) {
+            TlsPolicy.INSTANCE.install(builder);
         }
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -206,19 +250,25 @@ public class WebUtil {
 
     public String tor_postURL(String URL, FormBody args) throws Exception {
 
+        // #240: proxy restored (see tor_getURL) - fail closed, never direct.
+        Proxy torProxy = SentinelTorManager.INSTANCE.getProxy();
+        if (torProxy == null) {
+            throw new IllegalStateException("Tor-routed POST with no live SOCKS proxy (#240)");
+        }
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
-//                .proxy(TorManager.getInstance(this.context).getProxy());
+        builder.proxy(torProxy);
 
-        if (URL.contains("onion")) {
-            getHostNameVerifier(builder);
+        // #229: host-scoped policy instead of trust-all (same gate fix).
+        if (isOnionUrl(URL)) {
+            TlsPolicy.INSTANCE.install(builder);
             builder.connectTimeout(90, TimeUnit.SECONDS);
             builder.readTimeout(90, TimeUnit.SECONDS);
         }
 
         if (BuildConfig.DEBUG) {
-            builder.addInterceptor(new HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY));
-            builder.connectTimeout(90, TimeUnit.SECONDS);
+            // #264/#96 (Arc B): BODY never comes back (see postURL above).
+            builder.addInterceptor(new HttpLoggingInterceptor(new MaskedHttpLogger()).setLevel(HttpLoggingInterceptor.Level.BASIC));
         }
 
         Request request = new Request.Builder()
@@ -233,42 +283,6 @@ public class WebUtil {
             return response.body().string();
 
         }
-
-    }
-
-
-    private void getHostNameVerifier(OkHttpClient.Builder
-                                             clientBuilder) throws
-            Exception {
-
-        // Create a trust manager that does not validate certificate chains
-        final TrustManager[] trustAllCerts = new TrustManager[]{
-                new X509TrustManager() {
-                    @Override
-                    public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {
-                    }
-
-                    @Override
-                    public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) {
-                    }
-
-                    @Override
-                    public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                        return new java.security.cert.X509Certificate[]{};
-                    }
-                }
-        };
-
-        // Install the all-trusting trust manager
-        final SSLContext sslContext = SSLContext.getInstance("SSL");
-        sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
-
-        // Create an ssl socket factory with our all-trusting manager
-        final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
-
-
-        clientBuilder.sslSocketFactory(sslSocketFactory, (X509TrustManager) trustAllCerts[0]);
-        clientBuilder.hostnameVerifier((hostname, session) -> true);
 
     }
 

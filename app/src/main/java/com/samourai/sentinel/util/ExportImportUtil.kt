@@ -30,6 +30,9 @@ import org.koin.java.KoinJavaComponent.inject
  *
  */
 
+class CollectionsNotLoadedException :
+    IllegalStateException("Collections have not been loaded in this process")
+
 class ExportImportUtil {
 
     private val txDao: TxDao by inject(TxDao::class.java);
@@ -41,6 +44,12 @@ class ExportImportUtil {
 
 
     fun makePayload(): JSONObject {
+        // #289: a process restored straight into Settings has never
+        // called CollectionRepository.read(). The snapshot is empty
+        // and the export used to report success anyway.
+        if (!collectionRepository.isPayloadLoaded()) {
+            throw CollectionsNotLoadedException()
+        }
         return JSONObject().apply {
             put("collections", JSONArray(collectionRepository.collectionsSnapshot().toJSON()))
             put("prefs", prefsUtil.export())
@@ -313,8 +322,11 @@ class ExportImportUtil {
             val publicKeys: ArrayList<PubKeyModel> = arrayListOf()
             val decrypted: String = if(payloadVersion == 1){
                 AESUtil.decrypt(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2Iterations)
-            }else{       
-                AESUtil.decryptSHA256(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2Iterations)
+            } else {
+                // #278: decryptSHA256 passes this count through to
+                // PBKDF2-HMAC-SHA256. 5000 is the SHA-1 constant and
+                // cannot open a payload written with the SHA-256 default.
+                AESUtil.decryptSHA256(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
             }
             val payloadJSON = JSONObject(decrypted)
 

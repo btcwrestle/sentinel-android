@@ -39,7 +39,7 @@
             app:persistent="false"
             android:defaultValue="false"
             app:title="Whirlpool auto-labels"
-            app:summaryOn="TX0 / mix / remix transactions are labeled automatically"
+            app:summaryOn="Tx0, mix and Bad Bank outputs are labeled automatically"
             app:summaryOff="Whirlpool transactions are not labeled automatically" />
 
     </PreferenceCategory>

@@ -11,7 +11,7 @@ android {
     flavorDimensions "versionCode"
     defaultConfig {
         applicationId "com.samourai.sentinel"
-        minSdkVersion 23
+        minSdkVersion 24
         targetSdkVersion 33
         versionCode 55
         versionName '5.1.2'
@@ -52,7 +52,7 @@ android {
     }
     productFlavors {
         production {
-            minSdkVersion 23
+            minSdkVersion 24
             applicationId 'com.samourai.sentinel'
             targetSdkVersion 33
             versionCode 55
@@ -88,6 +88,14 @@ android {
         abortOnError = false
         checkReleaseBuilds = false
     }
+    // #210: Robolectric needs the merged app resources + manifest on the
+    // classpath so the bottom-sheet recreation test can inflate real
+    // layouts (see BottomSheetRecreationTest).
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -98,7 +106,6 @@ dependencies {
     def koin_version = '2.2.3'
     def topl_android_version = "2.1.2"
     def room_version = "2.7.1"
-    def paging_version = "2.1.2"
 
     // for tor dependency
     def vTor = '4.8.6-0'
@@ -160,7 +167,6 @@ implementation 'it.unimi.dsi:fastutil:8.3.0'   // boltzmann public API exposes f
 
     // optional - Kotlin Extensions and Coroutines support for Room
     implementation "androidx.room:room-ktx:$room_version"
-    implementation "androidx.paging:paging-runtime-ktx:$paging_version" // For Kotlin use paging-runtime-ktx
     implementation "androidx.room:room-rxjava2:$room_version"
     // Robolectric: Android Context for Room in-memory unit tests (#5)
     testImplementation "org.robolectric:robolectric:4.14.1"

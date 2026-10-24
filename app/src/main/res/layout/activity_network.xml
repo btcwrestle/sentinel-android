@@ -34,6 +34,74 @@
         android:layout_marginTop="?attr/actionBarSize">
 
         <TextView
+            android:id="@+id/network_category_header"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="16dp"
+            android:layout_marginEnd="8dp"
+            android:text="@string/network_category"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <LinearLayout
+            android:id="@+id/network_bitcoin_layout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center_horizontal|center_vertical"
+            android:orientation="horizontal"
+            app:layout_constraintTop_toBottomOf="@+id/network_category_header">
+
+            <ImageView
+                android:id="@+id/network_bitcoin_status_icon"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:src="@drawable/circle_shape"
+                app:tint="@color/disabledRed" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/network_bitcoin_row_title"
+                    android:textColor="@color/white"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/network_bitcoin_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/network_mainnet" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/networking_network_switch_btn"
+                style="@style/Base.Widget.AppCompat.Button.Borderless"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="4dp"
+                android:text="@string/network_switch_to_testnet"
+                android:textColor="#6eb8c5" />
+        </LinearLayout>
+
+        <View
+            android:id="@+id/network_section_divider"
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="12dp"
+            android:background="#A95F5F5F"
+            app:layout_constraintTop_toBottomOf="@+id/network_bitcoin_layout" />
+
+        <TextView
             android:id="@+id/textView7"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -45,7 +113,7 @@
             android:textStyle="bold"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            app:layout_constraintTop_toBottomOf="@+id/network_section_divider" />
 
 
         <LinearLayout
