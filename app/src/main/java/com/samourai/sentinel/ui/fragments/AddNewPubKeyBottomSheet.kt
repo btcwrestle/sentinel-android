@@ -286,9 +286,17 @@ class AddNewPubKeyBottomSheet : GenericBottomSheet {
     }
 
     private fun validate(code: String): Boolean {
-        val payload = FormatsUtil.extractPublicKey(code)
+        // #297: trim once, before anything reads the input. A key pasted from
+        // a message or a text file carries leading or trailing whitespace, and
+        // every check below used to see the raw string: extractPublicKey()
+        // matches its "bitcoin:" prefixes with startsWith, the xpub arm tested
+        // the untrimmed scan, and the accepted value was stored untrimmed. A
+        // perfectly good key was rejected as "Invalid public key or payload",
+        // and an address only passed because its own check trimmed in place
+        // while the PubKeyModel still kept the padded string.
+        val payload = FormatsUtil.extractPublicKey(code.trim()).trim()
         val type = FormatsUtil.getPubKeyType(payload)
-        if (FormatsUtil.isValidBitcoinAddress(payload.trim()) || FormatsUtil.isValidXpub(payload)) {
+        if (FormatsUtil.isValidBitcoinAddress(payload) || FormatsUtil.isValidXpub(payload)) {
             if (SentinelState.isNetworkEstablished() && isPublicKeyTesnet(payload) && !SentinelState.isTestNet()) {
                 if (context != null)
                     Toast.makeText(context, "Can't track Testnet public keys in Mainnet", Toast.LENGTH_LONG).show()
@@ -303,15 +311,15 @@ class AddNewPubKeyBottomSheet : GenericBottomSheet {
             }
         }
         when {
-            PrivKeyReader(payload.trim(), SentinelState.getNetworkParam()).format != null -> {
+            PrivKeyReader(payload, SentinelState.getNetworkParam()).format != null -> {
                 if (isAdded && activity != null) {
                     this.dismiss()
-                    val bottomSheetFragment = SweepPrivKeyFragment(payload.trim(), secure)
+                    val bottomSheetFragment = SweepPrivKeyFragment(payload, secure)
                     bottomSheetFragment.show(requireActivity().supportFragmentManager, bottomSheetFragment.tag)
                 }
             }
 
-            FormatsUtil.isValidBitcoinAddress(payload.trim()) -> {
+            FormatsUtil.isValidBitcoinAddress(payload) -> {
                 if (newPubKeyListener != null) {
                     val pubKey = PubKeyModel(pubKey = payload, type = AddressTypes.ADDRESS, label = "Untitled", fingerPrint = liveScan().getFingerprint())
                     newPubKeyListener?.let { it(pubKey) }
@@ -324,10 +332,10 @@ class AddNewPubKeyBottomSheet : GenericBottomSheet {
                     binding.pager.setCurrentItem(2, true)
                 }
             }
-            FormatsUtil.isValidXpub(code) -> {
+            FormatsUtil.isValidXpub(payload) -> {
                 //show option to choose xpub type
                 if (type == AddressTypes.BIP84 || type == AddressTypes.BIP49) {
-                    pubKeyString = code
+                    pubKeyString = payload
                     validateXPUB(type)
                 }
                 else {
@@ -340,7 +348,7 @@ class AddNewPubKeyBottomSheet : GenericBottomSheet {
             isDojoPairingPayload(payload) -> {
                 if (isAdded && activity != null) {
                     this.dismiss()
-                    val bottomSheetFragment = WalletPairingFragment(payload.trim(), secure)
+                    val bottomSheetFragment = WalletPairingFragment(payload, secure)
                     bottomSheetFragment.show(requireActivity().supportFragmentManager, bottomSheetFragment.tag)
                 }
             }
