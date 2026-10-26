@@ -435,4 +435,10 @@
     <string name="dojo_pairing_network_will_set" translatable="false">Pairing this Dojo will set Sentinel to %1$s.</string>
     <string name="dojo_pairing_network_mismatch" translatable="false">Warning: this Dojo looks like a %1$s node, but Sentinel tracks %2$s. Pairing it may break how balances and addresses display.</string>
     <string name="dojo_pairing_network_refuse" translatable="false">This Dojo is declared %1$s, but Sentinel tracks %2$s, set by your keys. Pairing cannot continue.</string>
+    <!-- #294: why COMPOSE is disabled, shown inline on the field at fault. -->
+    <string name="send_error_invalid_address" translatable="false">Not a valid Bitcoin address</string>
+    <string name="send_error_wrong_network" translatable="false">That address is for a different network</string>
+    <string name="send_error_no_funds" translatable="false">No spendable coins in this collection</string>
+    <string name="send_error_insufficient_funds" translatable="false">More than the spendable balance</string>
+    <string name="send_error_cannot_compose" translatable="false">Cannot build a transaction from these inputs</string>
 </resources>

@@ -413,7 +413,7 @@ class WebSocketHandler : WebSocketListener() {
                     addToken()
                 }.toString()
                 val item = webSocket.send(payload)
-                Timber.d("SubscribeTx status:$item, payload:$payload")
+                Timber.d("SubscribeTx status:$item op:addr_sub")
             }
         }
     }
@@ -425,7 +425,7 @@ class WebSocketHandler : WebSocketListener() {
                 addToken()
             }.toString()
             val item = webSocket.send(payload)
-            Timber.d("SubscribeBlocks status:$item, payload:$payload")
+            Timber.d("SubscribeBlocks status:$item op:blocks_sub")
         } catch (er: Exception) {
             Timber.e(er)
         }

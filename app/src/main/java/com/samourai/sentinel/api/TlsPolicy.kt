@@ -1,5 +1,6 @@
 package com.samourai.sentinel.api
 
+import android.net.http.X509TrustManagerExtensions
 import okhttp3.OkHttpClient
 import java.security.KeyStore
 import javax.net.ssl.HostnameVerifier
@@ -32,6 +33,22 @@ import javax.net.ssl.X509TrustManager
  *
  * Peer host null/absent (engine created without a peer) fails CLOSED:
  * strict default verification.
+ *
+ * The strict path MUST delegate through the hostname-aware platform
+ * entry, never the host-blind one. This app ships a per-domain
+ * network security config (res/xml/network_security_config.xml - the
+ * .onion cleartext exception), and with per-domain configs Android's
+ * default trust manager throws from its host-blind
+ * checkServerTrusted(chain, authType):
+ * "Domain specific configurations require that hostname aware
+ * checkServerTrusted(X509Certificate[], String, String) is used".
+ * #230 shipped the host-blind delegation, so every clearnet HTTPS
+ * handshake over Tor died in the TLS handshake. The exchange-rate
+ * fetches are the app's only regular clearnet HTTPS traffic, so fiat
+ * starved silently. X509TrustManagerExtensions wraps the same
+ * platform trust manager with the hostname-aware entry (public since
+ * API 17; minSdk 24 covers it) and selects the per-domain trust
+ * anchors correctly.
  */
 object TlsPolicy {
 
@@ -64,11 +81,54 @@ object TlsPolicy {
 
         private val delegate: X509TrustManager = systemTrustManager()
 
+        /**
+         * Hostname-aware entry over [delegate] (see the object KDoc for
+         * why the host-blind entry is unusable under this app's
+         * per-domain network security config). The constructor only
+         * accepts the platform's TrustManagerImpl; on anything else we
+         * keep the host-blind fallback below - correct on installs
+         * without per-domain configs, fail-closed on those with them.
+         */
+        private val hostnameAware: X509TrustManagerExtensions? = try {
+            X509TrustManagerExtensions(delegate)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+
+        /**
+         * One host string per connection feeds both the relax decision
+         * and the strict verification below - a split between "the host
+         * that relaxed" and "the host that got verified" would be a
+         * wedge.
+         */
+        private fun peerHost(socket: java.net.Socket?): String? =
+            (socket as? SSLSocket)?.handshakeSession?.peerHost
+
         private fun relax(socket: java.net.Socket?): Boolean =
-            shouldRelax((socket as? SSLSocket)?.handshakeSession?.peerHost)
+            shouldRelax(peerHost(socket))
 
         private fun relax(engine: SSLEngine?): Boolean =
             shouldRelax(engine?.peerHost)
+
+        /**
+         * Strict verification for every non-onion peer: hostname-aware
+         * while a peer host is known. The host-blind entry is only used
+         * when there is no name to check against (fail closed under
+         * per-domain configs, exactly as before) or when the platform
+         * wrapper was not constructible.
+         */
+        private fun verifyStrict(
+            chain: Array<java.security.cert.X509Certificate>,
+            authType: String,
+            peerHost: String?
+        ) {
+            val aware = hostnameAware
+            if (aware != null && peerHost != null) {
+                aware.checkServerTrusted(chain, authType, peerHost)
+            } else {
+                delegate.checkServerTrusted(chain, authType)
+            }
+        }
 
         override fun checkClientTrusted(
             chain: Array<java.security.cert.X509Certificate>,
@@ -97,8 +157,9 @@ object TlsPolicy {
             authType: String,
             socket: java.net.Socket
         ) {
-            if (relax(socket)) return
-            delegate.checkServerTrusted(chain, authType)
+            val host = peerHost(socket)
+            if (shouldRelax(host)) return
+            verifyStrict(chain, authType, host)
         }
 
         override fun checkClientTrusted(
@@ -115,8 +176,9 @@ object TlsPolicy {
             authType: String,
             engine: SSLEngine
         ) {
-            if (relax(engine)) return
-            delegate.checkServerTrusted(chain, authType)
+            val host = engine?.peerHost
+            if (shouldRelax(host)) return
+            verifyStrict(chain, authType, host)
         }
     }
 

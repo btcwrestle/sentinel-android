@@ -14,10 +14,10 @@ class LegacyPbkdf2IterationsTest {
 
     @Test
     fun `legacy v2 uses the SHA-256 iteration count and v1 stays on SHA-1`() {
-        val util = source("app/src/main/java/com/samourai/sentinel/util/ExportImportUtil.kt")
-        val legacy = util.substringAfter("fun decryptSentinelLegacy")
+        val util = source("extlibj/src/main/java/com/samourai/wallet/crypto/BackupCodec.kt")
+        val legacy = util.substringAfter("private fun decryptLegacy")
         val v1 = legacy.substringBefore("else")
-        val v2 = legacy.substringAfter("else").substringBefore("val payloadJSON")
+        val v2 = legacy.substringAfter("else").substringBefore("catch")
         assertTrue(v1.contains("AESUtil.decrypt("))
         assertTrue(v1.contains("DefaultPBKDF2Iterations"))
         assertFalse(v1.contains("DefaultPBKDF2HMACSHA256Iterations"))
@@ -27,7 +27,11 @@ class LegacyPbkdf2IterationsTest {
     }
 
     private fun source(relative: String): String {
-        val file = sequenceOf(File(relative), File(relative.removePrefix("app/"))).firstOrNull { it.isFile }
+        val file = sequenceOf(
+            File(relative),
+            File(relative.removePrefix("app/")),
+            File("../$relative"),
+        ).firstOrNull { it.isFile }
             ?: error("missing $relative from ${File(".").absolutePath}")
         return file.readText()
     }

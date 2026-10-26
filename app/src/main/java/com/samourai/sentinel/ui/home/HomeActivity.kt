@@ -457,29 +457,36 @@ class HomeActivity : SentinelActivity() {
      */
     private fun applyBalanceDisplayMode() {
         val mode = currentDisplayMode()
-        val hideFiat = prefsUtil.streetMode == true
-            || prefsUtil.fiatDisabled == true
-            || mode == BalanceDisplayMode.MASKED
-            || mode == BalanceDisplayMode.SATS
+        val showFiat = BalanceDisplayFormatter.showsFiat(
+            mode, prefsUtil.streetMode == true, prefsUtil.fiatDisabled == true
+        )
         if (balance == -1L) {
-            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
+            paintFiat(showFiat)
             return
         }
         if (prefsUtil.streetMode == true || mode == BalanceDisplayMode.MASKED) {
             binding.homeBalanceBtc.text = BalanceDisplayFormatter.MASKED_TEXT
-            binding.exchangeRateTxt.visibility = View.INVISIBLE
+            paintFiat(false)
             return
         }
         if (mode == BalanceDisplayMode.SATS) {
             binding.homeBalanceBtc.text = String.format(java.util.Locale.US, "%,d sats", balance)
-            binding.exchangeRateTxt.visibility = View.INVISIBLE
         } else {
             updateBalance(balance)
-            binding.exchangeRateTxt.visibility = if (hideFiat) View.INVISIBLE else View.VISIBLE
-            if (!hideFiat) {
-                model.getFiatBalance().value?.let { updateFiat(it) }
-            }
         }
+        paintFiat(showFiat)
+    }
+
+    /** Blank and gone. A hidden or unpriced fiat line must not read "00.00". */
+    private fun paintFiat(show: Boolean) {
+        val fiat = model.getFiatBalance().value
+        if (!show || fiat.isNullOrBlank()) {
+            binding.exchangeRateTxt.text = ""
+            binding.exchangeRateTxt.visibility = View.GONE
+            return
+        }
+        binding.exchangeRateTxt.visibility = View.VISIBLE
+        updateFiat(fiat)
     }
 
     override fun onResume() {

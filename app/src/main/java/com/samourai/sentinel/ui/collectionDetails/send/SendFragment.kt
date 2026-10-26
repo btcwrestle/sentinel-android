@@ -198,6 +198,9 @@ class SendFragment : Fragment() {
             fragmentSpendBinding.composeBtn.alpha = if (it) 1f else 0.6f
         }
 
+        // #294: say why the button is disabled, on the field responsible.
+        viewModel.spendBlocker.observe(viewLifecycleOwner) { showSpendBlocker(it) }
+
         fragmentSpendBinding.fragmentBroadcastTx.psbtCopyBtn.setOnClickListener {
             val psbt = viewModel.psbtLive.value
             if (psbt?.length == 0) {
@@ -388,6 +391,35 @@ class SendFragment : Fragment() {
 
         intent.putExtra("txtContent", psbt)
         requireActivity().startActivityForResult(intent, 2)
+    }
+
+    /**
+     * #294: puts the reason composing is blocked on the field that caused it.
+     *
+     * An empty address or amount carries no message - the user has not
+     * finished typing and does not need telling. Everything else names the
+     * problem: a malformed address, an address for the other network, or an
+     * amount beyond the spendable balance.
+     */
+    private fun showSpendBlocker(blocker: SendViewModel.SpendBlocker) {
+        val addressError = when (blocker) {
+            SendViewModel.SpendBlocker.INVALID_ADDRESS ->
+                getString(R.string.send_error_invalid_address)
+            SendViewModel.SpendBlocker.WRONG_NETWORK ->
+                getString(R.string.send_error_wrong_network)
+            else -> null
+        }
+        val amountError = when (blocker) {
+            SendViewModel.SpendBlocker.NO_FUNDS ->
+                getString(R.string.send_error_no_funds)
+            SendViewModel.SpendBlocker.INSUFFICIENT_FUNDS ->
+                getString(R.string.send_error_insufficient_funds)
+            SendViewModel.SpendBlocker.CANNOT_COMPOSE ->
+                getString(R.string.send_error_cannot_compose)
+            else -> null
+        }
+        fragmentSpendBinding.toEditText.error = addressError
+        fragmentSpendBinding.btcEditTextLayout.error = amountError
     }
 
     private fun containerTransform(enter: View, leaving: View) {

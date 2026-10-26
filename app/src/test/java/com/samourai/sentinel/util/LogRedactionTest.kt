@@ -1,11 +1,14 @@
 package com.samourai.sentinel.util
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import timber.log.Timber
 import java.net.UnknownHostException
+import java.util.logging.Level
+import java.util.logging.LogRecord
 
 /**
  * #264/#96 pins for the logging-boundary redaction. The flaw itself was
@@ -170,5 +173,158 @@ class LogRedactionTest {
         assertEquals("explicit tag", "OkHttp", lines[0].first)
         assertFalse("onion masked in the wire line", lines[0].second.contains("$host32.onion"))
         assertTrue("at masked in the wire line", lines[0].second.contains("at=REDACTED"))
+    }
+
+    /** JWT-shaped so the hex and query rules cannot be what masks it. */
+    private val jsonToken = "eyJhbGciOiJIUzI1NiJ9.payload.signature"
+
+    /** BIP173 test vector. */
+    private val bech32 = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+
+    /** Well-known base58 example address. */
+    private val base58 = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+
+    @Test
+    fun jsonAccessTokenInSubscribePayloadIsRedacted() {
+        val payload = JSONObject()
+            .put("op", "addr_sub")
+            .put("addr", bech32)
+            .put("at", jsonToken)
+            .toString()
+        val line = "SubscribeTx status:true, payload:$payload"
+        val lines = mutableListOf<String>()
+        val tree = object : Timber.Tree() {
+            override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                lines += LogRedaction.redact(message)
+            }
+        }
+        Timber.plant(tree)
+        try {
+            Timber.d("%s", line)
+        } finally {
+            Timber.uproot(tree)
+        }
+        assertEquals("exactly one delivered line", 1, lines.size)
+        val out = lines[0]
+        assertFalse(out.contains(jsonToken))
+        assertFalse(out.contains("eyJhbGciOiJIUzI1NiJ9"))
+        assertFalse(out.contains(bech32))
+        assertFalse(out.contains(bech32.substring(10, 24)))
+        assertTrue(out.contains("SubscribeTx"))
+        assertTrue(out.contains("addr_sub"))
+        assertTrue(out.contains("\"at\":\"REDACTED\""))
+        assertTrue(out.contains("\"addr\":\"REDACTED\""))
+    }
+
+    @Test
+    fun subscribeBlocksPayloadRedactsJsonToken() {
+        val payload = JSONObject()
+            .put("op", "blocks_sub")
+            .put("at", jsonToken)
+            .toString()
+        val line = "SubscribeBlocks status:true, payload:$payload"
+        val out = LogRedaction.redact(line)
+        assertFalse(out.contains(jsonToken))
+        assertFalse(out.contains("eyJhbGciOiJIUzI1NiJ9"))
+        assertTrue(out.contains("SubscribeBlocks"))
+        assertTrue(out.contains("blocks_sub"))
+        assertTrue(out.contains("\"at\":\"REDACTED\""))
+    }
+
+    @Test
+    fun spacedJsonTokenAndBase58AddrAreRedacted() {
+        val line = "SubscribeTx status:true, payload:{ \"op\" : \"addr_sub\", " +
+            "\"addr\" : \"$base58\", \"at\" : \"$jsonToken\" }"
+        val out = LogRedaction.redact(line)
+        assertFalse(out.contains(jsonToken))
+        assertFalse(out.contains(base58))
+        assertTrue(out.contains("\"at\":\"REDACTED\""))
+        assertTrue(out.contains("\"addr\":\"REDACTED\""))
+        assertTrue(out.contains("addr_sub"))
+    }
+
+    @Test
+    fun authBodyTokenFieldsAreRedacted() {
+        val refresh = "refresh-token-value"
+        val line = """login {"authorizations":{"access_token":"$jsonToken","refresh_token":"$refresh"}}"""
+        val out = LogRedaction.redact(line)
+        assertFalse(out.contains(jsonToken))
+        assertFalse(out.contains(refresh))
+        assertTrue(out.contains("\"access_token\":\"REDACTED\""))
+        assertTrue(out.contains("\"refresh_token\":\"REDACTED\""))
+        assertTrue(out.contains("authorizations"))
+        assertTrue(out.contains("login"))
+    }
+
+    @Test
+    fun queryAndJsonTokenFormsBothRedact() {
+        val line = "--> GET https://$host32.onion/x?at=querytoken HTTP/1.1 {\"at\":\"$jsonToken\"}"
+        val out = LogRedaction.redact(line)
+        assertFalse(out.contains("querytoken"))
+        assertFalse(out.contains(jsonToken))
+        assertTrue(out.contains("at=REDACTED"))
+        assertTrue(out.contains("\"at\":\"REDACTED\""))
+        assertFalse(out.contains("$host32.onion"))
+    }
+
+    @Test
+    fun jsonRuleDoesNotEatUnrelatedKeys() {
+        val line = """{"op":"blocks_sub","format":"json","latitude":"5"}"""
+        assertEquals(line, LogRedaction.redact(line))
+    }
+
+    @Test
+    fun statusOnlySubscribeLineIsUnchanged() {
+        val line = "SubscribeTx status:true op:addr_sub"
+        assertEquals(line, LogRedaction.redact(line))
+        assertEquals(
+            "SubscribeBlocks status:false op:blocks_sub",
+            LogRedaction.redact("SubscribeBlocks status:false op:blocks_sub"),
+        )
+    }
+
+    @Test
+    fun bech32AndBase58OutsideJsonAreRedacted() {
+        val bechOut = LogRedaction.redact("notify for $bech32")
+        assertFalse(bechOut.contains(bech32))
+        assertTrue(bechOut.contains("ADDR_REDACTED"))
+        assertTrue(bechOut.contains("notify for"))
+
+        val baseOut = LogRedaction.redact("notify for $base58")
+        assertFalse(baseOut.contains(base58))
+        assertTrue(baseOut.contains("ADDR_REDACTED"))
+
+        val tb1 = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        assertFalse(LogRedaction.redact("watched $tb1").contains(tb1))
+    }
+
+    @Test
+    fun shortAddressShapedFragmentsAreLeftAlone() {
+        assertEquals("bc1qqqqqqqq", LogRedaction.redact("bc1qqqqqqqq"))
+        val ones25 = "1".repeat(25)
+        assertEquals(ones25, LogRedaction.redact(ones25))
+        val ones26 = "1".repeat(26)
+        assertFalse(LogRedaction.redact(ones26).contains(ones26))
+        assertEquals("m/84'/0'/0'/0/1", LogRedaction.redact("m/84'/0'/0'/0/1"))
+    }
+
+    @Test
+    fun jsonTokenInOkHttpLogRecordIsRedacted() {
+        val payload = JSONObject()
+            .put("op", "addr_sub")
+            .put("addr", bech32)
+            .put("at", jsonToken)
+            .toString()
+        val record = LogRecord(
+            Level.WARNING,
+            "SubscribeTx status:true, payload:$payload",
+        )
+        OkHttpLogRedaction.redact(record)
+        val out = record.message
+        assertFalse(out.contains(jsonToken))
+        assertFalse(out.contains(bech32))
+        assertTrue(out.contains("\"at\":\"REDACTED\""))
+        assertTrue(out.contains("\"addr\":\"REDACTED\""))
+        assertTrue(out.contains("SubscribeTx"))
     }
 }
