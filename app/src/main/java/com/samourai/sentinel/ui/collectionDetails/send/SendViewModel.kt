@@ -9,9 +9,11 @@ import androidx.lifecycle.viewModelScope
 import com.samourai.sentinel.data.PubKeyCollection
 import com.samourai.sentinel.data.PubKeyModel
 import com.samourai.sentinel.data.Utxo
+import com.samourai.sentinel.core.SentinelState
 import com.samourai.sentinel.data.db.dao.UtxoDao
 import com.samourai.sentinel.send.FeeUtil
 import com.samourai.sentinel.send.SuggestedFee
+import com.samourai.sentinel.util.FormatsUtil
 import com.samourai.sentinel.util.MonetaryUtil
 import com.samourai.sentinel.util.UtxoMetaUtil
 import kotlinx.coroutines.CancellationException
@@ -47,6 +49,44 @@ class SendViewModel : ViewModel() {
 
     private val _validSpend = MutableLiveData(false)
     val validSpend: LiveData<Boolean> = _validSpend
+
+    /**
+     * #294: why composing is not possible, so the screen can say so.
+     *
+     * validSpend on its own only greys the button out. Every reason was
+     * computed here and then discarded, leaving the user to guess whether the
+     * address was wrong, on the wrong network, or simply more than they hold.
+     * Published separately so existing observers of validSpend are unaffected.
+     */
+    enum class SpendBlocker {
+        NONE,
+        NO_ADDRESS,
+        INVALID_ADDRESS,
+        WRONG_NETWORK,
+        NO_AMOUNT,
+        NO_FUNDS,
+        INSUFFICIENT_FUNDS,
+        CANNOT_COMPOSE
+    }
+
+    private val _spendBlocker = MutableLiveData(SpendBlocker.NO_ADDRESS)
+    val spendBlocker: LiveData<SpendBlocker> = _spendBlocker
+
+    private fun block(reason: SpendBlocker): Boolean {
+        _spendBlocker.postValue(reason)
+        _validSpend.postValue(false)
+        // #294: a figure computed from input we have just rejected is worse
+        // than none - the fee kept reading 0.00000850 BTC next to a disabled
+        // button on an amount the wallet could not cover.
+        if (reason != SpendBlocker.NONE) {
+            _minerFee.postValue("")
+        }
+        return false
+    }
+
+    /** Spendable total, excluding anything marked do-not-spend. */
+    private fun spendableSats(): Long =
+        utxos.filter { !UtxoMetaUtil.has(it) }.sumOf { it.value ?: 0L }
 
 
     init {
@@ -97,17 +137,37 @@ class SendViewModel : ViewModel() {
         selectedUtxos.clear()
 
         if (address.isBlank() || address.isEmpty()) {
-            return false
+            return block(SpendBlocker.NO_ADDRESS)
         }
+        // #294: the address was previously only judged inside compose(), which
+        // reports one undifferentiated failure. Check it here so the three
+        // cases the user can actually act on are told apart.
+        if (!FormatsUtil.isValidBitcoinAddress(address)) {
+            return block(SpendBlocker.INVALID_ADDRESS)
+        }
+        if (isWrongNetworkAddress(address)) {
+            return block(SpendBlocker.WRONG_NETWORK)
+        }
+
         val dAmount: Double = enteredAmount
         amount = (dAmount * 1e8)
 
         if (dAmount == 0.0) {
-            return false
+            return block(SpendBlocker.NO_AMOUNT)
         }
 
-        if (utxos.isEmpty() || amount <= 0.0) {
-            return false
+        if (utxos.isEmpty()) {
+            return block(SpendBlocker.NO_FUNDS)
+        }
+        if (amount <= 0.0) {
+            return block(SpendBlocker.NO_AMOUNT)
+        }
+        // Checked before composing so "more than you hold" is distinguishable
+        // from a compose that failed for any other reason. The fee is not
+        // known yet, so this does not catch an amount that only fails once the
+        // fee is added; compose() still reports that as CANNOT_COMPOSE.
+        if (amount.toLong() > spendableSats()) {
+            return block(SpendBlocker.INSUFFICIENT_FUNDS)
         }
         job?.let {
             if (it.isActive) {
@@ -127,6 +187,9 @@ class SendViewModel : ViewModel() {
                     )
                     withContext(Dispatchers.Main) {
                         _validSpend.postValue(isValid)
+                        _spendBlocker.postValue(
+                            if (isValid) SpendBlocker.NONE else SpendBlocker.CANNOT_COMPOSE
+                        )
                     }
                 } catch (e: com.samourai.sentinel.api.ApiService.ApiNotConfigured) {
                     // #125: compose() reaches getTxHex (:351/:375) -> buildClient ->
@@ -137,13 +200,13 @@ class SendViewModel : ViewModel() {
                     // import; simple-name cleanup may follow.
                     Timber.e(e, "Compose aborted: no API endpoint configured")
                     viewModelScope.launch(Dispatchers.Main) {
-                        _validSpend.postValue(false)
+                        block(SpendBlocker.CANNOT_COMPOSE)
                     }
                 } catch (e: Exception) {
                     viewModelScope.launch(Dispatchers.Main) {
-                        _validSpend.postValue(false)
+                        block(SpendBlocker.CANNOT_COMPOSE)
                     }
-                    println("Exception: " + e)
+                    Timber.e(e, "Compose failed")
                 }
             } catch (ex: TransactionComposer.ComposeException) {
                 throw CancellationException("unable to compose")
@@ -164,6 +227,21 @@ class SendViewModel : ViewModel() {
         return true
     }
 
+    /**
+     * #294: a bech32 address for the other network.
+     *
+     * isValidBitcoinAddress() decodes bech32 without comparing the human
+     * readable part to the active network, so a mainnet bc1 address passes it
+     * on testnet and then fails inside compose() with no explanation. Base58
+     * addresses are already rejected by that function, since it builds an
+     * Address against the active NetworkParameters.
+     */
+    private fun isWrongNetworkAddress(address: String): Boolean {
+        val hrp = address.lowercase().take(2)
+        if (hrp != "bc" && hrp != "tb") return false
+        return if (SentinelState.isTestNet()) hrp == "bc" else hrp == "tb"
+    }
+
     fun setAmount(amount: Double) {
         enteredAmount = amount
         prepareSpend()
@@ -173,7 +251,7 @@ class SendViewModel : ViewModel() {
         utxos.clear()
         utxos.addAll(it)
         if (utxos.isEmpty()) {
-            _validSpend.postValue(false)
+            block(SpendBlocker.NO_FUNDS)
         } else {
             prepareSpend()
         }
