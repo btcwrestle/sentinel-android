@@ -345,6 +345,9 @@ class HomeViewModel : ViewModel() {
             // Publish cached collections IMMEDIATELY so the user sees their
             // wallets while any network work happens in the background.
             resultLiveData.value = collections
+            // Header total is the same cached sum the rows already show.
+            // updateBalance() otherwise waits for the first fetchUTXOS.
+            updateBalance()
 
             // #175/#174: an empty wallet with no endpoint configured has
             // no work that needs Tor - no WaitingForTor banner, no round,
@@ -764,28 +767,31 @@ class HomeViewModel : ViewModel() {
         return errorMessage
     }
 
-    fun getFiatBalance(): LiveData<String> {
-
-        val mediatorLiveData = MediatorLiveData<String>()
-
-        mediatorLiveData.addSource(exchangeRateRepository.getRateLive()) {
-            mediatorLiveData.value = getFiatBalance(balance.value, it)
+    // One shared instance, so callers reading .value see what observers see.
+    private val fiatBalance: MediatorLiveData<String> by lazy {
+        MediatorLiveData<String>().apply {
+            addSource(exchangeRateRepository.getRateLive()) {
+                value = getFiatBalance(balance.value, it)
+            }
+            addSource(balance) {
+                value = getFiatBalance(it, exchangeRateRepository.getRateLive().value)
+            }
         }
-        mediatorLiveData.addSource(balance) {
-            mediatorLiveData.value = getFiatBalance(it, exchangeRateRepository.getRateLive().value)
-        }
-        return mediatorLiveData
     }
 
+    fun getFiatBalance(): LiveData<String> = fiatBalance
+
     private fun getFiatBalance(balance: Long?, rate: ExchangeRateRepository.Rate?): String {
-        if (rate == null) return "00.00"
-        balance ?: return "00.00"
+        // Missing rate is blank. Callers hide the line instead of painting a fake amount.
+        if (prefsUtil.fiatDisabled == true) return ""
+        if (rate == null || rate.rate <= 0L) return ""
+        balance ?: return ""
         return try {
             val fiatRate = MonetaryUtil.getInstance().getFiatFormat(prefsUtil.selectedCurrency)
                 .format((balance / 1e8) * rate.rate)
             "$fiatRate ${rate.currency}"
         } catch (e: Exception) {
-            "00.00 ${rate.currency}"
+            ""
         }
     }
 

@@ -1,6 +1,5 @@
 package com.samourai.sentinel.util
 
-import android.os.Build
 import com.google.gson.reflect.TypeToken
 import com.samourai.sentinel.BuildConfig
 import com.samourai.sentinel.core.SentinelState
@@ -15,6 +14,7 @@ import com.samourai.sentinel.helpers.toJSON
 import com.samourai.sentinel.ui.dojo.DojoUtility
 import com.samourai.sentinel.ui.utils.PrefsUtil
 import com.samourai.wallet.crypto.AESUtil
+import com.samourai.wallet.crypto.BackupCodec
 import com.samourai.wallet.util.CharSequenceX
 import com.samourai.wallet.util.XPUB
 import kotlinx.coroutines.CancellationException
@@ -52,6 +52,8 @@ class ExportImportUtil {
         }
         return JSONObject().apply {
             put("collections", JSONArray(collectionRepository.collectionsSnapshot().toJSON()))
+            // export() leaves out unlock material and session tokens.
+            // Dojo pairing stays so a restore can reconnect.
             put("prefs", prefsUtil.export())
             if (dojoUtility.isDojoEnabled() && dojoUtility.exportDojoPayload() != null) {
                 put("dojo", JSONObject(dojoUtility.exportDojoPayload()!!))
@@ -74,12 +76,8 @@ class ExportImportUtil {
         }
     }
 
-    fun addVersionInfo(content: String): JSONObject {
-        val payload = JSONObject()
-        payload.put("version", BuildConfig.VERSION_CODE)
-        payload.put("time", System.currentTimeMillis())
-        payload.put("payload", content)
-        return payload
+    fun encryptBackup(payload: String, password: String): String {
+        return BackupCodec.encrypt(payload, password, BuildConfig.VERSION_CODE)
     }
 
     fun decryptAndParseSamouraiPayload(backUp: String, password: String): PubKeyCollection? {
@@ -291,118 +289,96 @@ class ExportImportUtil {
     }
 
     fun decryptSentinel(backUp: String, password: String): Triple<ArrayList<PubKeyCollection>?, JSONObject, JSONObject?> {
-        val json = JSONObject(backUp)
-        if (json.has("payload") && json.has("version")) {
-            val payloadVersion = json.getInt("version");
-            var decrypted = ""
-            decrypted = if(payloadVersion == 1){
-                AESUtil.decrypt(json.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2Iterations)
-            }else{
-                AESUtil.decryptSHA256(json.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
-            }
-            val payloadJSON = JSONObject(decrypted)
-            val collectionArrayType = object : TypeToken<ArrayList<PubKeyCollection?>?>() {}.type
-            val collections = fromJSON<ArrayList<PubKeyCollection>>(payloadJSON.getJSONArray("collections").toString(), collectionArrayType)
-            val prefs = payloadJSON.getJSONObject("prefs")
-            var dojo: JSONObject? = null
-            if (payloadJSON.has("dojo")) {
-                dojo = payloadJSON.getJSONObject("dojo")
-            }
-            return Triple(collections, prefs, dojo)
-        } else {
-            throw  Exception("Invalid payload")
+        val decrypted = BackupCodec.decryptEnvelope(backUp, password)
+        val payloadJSON = JSONObject(decrypted)
+        val collectionArrayType = object : TypeToken<ArrayList<PubKeyCollection?>?>() {}.type
+        val collections = fromJSON<ArrayList<PubKeyCollection>>(payloadJSON.getJSONArray("collections").toString(), collectionArrayType)
+        val prefs = payloadJSON.getJSONObject("prefs")
+        var dojo: JSONObject? = null
+        if (payloadJSON.has("dojo")) {
+            dojo = payloadJSON.getJSONObject("dojo")
         }
+        return Triple(collections, prefs, dojo)
     }
 
 
     fun decryptSentinelLegacy(backUp: String, password: String): Pair<ArrayList<PubKeyModel>, JSONObject?> {
-        val jsonBackUp = JSONObject(backUp)
-        if (jsonBackUp.has("payload") && jsonBackUp.has("version")) {
-            val payloadVersion = jsonBackUp.getInt("version");
-            val publicKeys: ArrayList<PubKeyModel> = arrayListOf()
-            val decrypted: String = if(payloadVersion == 1){
-                AESUtil.decrypt(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2Iterations)
-            } else {
-                // #278: decryptSHA256 passes this count through to
-                // PBKDF2-HMAC-SHA256. 5000 is the SHA-1 constant and
-                // cannot open a payload written with the SHA-256 default.
-                AESUtil.decryptSHA256(jsonBackUp.getString("payload"), CharSequenceX(password), AESUtil.DefaultPBKDF2HMACSHA256Iterations)
-            }
-            val payloadJSON = JSONObject(decrypted)
+        // Shared with decryptSentinel so a legacy v2 envelope uses the
+        // same PBKDF2-HMAC-SHA256 count as export (#278).
+        val decrypted = BackupCodec.decryptEnvelope(backUp, password)
+        val payloadJSON = JSONObject(decrypted)
+        val publicKeys: ArrayList<PubKeyModel> = arrayListOf()
 
-            if (payloadJSON.has("xpubs")) {
-                val xpubs = payloadJSON.getJSONArray("xpubs")
-                repeat(xpubs.length()) {
-                    val xpubObject = xpubs.getJSONObject(it)
-                    xpubObject.keys().forEach { key ->
-                        val type = validate(key);
-                        if (type == AddressTypes.BIP44) {
-                            val pubKeyModel = PubKeyModel(
-                                pubKey = key,
-                                label = xpubObject.getString(key), type = AddressTypes.BIP44)
-                            publicKeys.add(pubKeyModel)
-                        }
+        if (payloadJSON.has("xpubs")) {
+            val xpubs = payloadJSON.getJSONArray("xpubs")
+            repeat(xpubs.length()) {
+                val xpubObject = xpubs.getJSONObject(it)
+                xpubObject.keys().forEach { key ->
+                    val type = validate(key);
+                    if (type == AddressTypes.BIP44) {
+                        val pubKeyModel = PubKeyModel(
+                            pubKey = key,
+                            label = xpubObject.getString(key), type = AddressTypes.BIP44)
+                        publicKeys.add(pubKeyModel)
                     }
                 }
             }
-
-            if (payloadJSON.has("bip49")) {
-                val xpubs = payloadJSON.getJSONArray("bip49")
-                repeat(xpubs.length()) {
-                    val xpubObject = xpubs.getJSONObject(it)
-                    xpubObject.keys().forEach { key ->
-                        val type = validate(key);
-                        if (type == AddressTypes.BIP49) {
-                            val pubKeyModel = PubKeyModel(
-                                pubKey = key,
-                                label = xpubObject.getString(key), type = AddressTypes.BIP49)
-                            publicKeys.add(pubKeyModel)
-                        }
-                    }
-                }
-            }
-
-            if (payloadJSON.has("bip84")) {
-                val xpubs = payloadJSON.getJSONArray("bip84")
-                repeat(xpubs.length()) {
-                    val xpubObject = xpubs.getJSONObject(it)
-                    xpubObject.keys().forEach { key ->
-                        val type = validate(key);
-                        if (type == AddressTypes.BIP84) {
-                            val pubKeyModel = PubKeyModel(
-                                pubKey = key,
-                                label = xpubObject.getString(key), type = AddressTypes.BIP84)
-                            publicKeys.add(pubKeyModel)
-                        }
-                    }
-                }
-            }
-
-            if (payloadJSON.has("legacy")) {
-                val xpubs = payloadJSON.getJSONArray("legacy")
-                repeat(xpubs.length()) {
-                    val xpubObject = xpubs.getJSONObject(it)
-                    xpubObject.keys().forEach { key ->
-                        val type = validate(key);
-                        if (type == AddressTypes.ADDRESS) {
-                            val pubKeyModel = PubKeyModel(
-                                pubKey = key,
-                                label = xpubObject.getString(key), type = AddressTypes.ADDRESS)
-                            publicKeys.add(pubKeyModel)
-                        }
-                    }
-                }
-            }
-            var dojo: JSONObject? = null
-            if (payloadJSON.has("dojo")) {
-                if (dojoUtil.validate(payloadJSON.getString("dojo"))) {
-                    dojo = payloadJSON.getJSONObject("dojo")
-                }
-            }
-            return Pair(publicKeys,dojo)
-        } else {
-            throw  Exception("Invalid payload")
         }
+
+        if (payloadJSON.has("bip49")) {
+            val xpubs = payloadJSON.getJSONArray("bip49")
+            repeat(xpubs.length()) {
+                val xpubObject = xpubs.getJSONObject(it)
+                xpubObject.keys().forEach { key ->
+                    val type = validate(key);
+                    if (type == AddressTypes.BIP49) {
+                        val pubKeyModel = PubKeyModel(
+                            pubKey = key,
+                            label = xpubObject.getString(key), type = AddressTypes.BIP49)
+                        publicKeys.add(pubKeyModel)
+                    }
+                }
+            }
+        }
+
+        if (payloadJSON.has("bip84")) {
+            val xpubs = payloadJSON.getJSONArray("bip84")
+            repeat(xpubs.length()) {
+                val xpubObject = xpubs.getJSONObject(it)
+                xpubObject.keys().forEach { key ->
+                    val type = validate(key);
+                    if (type == AddressTypes.BIP84) {
+                        val pubKeyModel = PubKeyModel(
+                            pubKey = key,
+                            label = xpubObject.getString(key), type = AddressTypes.BIP84)
+                        publicKeys.add(pubKeyModel)
+                    }
+                }
+            }
+        }
+
+        if (payloadJSON.has("legacy")) {
+            val xpubs = payloadJSON.getJSONArray("legacy")
+            repeat(xpubs.length()) {
+                val xpubObject = xpubs.getJSONObject(it)
+                xpubObject.keys().forEach { key ->
+                    val type = validate(key);
+                    if (type == AddressTypes.ADDRESS) {
+                        val pubKeyModel = PubKeyModel(
+                            pubKey = key,
+                            label = xpubObject.getString(key), type = AddressTypes.ADDRESS)
+                        publicKeys.add(pubKeyModel)
+                    }
+                }
+            }
+        }
+        var dojo: JSONObject? = null
+        if (payloadJSON.has("dojo")) {
+            if (dojoUtil.validate(payloadJSON.getString("dojo"))) {
+                dojo = payloadJSON.getJSONObject("dojo")
+            }
+        }
+        return Pair(publicKeys, dojo)
     }
 
 

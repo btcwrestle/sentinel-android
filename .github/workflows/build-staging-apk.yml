@@ -26,7 +26,7 @@ jobs:
   build:
     name: Build and test staging APK
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out repository
@@ -96,29 +96,43 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Install stable debug signing key
+      - name: Install debug signing key
         shell: bash
         env:
           ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
-          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
-            echo "ANDROID_DEBUG_KEYSTORE_BASE64 is not configured."
-            exit 1
-          fi
-
+          # Fork pull_request runs never receive repo secrets (GitHub policy),
+          # so the stable debug keystore is absent there. Build and test anyway
+          # on an ephemeral debug key: the artifact is verification-only and
+          # will not install over stable-CI builds. Push/tag runs keep the
+          # stable key path byte-for-byte.
           keystore="$RUNNER_TEMP/sentinel-ci-debug.keystore"
 
-          printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
-            | base64 --decode > "$keystore"
+          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::notice::Stable debug keystore unavailable (fork PR run) - generating an ephemeral debug keystore."
+            rm -f "$keystore"
+            keytool -genkeypair \
+              -keystore "$keystore" \
+              -storepass android \
+              -keypass android \
+              -alias androiddebugkey \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          else
+            printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
+              | base64 --decode > "$keystore"
+
+            keytool -list \
+              -keystore "$keystore" \
+              -storepass android \
+              -alias androiddebugkey >/dev/null
+          fi
 
           chmod 600 "$keystore"
-
-          keytool -list \
-            -keystore "$keystore" \
-            -storepass android \
-            -alias androiddebugkey >/dev/null
 
           echo "CI_DEBUG_KEYSTORE=$keystore" >> "$GITHUB_ENV"
 
@@ -187,6 +201,169 @@ jobs:
           path: app/build/test-results/testStagingDebugUnitTest/*.xml
           if-no-files-found: error
           retention-days: 14
+
+      # Tag publishes read these Actions secrets (not committed):
+      # ANDROID_RELEASE_KEYSTORE_BASE64, ANDROID_RELEASE_STORE_PASSWORD,
+      # ANDROID_RELEASE_KEY_ALIAS, ANDROID_RELEASE_KEY_PASSWORD.
+      # Debug artifacts above stay on ANDROID_DEBUG_KEYSTORE_BASE64.
+      - name: Install release signing key
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in \
+            ANDROID_RELEASE_KEYSTORE_BASE64 \
+            ANDROID_RELEASE_STORE_PASSWORD \
+            ANDROID_RELEASE_KEY_ALIAS \
+            ANDROID_RELEASE_KEY_PASSWORD
+          do
+            if [ -z "${!name}" ]; then
+              echo "Secret $name is not set."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to publish ${GITHUB_REF_NAME}. Missing release signing secret(s). Set ANDROID_RELEASE_KEYSTORE_BASE64, ANDROID_RELEASE_STORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS, and ANDROID_RELEASE_KEY_PASSWORD. This tag build will not publish an APK."
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/sentinel-release.keystore"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" \
+            | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+
+          keytool -list \
+            -keystore "$keystore" \
+            -storepass:env ANDROID_RELEASE_STORE_PASSWORD \
+            -alias "$ANDROID_RELEASE_KEY_ALIAS" >/dev/null
+
+          echo "CI_RELEASE_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+          {
+            echo "ANDROID_RELEASE_STORE_PASSWORD<<SIGNING_EOF"
+            printf '%s\n' "$ANDROID_RELEASE_STORE_PASSWORD"
+            echo "SIGNING_EOF"
+            echo "ANDROID_RELEASE_KEY_ALIAS<<SIGNING_EOF"
+            printf '%s\n' "$ANDROID_RELEASE_KEY_ALIAS"
+            echo "SIGNING_EOF"
+            echo "ANDROID_RELEASE_KEY_PASSWORD<<SIGNING_EOF"
+            printf '%s\n' "$ANDROID_RELEASE_KEY_PASSWORD"
+            echo "SIGNING_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Build staging release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [[ -z "${CI_RELEASE_KEYSTORE:-}" ]]; then
+              echo "::error::Refusing to publish ${GITHUB_REF_NAME}. CI_RELEASE_KEYSTORE is not set, so the APK would be unsigned."
+              exit 1
+            fi
+            version_name="${GITHUB_REF_NAME#v}"
+            if [[ -z "$version_name" || "$version_name" == "$GITHUB_REF_NAME" ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} must start with v."
+              exit 1
+            fi
+            ./gradlew --stacktrace :app:assembleStagingRelease \
+              -Psentinel.versionName="$version_name"
+          else
+            ./gradlew --stacktrace :app:assembleStagingRelease
+          fi
+
+      - name: Check staging release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/staging/release/*.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "Expected one staging release APK, found ${#apks[@]}."
+            printf '%s\n' "${apks[@]:-}"
+            exit 1
+          fi
+          apk="${apks[0]}"
+          echo "Release APK: $apk"
+
+          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          aapt="$sdk/build-tools/34.0.0/aapt"
+          apksigner="$sdk/build-tools/34.0.0/apksigner"
+          if [ ! -x "$aapt" ] || [ ! -x "$apksigner" ]; then
+            echo "aapt or apksigner missing under $sdk/build-tools/34.0.0"
+            exit 1
+          fi
+
+          if "$aapt" dump badging "$apk" | grep -q 'application-debuggable'; then
+            echo "::error::Staging release APK is debuggable."
+            exit 1
+          fi
+
+          base=$(basename "$apk")
+          badging=$("$aapt" dump badging "$apk")
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [ "$base" != "app-staging-release.apk" ]; then
+              echo "::error::Tag publish expects a signed app-staging-release.apk (got $base)."
+              exit 1
+            fi
+            "$apksigner" verify --print-certs "$apk"
+
+            # Same packing as sentinelVersionCode in app/build.gradle.
+            version_name="${GITHUB_REF_NAME#v}"
+            parts=()
+            while read -r n; do
+              parts+=("$n")
+            done < <(grep -oE '[0-9]+' <<< "$version_name")
+            major=${parts[0]:-0}
+            minor=${parts[1]:-0}
+            patch=${parts[2]:-0}
+            sequence=${parts[3]:-0}
+            if (( major > 200 || minor > 99 || patch > 99 || sequence > 999 )); then
+              echo "::error::Tag version ${version_name} does not fit versionCode."
+              exit 1
+            fi
+            version_code=$(( major * 10000000 + minor * 100000 + patch * 1000 + sequence ))
+            if (( version_code < 57 )); then
+              echo "::error::versionCode ${version_code} for ${version_name} is below 57."
+              exit 1
+            fi
+            if ! grep -F "versionName='${version_name}'" <<< "$badging" >/dev/null; then
+              echo "::error::APK versionName does not match ${version_name}."
+              echo "$badging" | grep '^package:' || true
+              exit 1
+            fi
+            if ! grep -F "versionCode='${version_code}'" <<< "$badging" >/dev/null; then
+              echo "::error::APK versionCode is not ${version_code}."
+              echo "$badging" | grep '^package:' || true
+              exit 1
+            fi
+          fi
+
+          mkdir -p release-artifacts
+          cp "$apk" "release-artifacts/$base"
+          (
+            cd release-artifacts
+            sha256sum "$base" > SHA256SUMS.txt
+          )
+          cat release-artifacts/SHA256SUMS.txt
+
+      - name: Upload staging release APK
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: sentinel-staging-release-${{ github.sha }}
+          path: |
+            release-artifacts/*.apk
+            release-artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish APK to GitHub Releases
     if: startsWith(github.ref, 'refs/tags/')
@@ -197,10 +374,15 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
       - name: Download APK artifact
         uses: actions/download-artifact@v8
         with:
-          name: sentinel-staging-debug-${{ github.sha }}
+          name: sentinel-staging-release-${{ github.sha }}
           path: release-assets
 
       - name: Verify checksum
@@ -210,8 +392,12 @@ jobs:
           ls -l release-assets/
           cd release-assets
           sha256sum -c SHA256SUMS.txt
+          if [ ! -f app-staging-release.apk ]; then
+            echo "Expected app-staging-release.apk in the release artifact."
+            exit 1
+          fi
           # rename for the release page, then regenerate sums flat
-          mv app-staging-debug.apk "sentinel-staging-${GITHUB_REF_NAME}.apk"
+          mv app-staging-release.apk "sentinel-staging-${GITHUB_REF_NAME}.apk"
           sha256sum sentinel-staging-*.apk > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -222,9 +408,36 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == *..* || "$GITHUB_REF_NAME" == */* ]]; then
+            echo "::error::Tag name ${GITHUB_REF_NAME} is not a single path segment."
+            exit 1
+          fi
+
+          notes="$(mktemp)"
+          custom="release-notes/${GITHUB_REF_NAME}.md"
+          if [[ -f "$custom" ]]; then
+            cat "$custom" > "$notes"
+            printf '\n\n' >> "$notes"
+          fi
+          gh api --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            -f target_commitish="$GITHUB_SHA" \
+            --jq '.body // ""' >> "$notes"
+
+          # A hyphen after the version (including -dojobay.) is a pre-release
+          # suffix. Tags with no suffix are full releases.
+          version_name="${GITHUB_REF_NAME#v}"
+          prerelease=()
+          if [[ "$version_name" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+
           gh release create "$GITHUB_REF_NAME" \
             release-assets/*.apk \
             release-assets/SHA256SUMS.txt \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --prerelease
+            --notes-file "$notes" \
+            --verify-tag \
+            "${prerelease[@]}"

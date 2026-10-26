@@ -88,7 +88,7 @@ open class SentinelActivity : AppCompatActivity(), SwipeBackActivityBase {
         super.onResume()
         // Prefs are nullable by design (GenericPrefDelegate<T?>); `!!` here crashed
         // on a fresh install and after clearAll().
-        if (prefsUtil.pinHash?.isNotBlank() == true && accessFactory.isTimedOut) {
+        if (prefsUtil.isPinConfigured() && accessFactory.isTimedOut) {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
             })
