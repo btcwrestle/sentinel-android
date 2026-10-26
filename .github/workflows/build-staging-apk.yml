@@ -96,29 +96,43 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Install stable debug signing key
+      - name: Install debug signing key
         shell: bash
         env:
           ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
-          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
-            echo "ANDROID_DEBUG_KEYSTORE_BASE64 is not configured."
-            exit 1
-          fi
-
+          # Fork pull_request runs never receive repo secrets (GitHub policy),
+          # so the stable debug keystore is absent there. Build and test anyway
+          # on an ephemeral debug key: the artifact is verification-only and
+          # will not install over stable-CI builds. Push/tag runs keep the
+          # stable key path byte-for-byte.
           keystore="$RUNNER_TEMP/sentinel-ci-debug.keystore"
 
-          printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
-            | base64 --decode > "$keystore"
+          if [ -z "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::notice::Stable debug keystore unavailable (fork PR run) - generating an ephemeral debug keystore."
+            rm -f "$keystore"
+            keytool -genkeypair \
+              -keystore "$keystore" \
+              -storepass android \
+              -keypass android \
+              -alias androiddebugkey \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          else
+            printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" \
+              | base64 --decode > "$keystore"
+
+            keytool -list \
+              -keystore "$keystore" \
+              -storepass android \
+              -alias androiddebugkey >/dev/null
+          fi
 
           chmod 600 "$keystore"
-
-          keytool -list \
-            -keystore "$keystore" \
-            -storepass android \
-            -alias androiddebugkey >/dev/null
 
           echo "CI_DEBUG_KEYSTORE=$keystore" >> "$GITHUB_ENV"
 
