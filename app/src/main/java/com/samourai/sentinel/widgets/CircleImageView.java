@@ -37,6 +37,16 @@ public class CircleImageView extends androidx.appcompat.widget.AppCompatImageVie
     private static final Bitmap.Config BITMAP_CONFIG = Bitmap.Config.ARGB_8888;
     private static final int COLORDRAWABLE_DIMENSION = 2;
 
+    /**
+     * Ceiling on the raster when the view has not been measured yet (#295).
+     *
+     * setImageDrawable() runs during inflation, before any measure pass, so
+     * there is no view size to clamp against on the first rasterisation. 256px
+     * covers every circular avatar this app draws; if the view turns out to be
+     * larger, onSizeChanged() rasterises again at the real size.
+     */
+    private static final int MAX_UNMEASURED_DIMENSION = 256;
+
     private static final int DEFAULT_BORDER_WIDTH = 0;
     private static final int DEFAULT_BORDER_COLOR = Color.BLACK;
     private static final int DEFAULT_CIRCLE_BACKGROUND_COLOR = Color.TRANSPARENT;
@@ -152,7 +162,26 @@ public class CircleImageView extends androidx.appcompat.widget.AppCompatImageVie
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
+        // #295: the first rasterisation may have been clamped against an
+        // unmeasured view. Now that the real size is known, redo it if what we
+        // have would have to be upscaled - otherwise the circle would be drawn
+        // from too few pixels. initializeBitmap() calls setup() itself.
+        if (needsLargerBitmap(w, h)) {
+            initializeBitmap();
+            return;
+        }
         setup();
+    }
+
+    private boolean needsLargerBitmap(int w, int h) {
+        if (mDisableCircularTransformation || mBitmap == null) {
+            return false;
+        }
+        // A BitmapDrawable is used as-is, so there is nothing to re-render.
+        if (getDrawable() instanceof BitmapDrawable) {
+            return false;
+        }
+        return mBitmap.getWidth() < w || mBitmap.getHeight() < h;
     }
 
     @Override
@@ -321,7 +350,34 @@ public class CircleImageView extends androidx.appcompat.widget.AppCompatImageVie
             if (drawable instanceof ColorDrawable) {
                 bitmap = Bitmap.createBitmap(COLORDRAWABLE_DIMENSION, COLORDRAWABLE_DIMENSION, BITMAP_CONFIG);
             } else {
-                bitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(), BITMAP_CONFIG);
+                // #295: rasterise at the size this view will actually draw,
+                // not the drawable's intrinsic size. icon_innergradient is a
+                // 512dp vector shown in a 33dp toolbar slot, which at 440dpi
+                // meant allocating and software-drawing about 1408x1408px
+                // (~8MB) on the main thread during ActivityHomeBinding.inflate
+                // - enough to ANR Home on a cold start. updateShaderMatrix()
+                // scales whatever we produce into mDrawableRect anyway, so a
+                // bitmap larger than the view was never worth anything.
+                int width = drawable.getIntrinsicWidth();
+                int height = drawable.getIntrinsicHeight();
+
+                // A drawable may report no intrinsic size at all (-1); fall
+                // back to a square at the target size rather than failing.
+                int limit = Math.max(1, Math.max(getWidth(), getHeight()) > 0
+                        ? Math.max(getWidth(), getHeight())
+                        : MAX_UNMEASURED_DIMENSION);
+                if (width <= 0 || height <= 0) {
+                    width = limit;
+                    height = limit;
+                } else if (width > limit || height > limit) {
+                    // Scale down on the longer edge, keeping the aspect ratio
+                    // so that updateShaderMatrix() still centres it correctly.
+                    float scale = Math.min(limit / (float) width, limit / (float) height);
+                    width = Math.max(1, Math.round(width * scale));
+                    height = Math.max(1, Math.round(height * scale));
+                }
+
+                bitmap = Bitmap.createBitmap(width, height, BITMAP_CONFIG);
             }
 
             Canvas canvas = new Canvas(bitmap);
