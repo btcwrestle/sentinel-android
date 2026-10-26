@@ -83,6 +83,17 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
      */
     private var pendingNewPin: String? = null
 
+    /** #288: the destructive actions that ask for the PIN first. */
+    private enum class GatedAction { EXPORT, ERASE }
+
+    /**
+     * #288: which action a successful PIN entry should run. Memory of this
+     * fragment instance only, for the same reason as [pendingNewPin] (#220):
+     * a recreated fragment must not inherit an authorisation it never saw
+     * granted, so the pad is closed instead.
+     */
+    private var pendingGatedAction: GatedAction? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         parentFragmentManager.setFragmentResultListener(REQUEST_KEY_PIN_ENTER, this) { _, bundle ->
@@ -92,6 +103,10 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         parentFragmentManager.setFragmentResultListener(REQUEST_KEY_PIN_CONFIRM, this) { _, bundle ->
             parentFragmentManager.clearFragmentResult(REQUEST_KEY_PIN_CONFIRM)
             onPinConfirmed(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
+        }
+        parentFragmentManager.setFragmentResultListener(REQUEST_KEY_PIN_GATE, this) { _, bundle ->
+            parentFragmentManager.clearFragmentResult(REQUEST_KEY_PIN_GATE)
+            onGatePinEntered(bundle.getString(LockScreenDialog.RESULT_PIN).orEmpty())
         }
     }
 
@@ -108,6 +123,11 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         view.post {
             if (!isAdded) return@post
             if (parentFragmentManager.findFragmentByTag(TAG_PIN_CONFIRM) != null && pendingNewPin == null) {
+                parentFragmentManager.popBackStack()
+            }
+            // #288: likewise for the gate pad - without the action it was
+            // opened for there is nothing to authorise.
+            if (parentFragmentManager.findFragmentByTag(TAG_PIN_GATE) != null && pendingGatedAction == null) {
                 parentFragmentManager.popBackStack()
             }
         }
@@ -195,7 +215,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
             true
         }
         clearWallet?.setOnPreferenceClickListener {
-            clearWallet()
+            requirePin(GatedAction.ERASE)
             true
         }
 
@@ -212,7 +232,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
                 }
         findPreference<Preference>("export")
                 ?.setOnPreferenceClickListener {
-                    export()
+                    requirePin(GatedAction.EXPORT)
                     true
                 }
         findPreference<Preference>("importLabels")
@@ -372,6 +392,65 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
             .add(android.R.id.content, dialog, tag)
             .addToBackStack("Lock")
             .commit()
+    }
+
+    /**
+     * #288: asks for the current PIN before running [action].
+     *
+     * Export writes out every xpub and the Dojo pairing under a password the
+     * person at the keyboard chooses, and Erase destroys the wallet - both
+     * previously ran straight from a tap, so anyone holding the unlocked
+     * phone could do either. Being inside the unlock window is not consent
+     * for those two.
+     *
+     * With no PIN configured there is nothing to check and the action runs as
+     * before; this gate is not a substitute for setting one.
+     */
+    private fun requirePin(action: GatedAction) {
+        if (prefsUtil.pinHash.isNullOrEmpty()) {
+            runGatedAction(action)
+            return
+        }
+        pendingGatedAction = action
+        showPinDialog(
+            message = "Enter current pin code",
+            requestKey = REQUEST_KEY_PIN_GATE,
+            purpose = LockScreenDialog.PURPOSE_UNLOCK,
+            tag = TAG_PIN_GATE
+        )
+    }
+
+    private fun onGatePinEntered(pin: String) {
+        val dialog = parentFragmentManager.findFragmentByTag(TAG_PIN_GATE) as? LockScreenDialog ?: return
+        val action = pendingGatedAction
+        val hash = prefsUtil.pinHash
+        if (action == null || hash.isNullOrEmpty()) {
+            // Nothing to authorise - the fragment was recreated, or the PIN
+            // was removed while the pad was open.
+            pendingGatedAction = null
+            parentFragmentManager.popBackStack()
+            return
+        }
+        settingsScope.launch {
+            val valid = withContext(Dispatchers.IO) { accessFactory.validateHash(pin, hash) }
+            if (valid) {
+                // Consume the authorisation before running, so a replayed
+                // result cannot run the action twice.
+                pendingGatedAction = null
+                dialog.dismiss()
+                parentFragmentManager.popBackStack()
+                runGatedAction(action)
+            } else {
+                dialog.showError()
+            }
+        }
+    }
+
+    private fun runGatedAction(action: GatedAction) {
+        when (action) {
+            GatedAction.EXPORT -> export()
+            GatedAction.ERASE -> clearWallet()
+        }
     }
 
     private fun onPinEntered(pin: String) {
@@ -705,5 +784,7 @@ class MainSettingsFragment : PreferenceFragmentCompat() {
         const val TAG_PIN_CONFIRM = "lock_screen_pin_confirm"
         const val REQUEST_KEY_PIN_ENTER = "lock_screen_pin_enter_result"
         const val REQUEST_KEY_PIN_CONFIRM = "lock_screen_pin_confirm_result"
+        const val TAG_PIN_GATE = "lock_screen_pin_gate"
+        const val REQUEST_KEY_PIN_GATE = "lock_screen_pin_gate_result"
     }
 }
